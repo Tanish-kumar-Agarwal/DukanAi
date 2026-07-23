@@ -7,6 +7,7 @@ const tenantOwnedModels = new Set([
   'Product',
   'ProductBatch',
   'Supplier',
+  'Expense',
   'Customer',
   'Shift',
   'Invoice',

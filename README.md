@@ -95,6 +95,38 @@ cd apps/web && npm run dev
 
 The API listens on `http://localhost:3001/api`; the web app listens on `http://localhost:3002` when started with its configured port. See [ENVIRONMENT_REQUIREMENTS.md](./ENVIRONMENT_REQUIREMENTS.md) and [DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md) before deploying.
 
+### Keeping the database schema in sync
+
+The Prisma schema evolves with the code. If your local database was created
+from an older checkout, API endpoints that touch new tables/columns will fail
+with Prisma `P2021` (missing table) or `P2022` (missing column) errors - the
+API now detects this at boot with a schema probe, logs a loud
+`SCHEMA DRIFT DETECTED` error, and refuses to start. The fix is always:
+
+```bash
+cd apps/api && npx prisma db push
+```
+
+Run it after every `git pull` that changes `prisma/schema.prisma` (make sure
+`DATABASE_URL` in your environment points at your local database).
+
+### Seeding demo data
+
+An idempotent seed populates a realistic Indian retail dataset (shop products,
+customers with udhaar balances, suppliers, employees, expenses, notifications,
+and a month of invoices) so every page has real backend data:
+
+```bash
+# API must be running (it validates the real write paths via HTTP)
+cd apps/api && npm run seed
+```
+
+The script creates entities through the public API where endpoints exist and
+falls back to Prisma for the rest. Re-running it is safe - existing records
+are detected and skipped. In auth-bypass mode the data lands in the system
+shop; with real auth enabled it logs in as (or registers) the demo account
+`demo@dukaan.local` / `Demo@1234` and seeds that shop instead.
+
 ### Verification
 
 ```bash

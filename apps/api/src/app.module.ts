@@ -67,6 +67,9 @@ import { ProcurementWorkflowDomainModule } from './procurement-workflow-domain/p
 import { PurchaseAnalyticsDomainModule } from './purchase-analytics-domain/purchase-analytics-domain.module';
 import { PurchaseEventsDomainModule } from './purchase-events-domain/purchase-events-domain.module';
 import { DocumentModule } from './common/document/document.module';
+import { SuppliersModule } from './suppliers/suppliers.module';
+import { ExpensesModule } from './expenses/expenses.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 
 @Module({
@@ -165,6 +168,9 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     PurchaseEventsDomainModule,
     DocumentModule,
     RedisModule,
+    SuppliersModule,
+    ExpensesModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [

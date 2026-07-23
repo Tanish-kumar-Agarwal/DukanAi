@@ -479,6 +479,7 @@ model Shop {
   products             Product[]
   productBatches       ProductBatch[]
   suppliers            Supplier[]
+  expenses             Expense[]
   customers            Customer[]
   shifts               Shift[]
   invoices             Invoice[]
@@ -871,16 +872,20 @@ model ProductBatch {
 }
 
 model Supplier {
-  id        String    @id @default(cuid())
-  name      String
-  phone     String
-  email     String?
-  gstin     String?
-  address   String?
-  city      String?
-  state     String?
-  shopId    String
-  isActive  Boolean   @default(true)
+  id              String    @id @default(cuid())
+  name            String
+  contactPerson   String?
+  phone           String
+  email           String?
+  gstin           String?
+  address         String?
+  city            String?
+  state           String?
+  shopId          String
+  // Running payable balance owed to this supplier (opening balance + purchases
+  // on credit - payments). Kept denormalized for the suppliers dashboard.
+  pendingPayables Decimal   @default(0) @db.Decimal(12, 2)
+  isActive        Boolean   @default(true)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   isDeleted Boolean   @default(false)
@@ -896,6 +901,28 @@ model Supplier {
 
   @@unique([shopId, phone, deletedAt])
   @@index([shopId])
+}
+
+/// Day-to-day shop overheads (rent, utilities, salaries, supplies...).
+model Expense {
+  id          String    @id @default(cuid())
+  shopId      String
+  category    String
+  description String
+  amount      Decimal   @db.Decimal(12, 2)
+  /// Payment mode used when paid (Cash, UPI, Bank Transfer, Card). Null while unpaid.
+  paymentMode String?
+  isPaid      Boolean   @default(true)
+  expenseDate DateTime  @default(now())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  isDeleted   Boolean   @default(false)
+  deletedAt   DateTime?
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Restrict)
+
+  @@index([shopId, expenseDate])
+  @@index([shopId, isPaid])
 }
 
 model Customer {

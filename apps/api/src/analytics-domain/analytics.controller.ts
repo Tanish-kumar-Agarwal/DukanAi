@@ -9,6 +9,8 @@ import { ProfitMarginEngine } from './engines/profit-margin-engine';
 import { TrendEngine } from './engines/trend-engine';
 import { ForecastEngine } from './engines/forecast-engine';
 import { AnalyticsCacheService } from './services/analytics-cache.service';
+import { AnalyticsPageService } from './services/analytics-page.service';
+import type { AnalyticsRange } from './services/analytics-page.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { InvoiceStatus } from '@prisma/client';
 
@@ -21,8 +23,22 @@ export class AnalyticsController {
     private readonly profitMarginEngine: ProfitMarginEngine,
     private readonly trendEngine: TrendEngine,
     private readonly forecastEngine: ForecastEngine,
-    private readonly cache: AnalyticsCacheService
+    private readonly cache: AnalyticsCacheService,
+    private readonly analyticsPage: AnalyticsPageService,
   ) {}
+
+  /**
+   * Single payload backing the web Reports & Analytics page: KPIs, revenue
+   * trend, payment-mode split, category sales, and top customers — all
+   * computed live from invoices for the requested range.
+   */
+  @Get('analytics')
+  getAnalyticsPage(
+    @CurrentShop() shopId: string,
+    @Query('range') range: AnalyticsRange = 'week',
+  ) {
+    return this.analyticsPage.getAnalytics(shopId, range);
+  }
 
   @Get('kpis')
   async getDashboardKpis(@CurrentShop() shopId: string) {
@@ -80,7 +96,9 @@ export class AnalyticsController {
 
   @Get('trends')
   async getRevenueTrends(@CurrentShop() shopId: string, @Query('days') days: number = 30) {
-    return this.trendEngine.getDailyRevenueTrend(shopId, Number(days));
+    // Computed live from invoices (not the background aggregation tables) so
+    // the dashboard chart works without any aggregation job having run.
+    return this.analyticsPage.getTrendSeries(shopId, Number(days));
   }
 
   @Get('forecast')
