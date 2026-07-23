@@ -44,8 +44,8 @@ export class StartupValidatorService implements OnModuleInit {
       
       this.logger.error('================================================================================');
       this.logger.error('Application cannot safely start. Halting process.');
-      
-      setTimeout(() => process.exit(1), 100);
+
+      process.exit(1);
     } else {
       this.logger.warn(`Found ${errors.length} WARNING/INFO violations.`);
       errors.forEach((e, i) => {
