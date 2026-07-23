@@ -6,6 +6,7 @@ import { Modal } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
 import { motion, AnimatePresence } from 'framer-motion';
 import { signOut, useSession } from 'next-auth/react';
+import { AUTH_DISABLED } from '@/lib/auth-bypass';
 
 export function Navbar() {
   const router = useRouter();
@@ -189,6 +190,17 @@ export function Navbar() {
               </div>
               <div className="flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 bg-violet-100 text-sm font-bold text-violet-700">{(session.user?.name || session.user?.email || 'U').slice(0, 1).toUpperCase()}</div>
             </button>
+          ) : AUTH_DISABLED ? (
+            <div
+              className="flex items-center gap-3 pl-5 border-l border-gray-100 p-2"
+              title="Auth is disabled (AUTH_DISABLED) - requests run as the system user"
+            >
+              <div className="text-right hidden sm:block">
+                <p className="text-[13px] font-bold text-gray-800 leading-tight">System user</p>
+                <p className="text-[11px] text-gray-400 font-bold mt-0.5">Auth disabled</p>
+              </div>
+              <div className="flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 bg-violet-100 text-sm font-bold text-violet-700">S</div>
+            </div>
           ) : (
             <button onClick={() => router.push('/login')} className="rounded-xl bg-violet-600 px-4 py-2 text-sm font-bold text-white transition-colors hover:bg-violet-700">Sign in</button>
           )}

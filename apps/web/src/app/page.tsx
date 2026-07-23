@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { ArrowRight, LockKeyhole, Sparkles } from 'lucide-react';
+import { AUTH_DISABLED } from '@/lib/auth-bypass';
 
 export default function Home() {
   return (
@@ -12,7 +13,9 @@ export default function Home() {
         <p className="mt-6 max-w-2xl text-lg text-gray-600">Explore the workspace without an account. Sign in only when you are ready to access your shop data, billing, inventory, and saved work.</p>
         <div className="mt-10 flex flex-wrap justify-center gap-3">
           <Link href="/dashboard" className="inline-flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-3 font-semibold text-white shadow-lg shadow-violet-200 transition-colors hover:bg-violet-700">Explore workspace <ArrowRight size={18} /></Link>
-          <Link href="/login" className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-5 py-3 font-semibold text-gray-800 transition-colors hover:bg-gray-50"><LockKeyhole size={17} /> Sign in</Link>
+          {!AUTH_DISABLED && (
+            <Link href="/login" className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-5 py-3 font-semibold text-gray-800 transition-colors hover:bg-gray-50"><LockKeyhole size={17} /> Sign in</Link>
+          )}
         </div>
       </div>
     </main>
