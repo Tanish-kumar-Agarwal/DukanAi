@@ -9,7 +9,8 @@ import {
 import { Modal } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
 import { AnimatePresence, motion } from 'framer-motion';
-import { expensesApi } from '@/lib/api-client';
+import { expensesApi, type ExpenseView } from '@/lib/api-client';
+import { describeApiError } from '@/lib/api-error';
 
 const CATEGORY_COLORS: Record<string, string> = {
   'Rent': 'bg-blue-100 text-blue-600',
@@ -20,19 +21,28 @@ const CATEGORY_COLORS: Record<string, string> = {
   'Other': 'bg-gray-100 text-gray-600'
 };
 
+const CATEGORY_ICONS: Record<string, React.ComponentType<{ size?: number | string }>> = {
+  'Rent': Building,
+  'Utilities': Zap,
+  'Maintenance': TrendingDown,
+};
+
 export default function ExpensesPage() {
   const { toast } = useToast();
-  const [expenses, setExpenses] = useState<Array<{ id: string; category: string; amount: number; description: string; status: string; date: string; mode: string; icon?: any }>>([]);
+  const [expenses, setExpenses] = useState<ExpenseView[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     expensesApi.list()
       .then(data => {
         if (Array.isArray(data)) {
-          setExpenses(data as Array<{ id: string; category: string; amount: number; description: string; status: string; date: string; mode: string; icon?: any }>);
+          setExpenses(data);
         }
       })
-      .catch(() => { setExpenses([]); toast('Unable to load expenses.', 'error'); })
+      .catch((err) => {
+        setExpenses([]);
+        toast(describeApiError(err, 'Loading expenses (GET /expenses)'), 'error');
+      })
       .finally(() => setLoading(false));
   }, []);
   const [searchTerm, setSearchTerm] = useState('');
@@ -94,51 +104,54 @@ export default function ExpensesPage() {
     processedExpenses = processedExpenses.filter(e => e.category === categoryFilter);
   }
 
-  const handleSaveExpense = (e: React.FormEvent) => {
+  const handleSaveExpense = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newDesc.trim() || !newAmount) return;
-    
-    let icon = Receipt;
-    if (newCategory === 'Rent') icon = Building;
-    if (newCategory === 'Utilities') icon = Zap;
-    if (newCategory === 'Maintenance') icon = TrendingDown;
 
-    const newExpense = {
-      id: `EXP-00${expenses.length + 1}`,
-      date: new Date().toISOString().split('T')[0],
-      category: newCategory,
-      description: newDesc,
-      amount: Number(newAmount),
-      mode: newStatus === 'Pending' ? 'Unpaid' : newMode,
-      status: newStatus,
-      icon: icon
-    };
-    
-    setExpenses([newExpense, ...expenses]);
-    toast(`₹${newAmount} recorded under ${newCategory}`, 'success');
-    setIsAddModalOpen(false);
-    
-    setNewDesc(''); setNewAmount(''); setNewCategory('Supplies'); setNewMode('Cash'); setNewStatus('Paid');
+    try {
+      const created = await expensesApi.create({
+        description: newDesc.trim(),
+        category: newCategory,
+        amount: Number(newAmount),
+        isPaid: newStatus === 'Paid',
+        paymentMode: newStatus === 'Paid' ? newMode : undefined,
+      });
+
+      setExpenses([created, ...expenses]);
+      toast(`₹${newAmount} recorded under ${newCategory}`, 'success');
+      setIsAddModalOpen(false);
+
+      setNewDesc(''); setNewAmount(''); setNewCategory('Supplies'); setNewMode('Cash'); setNewStatus('Paid');
+    } catch (err) {
+      toast(describeApiError(err, 'Recording expense (POST /expenses)'), 'error');
+    }
   };
 
-  const handleAction = (action: string, expense: any, e: React.MouseEvent) => {
+  const handleAction = async (action: string, expense: ExpenseView, e: React.MouseEvent) => {
     e.stopPropagation();
     setOpenActionMenuId(null);
-    
+
     switch (action) {
       case 'Mark as Paid':
-        setExpenses(expenses.map(ex => {
-          if (ex.id === expense.id) return { ...ex, status: 'Paid', mode: 'Cash' };
-          return ex;
-        }));
-        toast(`Expense ${expense.id} marked as Paid`, 'success');
+        try {
+          const updated = await expensesApi.update(expense.id, { isPaid: true, paymentMode: 'Cash' });
+          setExpenses(expenses.map(ex => (ex.id === expense.id ? updated : ex)));
+          toast(`"${expense.description}" marked as Paid`, 'success');
+        } catch (err) {
+          toast(describeApiError(err, 'Updating expense (PATCH /expenses/:id)'), 'error');
+        }
         break;
       case 'Edit':
-        toast(`Edit modal for ${expense.id} coming soon`, 'info');
+        toast(`Edit modal for "${expense.description}" coming soon`, 'info');
         break;
       case 'Delete':
-        setExpenses(expenses.filter(ex => ex.id !== expense.id));
-        toast(`Expense ${expense.id} deleted successfully`, 'success');
+        try {
+          await expensesApi.delete(expense.id);
+          setExpenses(expenses.filter(ex => ex.id !== expense.id));
+          toast(`Expense "${expense.description}" deleted`, 'success');
+        } catch (err) {
+          toast(describeApiError(err, 'Deleting expense (DELETE /expenses/:id)'), 'error');
+        }
         break;
     }
   };
@@ -272,7 +285,7 @@ export default function ExpensesPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {processedExpenses.map((expense) => {
-                const Icon = expense.icon;
+                const Icon = CATEGORY_ICONS[expense.category] ?? Receipt;
                 const catColor = CATEGORY_COLORS[expense.category] || CATEGORY_COLORS['Other'];
                 
                 return (

@@ -12,6 +12,7 @@ import { SlidingPanel } from '@/components/ui/SlidingPanel';
 import { useToast } from '@/components/ui/Toast';
 import { AnimatePresence, motion } from 'framer-motion';
 import { employeesApi } from '@/lib/api-client';
+import { describeApiError } from '@/lib/api-error';
 
 const ROLE_COLORS: Record<string, string> = {
   'Cashier': 'bg-blue-100 text-blue-600',
@@ -34,7 +35,10 @@ export default function EmployeesPage() {
   useEffect(() => {
     employeesApi.list()
       .then(setEmployees)
-      .catch(() => { setEmployees([]); toast('Unable to load employees.', 'error'); })
+      .catch((err) => {
+        setEmployees([]);
+        toast(describeApiError(err, 'Loading employees (GET /users/employees)'), 'error');
+      })
       .finally(() => setLoading(false));
   }, []);
   const [searchTerm, setSearchTerm] = useState('');

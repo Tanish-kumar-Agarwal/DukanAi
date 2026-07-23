@@ -25,33 +25,51 @@ function isDukaanUser(u: User): u is DukaanUser {
 // ---------------------------------------------------------------------------
 const API_URL = clientConfig.NEXT_PUBLIC_API_URL;
 
+/** Message surfaced on the login form when the backend cannot be reached. */
+export const API_UNREACHABLE_MESSAGE = `The DukaanAI API at ${API_URL} is unreachable. Make sure the backend server is running, then try again.`;
+
+type ProvisionResult =
+  | { ok: true; user: DukaanUser }
+  | { ok: false; reason: 'rejected' | 'unreachable' };
+
 async function provisionUserFromBackend(
   payload: Record<string, unknown>,
-): Promise<DukaanUser | null> {
+): Promise<ProvisionResult> {
+  let res: Response;
   try {
-    const res = await fetch(`${API_URL}/auth/${payload.googleId ? 'google' : 'login'}`, {
+    res = await fetch(`${API_URL}/auth/${payload.googleId ? 'google' : 'login'}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+  } catch (error) {
+    // fetch only rejects on network-level failures — the API is down/unreachable.
+    console.error(`Auth backend unreachable at ${API_URL}:`, error);
+    return { ok: false, reason: 'unreachable' };
+  }
 
+  try {
     const data = await res.json();
 
     if (res.ok && data?.access_token) {
       return {
-        id: data.user.id,
-        name: data.user.name,
-        email: data.user.email,
-        role: data.user.role,
-        shopId: data.user.shopId,
-        accessToken: data.access_token,
-        refreshToken: data.refresh_token,
+        ok: true,
+        user: {
+          id: data.user.id,
+          name: data.user.name,
+          email: data.user.email,
+          role: data.user.role,
+          shopId: data.user.shopId,
+          accessToken: data.access_token,
+          refreshToken: data.refresh_token,
+        },
       };
     }
-    return null;
+    console.error(`Auth backend rejected sign-in (HTTP ${res.status}):`, data);
+    return { ok: false, reason: 'rejected' };
   } catch (error) {
-    console.error('Auth backend error:', error);
-    return null;
+    console.error('Auth backend returned an unreadable response:', error);
+    return { ok: false, reason: 'rejected' };
   }
 }
 
@@ -80,10 +98,17 @@ export const authOptions: NextAuthOptions = {
       },
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) return null;
-        return provisionUserFromBackend({
+        const result = await provisionUserFromBackend({
           email: credentials.email,
           password: credentials.password,
         });
+        if (result.ok) return result.user;
+        if (result.reason === 'unreachable') {
+          // Thrown message becomes `result.error` on the client so the login
+          // form can distinguish "API down" from "wrong password".
+          throw new Error(API_UNREACHABLE_MESSAGE);
+        }
+        return null;
       },
     }),
 
@@ -117,12 +142,12 @@ export const authOptions: NextAuthOptions = {
           name: user.name,
         });
 
-        if (!provisioned) return false;
+        if (!provisioned.ok) return false;
 
         // Mutate the user object so the jwt callback receives our fields.
         // NextAuth v4 copies properties from user → token.user in the jwt
         // callback, so we must enrich user *before* that callback fires.
-        Object.assign(user, provisioned);
+        Object.assign(user, provisioned.user);
         return true;
       }
 

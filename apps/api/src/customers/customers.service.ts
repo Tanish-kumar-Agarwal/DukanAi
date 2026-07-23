@@ -83,6 +83,55 @@ export class CustomersService {
     return customer;
   }
 
+  /**
+   * Records an udhaar repayment: decrements the outstanding balance, bumps
+   * totalPaid/lastPaymentAt, and writes an UdharTransaction ledger row.
+   */
+  async recordPayment(id: string, amount: number, mode?: string, notes?: string) {
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new BadRequestException('Payment amount must be a positive number.');
+    }
+    const shopId = this.tenantContext.getShopId();
+    const userId = this.tenantContext.getUserId();
+
+    const customer = await this.customerRepository.findById(id, shopId);
+    if (!customer) throw new NotFoundException('Customer not found');
+
+    const balanceBefore = Number(customer.outstandingBalance);
+    const balanceAfter = Math.max(0, balanceBefore - amount);
+
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.customer.update({
+        where: { id },
+        data: {
+          outstandingBalance: balanceAfter,
+          totalPaid: { increment: amount },
+          lastPaymentAt: new Date(),
+        },
+      }),
+      this.prisma.udharTransaction.create({
+        data: {
+          shopId,
+          customerId: id,
+          type: 'PAYMENT',
+          amount,
+          balanceBefore,
+          balanceAfter,
+          notes: [mode ? `Mode: ${mode}` : null, notes].filter(Boolean).join(' — ') || null,
+          recordedById: userId,
+        },
+      }),
+    ]);
+
+    await this.auditService.logAction({
+      customerId: id,
+      action: 'CUSTOMER_PAYMENT_RECORDED',
+      newPayload: { amount, mode, balanceBefore, balanceAfter },
+    });
+
+    return updated;
+  }
+
   async softDelete(id: string) {
     const shopId = this.tenantContext.getShopId();
     const deleted = await this.customerRepository.softDelete(id, shopId);

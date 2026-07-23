@@ -71,8 +71,9 @@ export default function RegisterPage() {
 
       toast('Your store is ready!', 'success');
       router.push('/dashboard');
-    } catch {
-      setError('A network error occurred. Please check your connection.');
+    } catch (err) {
+      console.error(`Registration request to ${API_URL}/auth/register failed:`, err);
+      setError(`The DukaanAI API at ${API_URL} is unreachable. Make sure the backend server is running, then try again.`);
     } finally {
       setLoading(false);
     }

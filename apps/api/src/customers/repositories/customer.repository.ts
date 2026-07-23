@@ -21,7 +21,35 @@ export class CustomerRepository {
         contacts: true,
         groups: { include: { group: true } },
         categories: { include: { category: true } },
-        customerTags: { include: { tag: true } }
+        customerTags: { include: { tag: true } },
+        invoices: {
+          where: { isDeleted: false },
+          orderBy: { createdAt: 'desc' },
+          take: 5,
+          select: {
+            id: true,
+            invoiceNumber: true,
+            totalAmount: true,
+            paidAmount: true,
+            udharAmount: true,
+            paymentMode: true,
+            status: true,
+            createdAt: true,
+          },
+        },
+        udharTransactions: {
+          orderBy: { createdAt: 'desc' },
+          take: 5,
+          select: {
+            id: true,
+            type: true,
+            amount: true,
+            balanceAfter: true,
+            notes: true,
+            createdAt: true,
+            recordedBy: { select: { name: true } },
+          },
+        },
       }
     });
   }

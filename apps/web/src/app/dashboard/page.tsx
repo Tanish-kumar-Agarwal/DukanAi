@@ -10,13 +10,24 @@ import { Card } from '@/components/ui/Card';
 import { useRouter } from 'next/navigation';
 import { Modal } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
-import { customersApi, productsApi } from '@/lib/api-client';
-import apiClient from '@/lib/api';
+import { analyticsApi, customersApi, productsApi, type DashboardSummary, type TrendPoint } from '@/lib/api-client';
+import { describeApiError } from '@/lib/api-error';
 import { motion, AnimatePresence } from 'framer-motion';
+import {
+  ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid,
+  Tooltip as RechartsTooltip,
+} from 'recharts';
+
+const TIME_RANGE_DAYS: Record<string, number> = {
+  'Today': 1,
+  'This Week': 7,
+  'This Month': 30,
+  'This Year': 365,
+};
 
 const NoTrendData = () => (
   <div className="mt-4 flex h-[180px] items-center justify-center rounded-lg border border-dashed border-gray-200 bg-gray-50 px-6 text-center text-sm text-gray-500">
-    Sales trend data will appear once completed invoices are aggregated for the selected period.
+    Sales trend data will appear once invoices are recorded for the selected period.
   </div>
 );
 
@@ -39,7 +50,8 @@ export default function DashboardPage() {
   const [products, setProducts] = useState<Awaited<ReturnType<typeof productsApi.list>>>([]);
   const [productsLoading, setProductsLoading] = useState(true);
   const [productsError, setProductsError] = useState<string | null>(null);
-  const [summary, setSummary] = useState<{ totalRevenue: number; totalOrders: number; totalCustomers: number; totalProducts: number; lowStockCount: number; recentInvoices: Array<{ id: string; invoiceNumber: string; totalAmount: number; paymentMode: string; createdAt: string; customer: { name: string } | null }>; paymentModes: Array<{ mode: string; amount: number }> } | null>(null);
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
+  const [trend, setTrend] = useState<TrendPoint[]>([]);
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
   const [newEmail, setNewEmail] = useState('');
@@ -50,8 +62,24 @@ export default function DashboardPage() {
   useEffect(() => {
     fetchProducts();
     fetchCustomers();
-    void apiClient.get('/dashboard/summary').then(({ data }) => setSummary(data)).catch(() => setSummary(null));
+    void analyticsApi
+      .dashboardSummary()
+      .then(setSummary)
+      .catch((err) => {
+        describeApiError(err, 'Loading dashboard summary (GET /dashboard/summary)');
+        setSummary(null);
+      });
   }, []);
+
+  useEffect(() => {
+    void analyticsApi
+      .revenueTrend(TIME_RANGE_DAYS[timeSelection] ?? 7)
+      .then(setTrend)
+      .catch((err) => {
+        describeApiError(err, 'Loading sales trend (GET /dashboard/trends)');
+        setTrend([]);
+      });
+  }, [timeSelection]);
   
   const fetchProducts = async () => {
     try {
@@ -118,8 +146,8 @@ export default function DashboardPage() {
       setIsAddCustomerModalOpen(false);
       setNewName(''); setNewPhone(''); setNewEmail(''); setNewAddress(''); setNewCreditLimit('5000'); setNewUdhar('0');
       fetchCustomers();
-    } catch (error: any) {
-      toast(`Error saving customer: ${error.message}`, 'error');
+    } catch (error) {
+      toast(describeApiError(error, 'Saving customer (POST /customers)'), 'error');
     }
   };
 
@@ -260,7 +288,27 @@ export default function DashboardPage() {
               </AnimatePresence>
             </div>
           </div>
-          <NoTrendData />
+          {trend.some((point) => point.sales > 0) ? (
+            <div className="mt-2 h-[190px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={trend} margin={{ top: 10, right: 10, left: -18, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="dashboardTrendFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#8B5CF6" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="#8B5CF6" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#64748b' }} dy={6} minTickGap={24} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#64748b' }} tickFormatter={(val: number) => `₹${val >= 1000 ? `${Math.round(val / 100) / 10}k` : val}`} />
+                  <RechartsTooltip formatter={(value: number) => [`₹${Number(value).toLocaleString('en-IN')}`, 'Sales']} />
+                  <Area type="monotone" dataKey="sales" name="Sales" stroke="#8B5CF6" strokeWidth={2.5} fillOpacity={1} fill="url(#dashboardTrendFill)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <NoTrendData />
+          )}
         </Card>
 
         {/* Quick Actions */}
