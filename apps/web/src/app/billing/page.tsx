@@ -10,6 +10,7 @@ import { motion } from 'framer-motion';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import apiClient from '@/lib/api';
+import { describeApiError } from '@/lib/api-error';
 
 function BillingContent() {
   const { toast } = useToast();
@@ -57,8 +58,8 @@ function BillingContent() {
           totalSpent: customer.totalSpent ?? customer.totalPurchases ?? 0,
         }))
       );
-    } catch {
-      setLoadError('Failed to load billing data.');
+    } catch (err) {
+      setLoadError(describeApiError(err, 'Loading billing data (GET /products, GET /customers)'));
     } finally {
       setIsLoading(false);
     }
@@ -190,7 +191,10 @@ function BillingContent() {
       }
     } catch (error) {
       // Network timeout / Gateway error - DO NOT clear key
-      toast('Network failure. Retrying will use same idempotency key.', 'error');
+      toast(
+        `${describeApiError(error, 'Checkout (POST /billing/invoice)')} Retrying will use the same idempotency key.`,
+        'error',
+      );
     }
   };
 

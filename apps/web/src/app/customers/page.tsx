@@ -8,6 +8,7 @@ import { Modal } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
 import { SlidingPanel } from '@/components/ui/SlidingPanel';
 import { customersApi } from '@/lib/api-client';
+import { describeApiError } from '@/lib/api-error';
 import type { Customer } from '@/types';
 import { AnimatePresence, motion } from 'framer-motion';
 
@@ -47,9 +48,8 @@ export default function CustomersPage() {
       const data = await customersApi.list();
       setCustomers(data.map(normalizeCustomer));
     } catch (err) {
-      console.error('Error fetching customers', err);
       setCustomers([]);
-      setError('Could not load customers. Please try again.');
+      setError(describeApiError(err, 'Loading customers (GET /customers)'));
     } finally {
       setIsLoading(false);
     }
@@ -94,6 +94,11 @@ export default function CustomersPage() {
   const [newAddress, setNewAddress] = useState('');
   const [newCreditLimit, setNewCreditLimit] = useState('5000');
   const [newUdhar, setNewUdhar] = useState('');
+
+  // Payment modal state
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentMode, setPaymentMode] = useState('Cash');
+  const [paymentNotes, setPaymentNotes] = useState('');
 
   // Derived Stats
   const totalUdhar = customers.reduce((acc, curr) => acc + curr.udharAmount, 0);
@@ -145,16 +150,33 @@ export default function CustomersPage() {
       setNewAddress('');
       setNewCreditLimit('5000');
       setNewUdhar('');
-    } catch (error: any) {
-      console.error('Error saving customer:', error);
-      toast(`Error saving customer: ${error.message ?? 'Please try again.'}`, 'error');
+    } catch (error) {
+      toast(describeApiError(error, 'Saving customer (POST /customers)'), 'error');
     }
   };
 
-  const handleRecordPayment = (e: React.FormEvent) => {
+  const handleRecordPayment = async (e: React.FormEvent) => {
     e.preventDefault();
-    toast(`Payment recorded for ${selectedCustomer?.name}`, 'success');
-    setIsPaymentModalOpen(false);
+    if (!selectedCustomer || !paymentAmount || Number(paymentAmount) <= 0) return;
+    try {
+      const updated = await customersApi.recordPayment(selectedCustomer.id, {
+        amount: Number(paymentAmount),
+        mode: paymentMode,
+        notes: paymentNotes || undefined,
+      });
+      setCustomers((current) =>
+        current.map((c) => (c.id === updated.id ? { ...c, udharAmount: updated.udharAmount } : c)),
+      );
+      setSelectedCustomer((current: Customer | null) =>
+        current && current.id === updated.id ? { ...current, udharAmount: updated.udharAmount } : current,
+      );
+      toast(`₹${paymentAmount} payment recorded for ${selectedCustomer.name}`, 'success');
+      setIsPaymentModalOpen(false);
+      setPaymentAmount('');
+      setPaymentNotes('');
+    } catch (error) {
+      toast(describeApiError(error, 'Recording payment (POST /customers/:id/payments)'), 'error');
+    }
   };
 
   const handleAction = (action: string, customer: Customer, e: React.MouseEvent) => {
@@ -442,11 +464,11 @@ export default function CustomersPage() {
         <form onSubmit={handleRecordPayment} className="space-y-4">
           <div>
             <label className="text-sm font-medium">Amount Received (₹) *</label>
-            <input required type="number" className="w-full mt-1 border rounded-lg p-2 text-lg font-bold" placeholder="0.00" />
+            <input required type="number" min="1" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} className="w-full mt-1 border rounded-lg p-2 text-lg font-bold" placeholder="0.00" />
           </div>
           <div>
             <label className="text-sm font-medium">Payment Mode</label>
-            <select className="w-full mt-1 border rounded-lg p-2">
+            <select value={paymentMode} onChange={(e) => setPaymentMode(e.target.value)} className="w-full mt-1 border rounded-lg p-2">
               <option>Cash</option>
               <option>UPI</option>
               <option>Card</option>
@@ -455,7 +477,7 @@ export default function CustomersPage() {
           </div>
           <div>
             <label className="text-sm font-medium">Notes (Optional)</label>
-            <textarea className="w-full mt-1 border rounded-lg p-2" placeholder="e.g. Paid for last week's bill" rows={2} />
+            <textarea value={paymentNotes} onChange={(e) => setPaymentNotes(e.target.value)} className="w-full mt-1 border rounded-lg p-2" placeholder="e.g. Paid for last week's bill" rows={2} />
           </div>
           <div className="flex justify-end gap-2 pt-4 border-t mt-6">
             <button type="button" onClick={() => setIsPaymentModalOpen(false)} className="px-4 py-2 border rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
@@ -504,11 +526,11 @@ export default function CustomersPage() {
                   </div>
                   <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
                     <p className="text-xs text-gray-500 mb-1">Credit Limit</p>
-                    <p className="font-semibold text-gray-800 text-sm">₹5,000</p>
+                    <p className="font-semibold text-gray-800 text-sm">₹{Number(selectedCustomer.creditLimit ?? 0).toLocaleString('en-IN')}</p>
                   </div>
                   <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
                     <p className="text-xs text-gray-500 mb-1">Joined Date</p>
-                    <p className="font-semibold text-gray-800 text-sm">12 Jan 2026</p>
+                    <p className="font-semibold text-gray-800 text-sm">{selectedCustomer.joinedAt ? new Date(selectedCustomer.joinedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}</p>
                   </div>
                 </div>
                 
@@ -522,50 +544,26 @@ export default function CustomersPage() {
             )}
 
             {activeTab === 'Transaction History' && (
-              <div className="space-y-3">
-                {[
-                  { date: '19 May 2026', type: 'Purchase (Udhar)', amount: '₹1,250', status: 'Pending', icon: '🛒', color: 'text-orange-500', bg: 'bg-orange-50' },
-                  { date: '15 May 2026', type: 'Payment Received', amount: '₹500', status: 'Success', icon: '💰', color: 'text-green-500', bg: 'bg-green-50' },
-                  { date: '10 May 2026', type: 'Purchase (Cash)', amount: '₹850', status: 'Success', icon: '🛒', color: 'text-gray-600', bg: 'bg-gray-100' },
-                ].map((tx, i) => (
-                  <div key={i} className="flex items-center justify-between p-3 border border-gray-100 rounded-xl hover:bg-gray-50 transition-colors">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${tx.bg}`}>{tx.icon}</div>
-                      <div>
-                        <p className="text-xs font-bold text-gray-800">{tx.type}</p>
-                        <p className="text-[10px] text-gray-500">{tx.date}</p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className={`text-xs font-bold ${tx.color}`}>{tx.amount}</p>
-                      <p className="text-[10px] font-semibold text-gray-500">{tx.status}</p>
-                    </div>
-                  </div>
-                ))}
+              <div className="p-6 text-center text-sm text-gray-500 border border-dashed border-gray-200 rounded-xl">
+                <p className="mb-3">Full transaction history is on the customer profile.</p>
+                <button
+                  onClick={() => router.push(`/customers/${selectedCustomer.id}`)}
+                  className="text-[#8B5CF6] text-sm font-bold hover:underline"
+                >
+                  Open full profile
+                </button>
               </div>
             )}
 
             {activeTab === 'Invoices' && (
-              <div className="space-y-3">
-                {[
-                  { id: 'INV-1025', date: '19 May 2026', amount: '₹1,250', status: 'Unpaid' },
-                  { id: 'INV-1018', date: '10 May 2026', amount: '₹850', status: 'Paid' },
-                  { id: 'INV-0984', date: '02 May 2026', amount: '₹2,400', status: 'Paid' },
-                ].map((inv, i) => (
-                  <div key={i} className="flex items-center justify-between p-3 border border-gray-100 rounded-xl hover:bg-gray-50 transition-colors cursor-pointer group">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center"><Receipt size={14} /></div>
-                      <div>
-                        <p className="text-xs font-bold text-gray-800 group-hover:text-purple-600 transition-colors">#{inv.id}</p>
-                        <p className="text-[10px] text-gray-500">{inv.date}</p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xs font-bold text-gray-800">{inv.amount}</p>
-                      <p className={`text-[10px] font-bold ${inv.status === 'Paid' ? 'text-green-500' : 'text-orange-500'}`}>{inv.status}</p>
-                    </div>
-                  </div>
-                ))}
+              <div className="p-6 text-center text-sm text-gray-500 border border-dashed border-gray-200 rounded-xl">
+                <p className="mb-3 flex items-center justify-center gap-2"><Receipt size={14} /> Recent invoices are on the customer profile.</p>
+                <button
+                  onClick={() => router.push(`/customers/${selectedCustomer.id}`)}
+                  className="text-[#8B5CF6] text-sm font-bold hover:underline"
+                >
+                  Open full profile
+                </button>
               </div>
             )}
           </div>

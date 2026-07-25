@@ -12,6 +12,53 @@ export class ShopsService {
     private readonly socketSessionService: SocketSessionService,
   ) {}
 
+  /** Shop profile for the settings page - core fields plus GSTIN from settings. */
+  async getShopProfile(shopId: string) {
+    const shop = await this.prisma.shop.findUnique({
+      where: { id: shopId },
+      select: {
+        id: true,
+        name: true,
+        address: true,
+        city: true,
+        state: true,
+        pincode: true,
+        phone: true,
+        email: true,
+        logoUrl: true,
+        createdAt: true,
+        settings: { select: { gstin: true, currency: true, timezone: true } },
+      },
+    });
+    if (!shop) throw new NotFoundException('Shop not found');
+    return shop;
+  }
+
+  async updateShopProfile(
+    shopId: string,
+    data: { name?: string; address?: string; city?: string; state?: string; pincode?: string; phone?: string; email?: string; gstin?: string },
+  ) {
+    const { gstin, ...shopFields } = data;
+    const cleanShopFields = Object.fromEntries(
+      Object.entries(shopFields).filter(([, value]) => value !== undefined),
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      if (Object.keys(cleanShopFields).length > 0) {
+        await tx.shop.update({ where: { id: shopId }, data: cleanShopFields });
+      }
+      if (gstin !== undefined) {
+        await tx.shopSettings.upsert({
+          where: { shopId },
+          create: { shopId, gstin },
+          update: { gstin },
+        });
+      }
+    });
+
+    return this.getShopProfile(shopId);
+  }
+
   async transferOwnership(shopId: string, currentOwnerId: string, dto: TransferOwnershipDto) {
     const shop = await this.prisma.shop.findUnique({ where: { id: shopId } });
     if (!shop) throw new NotFoundException('Shop not found');

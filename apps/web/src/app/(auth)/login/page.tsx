@@ -58,7 +58,13 @@ function LoginPageContent() {
       });
 
       if (result?.error) {
-        setError('Invalid email or password. Please try again.');
+        // authorize() throws a descriptive message when the API is down;
+        // NextAuth surfaces it via result.error. Anything else is bad credentials.
+        if (result.error.includes('unreachable')) {
+          setError(result.error);
+        } else {
+          setError('Invalid email or password. Please try again.');
+        }
         return;
       }
 
@@ -66,8 +72,9 @@ function LoginPageContent() {
         toast('Welcome back!', 'success');
         router.push('/dashboard');
       }
-    } catch {
-      setError('A network error occurred. Please check your connection.');
+    } catch (err) {
+      console.error('Sign-in request failed:', err);
+      setError('Could not complete sign-in. Please check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -82,7 +89,8 @@ function LoginPageContent() {
     setLoading(true);
     try {
       await signIn('google', { callbackUrl: '/dashboard' });
-    } catch {
+    } catch (err) {
+      console.error('Google sign-in failed:', err);
       setError('Could not connect to Google. Please try again.');
       setLoading(false);
     }

@@ -82,7 +82,7 @@ export class AuthService {
 
   async refresh(refreshToken: string, ipAddress?: string, userAgent?: string): Promise<LoginResponseDto> {
     const hashedToken = crypto.createHash('sha256').update(refreshToken).digest('hex');
-    const session = await this.prisma.refreshToken.findFirst({
+    const session = await this.prisma.refreshToken.findUnique({
       where: { token: hashedToken }
     });
 

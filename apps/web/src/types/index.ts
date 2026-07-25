@@ -36,6 +36,8 @@ export type Customer = {
   udharAmount: number;
   totalSpent: number;
   lastPurchase?: string;
+  creditLimit?: number;
+  joinedAt?: string;
 };
 
 export type Invoice = {

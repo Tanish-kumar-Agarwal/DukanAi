@@ -11,6 +11,7 @@ import { SlidingPanel } from '@/components/ui/SlidingPanel';
 import { useToast } from '@/components/ui/Toast';
 import { AnimatePresence, motion } from 'framer-motion';
 import { inventoryApi, type BatchItem } from '@/lib/api-client';
+import { describeApiError } from '@/lib/api-error';
 
 function formatBatchDate(date: string | null, options: Intl.DateTimeFormatOptions) {
   return date ? new Date(date).toLocaleDateString('en-IN', options) : 'Not recorded';
@@ -27,8 +28,8 @@ export default function InventoryPage() {
       try {
         setLoadError(null);
         setBatches(await inventoryApi.listBatches());
-      } catch {
-        setLoadError('Unable to load inventory batches. Please try again.');
+      } catch (err) {
+        setLoadError(describeApiError(err, 'Loading inventory batches (GET /batches)'));
       } finally {
         setLoading(false);
       }

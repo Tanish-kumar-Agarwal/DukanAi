@@ -32,6 +32,14 @@ export class CustomersController {
     return this.customersService.findOne(id);
   }
 
+  @Post(':id/payments')
+  async recordPayment(
+    @Param('id') id: string,
+    @Body() body: { amount: number; mode?: string; notes?: string },
+  ) {
+    return this.customersService.recordPayment(id, Number(body.amount), body.mode, body.notes);
+  }
+
   @Delete(':id')
   async remove(@Param('id') id: string) {
     return this.customersService.softDelete(id);

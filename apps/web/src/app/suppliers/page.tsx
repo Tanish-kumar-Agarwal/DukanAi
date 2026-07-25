@@ -10,16 +10,20 @@ import { Modal } from '@/components/ui/Modal';
 import { SlidingPanel } from '@/components/ui/SlidingPanel';
 import { useToast } from '@/components/ui/Toast';
 import { AnimatePresence, motion } from 'framer-motion';
-import { suppliersApi } from '@/lib/api-client';
+import { suppliersApi, type SupplierView } from '@/lib/api-client';
+import { describeApiError } from '@/lib/api-error';
 export default function SuppliersPage() {
   const { toast } = useToast();
-  const [suppliers, setSuppliers] = useState<any[]>([]);
+  const [suppliers, setSuppliers] = useState<SupplierView[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     suppliersApi.list()
       .then(setSuppliers)
-      .catch(() => { setSuppliers([]); toast('Unable to load suppliers.', 'error'); })
+      .catch((err) => {
+        setSuppliers([]);
+        toast(describeApiError(err, 'Loading suppliers (GET /suppliers)'), 'error');
+      })
       .finally(() => setLoading(false));
   }, []);
   const [searchTerm, setSearchTerm] = useState('');
@@ -79,48 +83,44 @@ export default function SuppliersPage() {
     if (payableFilter === 'Settled') processedSuppliers = processedSuppliers.filter(s => s.pendingPayables === 0);
   }
 
-  const handleSaveSupplier = (e: React.FormEvent) => {
+  const handleSaveSupplier = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim() || !newPhone.trim()) return;
-    
-    const newSupplier = {
-      id: Date.now().toString(),
-      name: newName,
-      contactPerson: newContact || 'N/A',
-      phone: newPhone,
-      pendingPayables: Number(newOpeningBalance) || 0,
-      lastDelivery: '-',
-      status: 'Active'
-    };
-    
-    setSuppliers([newSupplier, ...suppliers]);
-    toast('Supplier added successfully', 'success');
-    setIsAddModalOpen(false);
-    
-    setNewName(''); setNewContact(''); setNewPhone(''); setNewOpeningBalance('');
+
+    try {
+      const created = await suppliersApi.create({
+        name: newName.trim(),
+        phone: newPhone.trim(),
+        contactPerson: newContact.trim() || undefined,
+        openingBalance: Number(newOpeningBalance) || 0,
+      });
+
+      setSuppliers([created, ...suppliers]);
+      toast('Supplier added successfully', 'success');
+      setIsAddModalOpen(false);
+
+      setNewName(''); setNewContact(''); setNewPhone(''); setNewOpeningBalance('');
+    } catch (err) {
+      toast(describeApiError(err, 'Saving supplier (POST /suppliers)'), 'error');
+    }
   };
 
-  const handleRecordPayment = (e: React.FormEvent) => {
+  const handleRecordPayment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!paymentAmount || Number(paymentAmount) <= 0) return;
+    if (!selectedSupplier || !paymentAmount || Number(paymentAmount) <= 0) return;
 
-    setSuppliers(suppliers.map(s => {
-      if (s.id === selectedSupplier?.id) {
-        return { ...s, pendingPayables: Math.max(0, s.pendingPayables - Number(paymentAmount)) };
-      }
-      return s;
-    }));
+    try {
+      const updated = await suppliersApi.recordPayment(selectedSupplier.id, Number(paymentAmount));
 
-    toast(`₹${paymentAmount} paid to ${selectedSupplier?.name}`, 'success');
-    setIsPaymentModalOpen(false);
-    setPaymentAmount('');
-    
-    // Update local selected supplier state to reflect in side panel instantly
-    if (selectedSupplier) {
-      setSelectedSupplier({
-        ...selectedSupplier,
-        pendingPayables: Math.max(0, selectedSupplier.pendingPayables - Number(paymentAmount))
-      });
+      setSuppliers(suppliers.map(s => (s.id === updated.id ? updated : s)));
+      toast(`₹${paymentAmount} paid to ${selectedSupplier.name}`, 'success');
+      setIsPaymentModalOpen(false);
+      setPaymentAmount('');
+
+      // Update local selected supplier state to reflect in side panel instantly
+      setSelectedSupplier(updated);
+    } catch (err) {
+      toast(describeApiError(err, 'Recording supplier payment (POST /suppliers/:id/payments)'), 'error');
     }
   };
 
@@ -303,7 +303,7 @@ export default function SuppliersPage() {
                     </span>
                   </td>
                   <td className="px-6 py-4 text-gray-500 font-medium">
-                    {supplier.lastDelivery === '-' ? '-' : new Date(supplier.lastDelivery).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                    {supplier.lastDelivery ? new Date(supplier.lastDelivery).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '-'}
                   </td>
                   <td className="px-6 py-4">
                     <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
@@ -467,12 +467,12 @@ export default function SuppliersPage() {
                   <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
                     <p className="text-xs text-gray-500 mb-1">Last Delivery</p>
                     <p className="font-bold text-gray-800">
-                      {selectedSupplier.lastDelivery === '-' ? '-' : new Date(selectedSupplier.lastDelivery).toLocaleDateString('en-IN')}
+                      {selectedSupplier.lastDelivery ? new Date(selectedSupplier.lastDelivery).toLocaleDateString('en-IN') : '-'}
                     </p>
                   </div>
                   <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
                     <p className="text-xs text-gray-500 mb-1">Total Purchases (YTD)</p>
-                    <p className="font-bold text-gray-800">₹1,45,000</p>
+                    <p className="font-bold text-gray-800">—</p>
                   </div>
                 </div>
                 
@@ -486,23 +486,8 @@ export default function SuppliersPage() {
             )}
 
             {activeTab === 'Recent Purchases' && (
-              <div className="space-y-3">
-                {[
-                  { id: 'PO-2094', date: '20 May 2026', amount: '₹12,500', status: 'Unpaid', items: 45 },
-                  { id: 'PO-1983', date: '12 May 2026', amount: '₹8,400', status: 'Paid', items: 20 },
-                  { id: 'PO-1822', date: '01 May 2026', amount: '₹15,200', status: 'Paid', items: 120 },
-                ].map((po, i) => (
-                  <div key={i} className="flex items-center justify-between p-3 border border-gray-100 rounded-xl hover:bg-gray-50 transition-colors">
-                    <div>
-                      <p className="text-xs font-bold text-[#8B5CF6] hover:underline cursor-pointer">#{po.id}</p>
-                      <p className="text-[10px] text-gray-500 mt-0.5">{po.date} • {po.items} items</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xs font-bold text-gray-800">{po.amount}</p>
-                      <p className={`text-[10px] font-bold mt-0.5 ${po.status === 'Paid' ? 'text-green-500' : 'text-red-500'}`}>{po.status}</p>
-                    </div>
-                  </div>
-                ))}
+              <div className="p-6 text-center text-sm text-gray-500 border border-dashed border-gray-200 rounded-xl">
+                No purchase orders recorded for this supplier yet.
               </div>
             )}
           </div>

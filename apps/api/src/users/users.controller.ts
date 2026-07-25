@@ -31,6 +31,7 @@ export class UsersController {
         id: true,
         name: true,
         email: true,
+        phone: true,
         role: true,
         isActive: true,
         isLocked: true,

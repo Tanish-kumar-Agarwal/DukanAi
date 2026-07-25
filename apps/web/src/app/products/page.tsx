@@ -11,6 +11,7 @@ import { SlidingPanel } from '@/components/ui/SlidingPanel';
 import { useToast } from '@/components/ui/Toast';
 import { productsApi } from '@/lib/api-client';
 import apiClient from '@/lib/api';
+import { describeApiError } from '@/lib/api-error';
 import type { Product } from '@/types';
 import { AnimatePresence, motion } from 'framer-motion';
 
@@ -58,8 +59,8 @@ export default function ProductsPage() {
       setError(null);
       const data = await productsApi.list();
       setProducts(data);
-    } catch {
-      setError('Failed to load products.');
+    } catch (err) {
+      setError(describeApiError(err, 'Loading products (GET /products)'));
     } finally {
       setIsLoading(false);
     }
@@ -179,7 +180,8 @@ export default function ProductsPage() {
       let stockAdjusted = true;
       try {
         await applyInitialStock(createdProduct.id, initialQuantity);
-      } catch {
+      } catch (stockError) {
+        console.error('[api] Setting initial stock (POST /inventory-domain/:id/adjust) failed:', stockError);
         stockAdjusted = false;
       }
 
@@ -196,8 +198,8 @@ export default function ProductsPage() {
       );
       setIsAddModalOpen(false);
       resetProductForm();
-    } catch {
-      toast('Failed to save product', 'error');
+    } catch (err) {
+      toast(describeApiError(err, 'Saving product (POST /products)'), 'error');
     }
   };
 
@@ -224,8 +226,8 @@ export default function ProductsPage() {
           await productsApi.delete(product.id);
           setProducts((currentProducts) => currentProducts.filter((currentProduct) => currentProduct.id !== product.id));
           toast(`${product.name} deleted successfully`, 'success');
-        } catch {
-          toast(`Failed to delete ${product.name}`, 'error');
+        } catch (err) {
+          toast(describeApiError(err, `Deleting ${product.name} (DELETE /products/:id)`), 'error');
         }
         break;
     }
@@ -257,8 +259,8 @@ export default function ProductsPage() {
       setSelectedProduct(refreshedProduct);
       setIsStockAdjustModalOpen(false);
       toast('Stock updated successfully.', 'success');
-    } catch (error: any) {
-      toast(error?.response?.data?.message ?? 'Failed to update stock.', 'error');
+    } catch (error) {
+      toast(describeApiError(error, 'Updating stock (POST /inventory-domain/:id/adjust)'), 'error');
     } finally {
       setIsAdjustingStock(false);
     }
@@ -639,23 +641,9 @@ export default function ProductsPage() {
             )}
 
             {activeTab === 'Stock History' && (
-              <div className="space-y-3">
-                {[
-                  { date: '20 May 2026', action: 'Manual Update', qty: '+50', user: 'Tanish', color: 'text-green-500' },
-                  { date: '18 May 2026', action: 'Sales Deduction', qty: '-2', user: 'System', color: 'text-red-500' },
-                  { date: '15 May 2026', action: 'Sales Deduction', qty: '-5', user: 'System', color: 'text-red-500' },
-                  { date: '10 May 2026', action: 'Initial Stock', qty: '+200', user: 'Tanish', color: 'text-green-500' },
-                ].map((tx, i) => (
-                  <div key={i} className="flex items-center justify-between p-3 border border-gray-100 rounded-xl hover:bg-gray-50 transition-colors">
-                    <div>
-                      <p className="text-xs font-bold text-gray-800">{tx.action}</p>
-                      <p className="text-[10px] text-gray-500">{tx.date} • by {tx.user}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className={`text-xs font-bold ${tx.color}`}>{tx.qty}</p>
-                    </div>
-                  </div>
-                ))}
+              <div className="p-6 text-center text-sm text-gray-500 border border-dashed border-gray-200 rounded-xl">
+                Per-product stock movement history is not available yet. Use the
+                Inventory page to review batches and adjustments.
               </div>
             )}
           </div>
