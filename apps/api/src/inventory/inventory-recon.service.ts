@@ -10,14 +10,16 @@ import { DriftStatus } from '@prisma/client';
 import { InventoryFeatureConfig } from '../config/domains/features/inventory-feature.config';
 import { CronConfig } from '../config/domains/cron.config';
 import { CacheConfig } from '../config/domains/cache.config';
+import { REDIS_CLIENT } from '../common/redis/redis.module';
+import Redis from 'ioredis';
 
 @Injectable()
 export class InventoryReconService implements OnApplicationBootstrap {
   private readonly logger = new Logger(InventoryReconService.name);
-  private redis: any = null;
 
   constructor(
     @Inject(CACHE_MANAGER) private cache: Cache,
+    @Inject(REDIS_CLIENT) private redis: Redis,
     private prisma: PrismaService,
     private cronLockService: CronLockService,
     private driftAlertService: DriftAlertService,
@@ -25,17 +27,7 @@ export class InventoryReconService implements OnApplicationBootstrap {
     private cronConfig: CronConfig,
     private schedulerRegistry: SchedulerRegistry,
     private cacheConfig: CacheConfig,
-  ) {
-    try {
-      const cacheAny = this.cache as any;
-      const store = cacheAny.store || cacheAny.stores?.[0];
-      if (store?.client) {
-        this.redis = store.client;
-      }
-    } catch {
-      this.logger.warn('Failed to access Redis client from cache store');
-    }
-  }
+  ) {}
 
   onApplicationBootstrap() {
     const job = new CronJob(this.cronConfig.inventoryReconCron, () => {
@@ -103,7 +95,7 @@ export class InventoryReconService implements OnApplicationBootstrap {
         for (let i = 0; i < products.length; i++) {
           const product = products[i];
           const prismaStock = product.currentStock.toNumber();
-          const [err, redisRaw] = redisResults[i];
+          const [err, redisRaw] = redisResults![i];
 
           if (err) {
             this.logger.error(`Failed to read Redis stock for product ${product.id}`, err);
@@ -111,7 +103,7 @@ export class InventoryReconService implements OnApplicationBootstrap {
           }
 
           if (redisRaw !== null) {
-            const redisStock = parseFloat(redisRaw);
+            const redisStock = parseFloat(redisRaw as string);
 
             // Compare: Case B (Different)
             if (redisStock !== prismaStock) {

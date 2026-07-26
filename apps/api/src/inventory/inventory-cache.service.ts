@@ -4,33 +4,26 @@ import type { Cache } from 'cache-manager';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { CacheConfig } from '../config/domains/cache.config';
+import { REDIS_CLIENT } from '../common/redis/redis.module';
+import Redis from 'ioredis';
 
 @Injectable()
 export class InventoryCacheService {
   private readonly logger = new Logger(InventoryCacheService.name);
-  private redis: any = null;
 
   constructor(
     @Inject(CACHE_MANAGER) private cache: Cache,
+    @Inject(REDIS_CLIENT) private redis: Redis,
     private prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
     private readonly cacheConfig: CacheConfig
   ) {
-    // Safely attempt to access the underlying Redis client.
-    // Falls back to null if the cache store is not Redis (e.g., in-memory).
-    try {
-      const cacheAny = this.cache as any;
-      const store = cacheAny.store || cacheAny.stores?.[0];
-      if (store?.client) {
-        this.redis = store.client;
-        this.logger.log('Redis client connected for inventory cache');
-      } else {
-        this.logger.warn(
-          'No Redis client available — inventory cache will use DB-only path',
-        );
-      }
-    } catch {
-      this.logger.warn('Failed to access Redis client from cache store');
+    if (this.redis) {
+      this.logger.log('Redis client connected for inventory cache');
+    } else {
+      this.logger.warn(
+        'No Redis client available — inventory cache will use DB-only path',
+      );
     }
   }
 
