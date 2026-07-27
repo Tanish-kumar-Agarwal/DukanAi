@@ -25,7 +25,7 @@ export default function SuppliersPage() {
         toast(describeApiError(err, 'Loading suppliers (GET /suppliers)'), 'error');
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [toast]);
   const [searchTerm, setSearchTerm] = useState('');
   
   // Modals & Panels

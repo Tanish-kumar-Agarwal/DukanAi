@@ -60,15 +60,33 @@ export default function DashboardPage() {
   const [newUdhar, setNewUdhar] = useState('0');
 
   useEffect(() => {
+    let isMounted = true;
+
+    const fetchDashboardData = async () => {
+      try {
+        const data = await analyticsApi.dashboardSummary();
+        if (isMounted) setSummary(data);
+      } catch (err) {
+        if (isMounted) describeApiError(err, 'Loading dashboard summary (GET /dashboard/summary)');
+      }
+    };
+
     fetchProducts();
     fetchCustomers();
-    void analyticsApi
-      .dashboardSummary()
-      .then(setSummary)
-      .catch((err) => {
-        describeApiError(err, 'Loading dashboard summary (GET /dashboard/summary)');
-        setSummary(null);
-      });
+    fetchDashboardData();
+
+    // Auto-refresh every 30 seconds
+    const intervalId = setInterval(() => {
+      if (isMounted) {
+        fetchDashboardData();
+        fetchCustomers();
+      }
+    }, 30000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+    };
   }, []);
 
   useEffect(() => {
@@ -186,27 +204,27 @@ export default function DashboardPage() {
       
       {/* Top Stat Cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        {/* Total Sales */}
+        {/* Today's Sales */}
         <Card className="hoverable p-4 flex items-center gap-4">
           <div className="w-12 h-12 rounded-xl bg-[#8B5CF6]/10 flex items-center justify-center text-[#8B5CF6]">
             <TrendingUp size={24} />
           </div>
           <div>
-            <p className="text-xs text-gray-500 font-medium">Total Sales</p>
-            <h3 className="text-xl font-bold text-gray-800 tracking-tight">₹{(summary?.totalRevenue ?? 0).toLocaleString('en-IN')}</h3>
-            <p className="text-[10px] text-gray-500 font-medium mt-0.5">Completed invoices</p>
+            <p className="text-xs text-gray-500 font-medium">Today's Sales</p>
+            <h3 className="text-xl font-bold text-gray-800 tracking-tight">₹{(summary?.todaySales ?? 0).toLocaleString('en-IN')}</h3>
+            <p className="text-[10px] text-gray-500 font-medium mt-0.5">Completed today</p>
           </div>
         </Card>
 
-        {/* Total Profit */}
+        {/* Today's Profit */}
         <Card className="hoverable p-4 flex items-center gap-4">
           <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center text-green-500">
             <ShoppingBag size={24} />
           </div>
           <div>
-            <p className="text-xs text-gray-500 font-medium">Total Profit</p>
-            <h3 className="text-xl font-bold text-gray-800 tracking-tight">—</h3>
-            <p className="text-[10px] text-gray-500 font-medium mt-0.5">Profit reporting is not configured</p>
+            <p className="text-xs text-gray-500 font-medium">Today's Profit</p>
+            <h3 className="text-xl font-bold text-gray-800 tracking-tight">₹{(summary?.todayProfit ?? 0).toLocaleString('en-IN')}</h3>
+            <p className="text-[10px] text-gray-500 font-medium mt-0.5">Net profit today</p>
           </div>
         </Card>
 
@@ -217,8 +235,8 @@ export default function DashboardPage() {
           </div>
           <div>
             <p className="text-xs text-gray-500 font-medium">Total Udhar (Pending)</p>
-            <h3 className="text-xl font-bold text-gray-800 tracking-tight">₹{customers.reduce((total, customer) => total + customer.udharAmount, 0).toLocaleString('en-IN')}</h3>
-            <p className="text-[10px] text-gray-500 font-medium mt-0.5">Current customer balances</p>
+            <h3 className="text-xl font-bold text-gray-800 tracking-tight">₹{(summary?.outstandingUdhar ?? 0).toLocaleString('en-IN')}</h3>
+            <p className="text-[10px] text-gray-500 font-medium mt-0.5">Current balances</p>
           </div>
         </Card>
 
@@ -228,9 +246,9 @@ export default function DashboardPage() {
             <Package size={24} />
           </div>
           <div>
-            <p className="text-xs text-gray-500 font-medium">Low Stock Items</p>
-            <h3 className="text-xl font-bold text-gray-800 tracking-tight">{summary?.lowStockCount ?? 0}</h3>
-            <p className="text-[10px] text-gray-500 font-medium mt-0.5">From current inventory</p>
+            <p className="text-xs text-gray-500 font-medium">Low & Out of Stock</p>
+            <h3 className="text-xl font-bold text-gray-800 tracking-tight">{summary?.lowStockCount ?? 0} <span className="text-sm text-red-500">/ {summary?.outOfStockCount ?? 0}</span></h3>
+            <p className="text-[10px] text-gray-500 font-medium mt-0.5">Items needing restock</p>
           </div>
         </Card>
 
@@ -241,8 +259,53 @@ export default function DashboardPage() {
           </div>
           <div>
             <p className="text-xs text-gray-500 font-medium">Today's Orders</p>
+            <h3 className="text-xl font-bold text-gray-800 tracking-tight">{summary?.todayOrders ?? 0}</h3>
+            <p className="text-[10px] text-gray-500 font-medium mt-0.5">Completed today</p>
+          </div>
+        </Card>
+
+        {/* Additional stats requested in EXEC-005 */}
+        <Card className="hoverable p-4 flex items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-indigo-500/10 flex items-center justify-center text-indigo-500">
+            <FileText size={24} />
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 font-medium">Total Invoices</p>
             <h3 className="text-xl font-bold text-gray-800 tracking-tight">{summary?.totalOrders ?? 0}</h3>
-            <p className="text-[10px] text-gray-500 font-medium mt-0.5">Completed invoices</p>
+            <p className="text-[10px] text-gray-500 font-medium mt-0.5">All time</p>
+          </div>
+        </Card>
+        
+        <Card className="hoverable p-4 flex items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-teal-500/10 flex items-center justify-center text-teal-500">
+            <Users size={24} />
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 font-medium">Total Customers</p>
+            <h3 className="text-xl font-bold text-gray-800 tracking-tight">{summary?.totalCustomers ?? 0}</h3>
+            <p className="text-[10px] text-gray-500 font-medium mt-0.5">Registered</p>
+          </div>
+        </Card>
+        
+        <Card className="hoverable p-4 flex items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-rose-500/10 flex items-center justify-center text-rose-500">
+            <Package size={24} />
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 font-medium">Total Products</p>
+            <h3 className="text-xl font-bold text-gray-800 tracking-tight">{summary?.totalProducts ?? 0}</h3>
+            <p className="text-[10px] text-gray-500 font-medium mt-0.5">Catalog size</p>
+          </div>
+        </Card>
+        
+        <Card className="hoverable p-4 flex items-center gap-4 md:col-span-2">
+          <div className="w-12 h-12 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-500">
+            <Database size={24} />
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 font-medium">Inventory Value</p>
+            <h3 className="text-xl font-bold text-gray-800 tracking-tight">₹{(summary?.inventoryValue ?? 0).toLocaleString('en-IN')}</h3>
+            <p className="text-[10px] text-gray-500 font-medium mt-0.5">Current stock worth</p>
           </div>
         </Card>
       </div>

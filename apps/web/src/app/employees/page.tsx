@@ -40,7 +40,7 @@ export default function EmployeesPage() {
         toast(describeApiError(err, 'Loading employees (GET /users/employees)'), 'error');
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [toast]);
   const [searchTerm, setSearchTerm] = useState('');
   
   // Modals & Panels

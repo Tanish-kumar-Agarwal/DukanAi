@@ -62,13 +62,30 @@ export class AnalyticsController {
   /** Single tenant-scoped source for dashboard cards and recent activity. */
   @Get('summary')
   async getDashboardSummary(@CurrentShop() shopId: string) {
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
     const completed = { shopId, status: InvoiceStatus.COMPLETED, isDeleted: false };
-    const [revenue, orderCount, customerCount, productCount, lowStockCount, recentInvoices, paymentGroups] = await Promise.all([
+    const todayCompleted = { ...completed, createdAt: { gte: startOfToday, lte: endOfToday } };
+
+    const [
+      revenueAllTime,
+      revenueToday,
+      orderCountToday,
+      totalInvoices,
+      customerCount,
+      productCount,
+      recentInvoices,
+      paymentGroups,
+      udharAgg,
+    ] = await Promise.all([
       this.prisma.invoice.aggregate({ where: completed, _sum: { totalAmount: true } }),
+      this.prisma.invoice.aggregate({ where: todayCompleted, _sum: { totalAmount: true } }),
+      this.prisma.invoice.count({ where: todayCompleted }),
       this.prisma.invoice.count({ where: completed }),
       this.prisma.customer.count({ where: { shopId, isDeleted: false } }),
       this.prisma.product.count({ where: { shopId, isDeleted: false } }),
-      this.prisma.product.count({ where: { shopId, isDeleted: false, currentStock: { lte: 10 } } }),
       this.prisma.invoice.findMany({
         where: completed,
         orderBy: { createdAt: 'desc' },
@@ -76,18 +93,52 @@ export class AnalyticsController {
         select: { id: true, invoiceNumber: true, totalAmount: true, paymentMode: true, createdAt: true, customer: { select: { name: true } } },
       }),
       this.prisma.invoice.groupBy({ where: completed, by: ['paymentMode'], _sum: { totalAmount: true } }),
+      this.prisma.customer.aggregate({ where: { shopId, isDeleted: false }, _sum: { outstandingBalance: true } }),
     ]);
 
+    // Raw queries for profit today
+    const profitTodayStats = await this.prisma.$queryRaw<{ profit: number }[]>`
+      SELECT SUM((ii.sellingPrice * (1 - ii.discountPercent / 100) - ii.costPrice) * ii.quantity) as profit
+      FROM InvoiceItem ii
+      INNER JOIN Invoice iv ON iv.id = ii.invoiceId
+      WHERE iv.shopId = ${shopId}
+        AND iv.status = ${InvoiceStatus.COMPLETED}
+        AND iv.isDeleted = false
+        AND iv.createdAt >= ${startOfToday}
+        AND iv.createdAt <= ${endOfToday}
+        AND ii.isDeleted = false
+    `;
+    const todayProfit = Number(profitTodayStats[0]?.profit ?? 0);
+
+    // Raw queries for inventory
+    const inventoryStats = await this.prisma.$queryRaw<{ lowStock: bigint, outOfStock: bigint, totalValue: number }[]>`
+      SELECT 
+        SUM(CASE WHEN currentStock <= reorderPoint AND currentStock > 0 THEN 1 ELSE 0 END) as lowStock,
+        SUM(CASE WHEN currentStock <= 0 THEN 1 ELSE 0 END) as outOfStock,
+        SUM(currentStock * costPrice) as totalValue
+      FROM Product 
+      WHERE shopId = ${shopId} AND isDeleted = false
+    `;
+
+    const stats = inventoryStats[0] || { lowStock: 0n, outOfStock: 0n, totalValue: 0 };
+
     return {
-      totalRevenue: Number(revenue._sum.totalAmount ?? 0),
-      totalOrders: orderCount,
+      totalRevenue: Number(revenueAllTime._sum.totalAmount ?? 0),
+      todaySales: Number(revenueToday._sum.totalAmount ?? 0),
+      todayProfit: todayProfit,
+      todayOrders: orderCountToday,
+      totalOrders: totalInvoices,
       totalCustomers: customerCount,
       totalProducts: productCount,
-      lowStockCount,
+      outstandingUdhar: Number(udharAgg._sum.outstandingBalance ?? 0),
+      lowStockCount: Number(stats.lowStock),
+      outOfStockCount: Number(stats.outOfStock),
+      inventoryValue: Number(stats.totalValue ?? 0),
       recentInvoices: recentInvoices.map((invoice) => ({ ...invoice, totalAmount: Number(invoice.totalAmount) })),
       paymentModes: paymentGroups.map((group) => ({ mode: group.paymentMode, amount: Number(group._sum.totalAmount ?? 0) })),
     };
   }
+
 
   @Get('products')
   async getTopProducts(@CurrentShop() shopId: string, @Query('limit') limit: number = 10) {

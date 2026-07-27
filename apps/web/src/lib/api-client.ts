@@ -204,10 +204,16 @@ export const inventoryApi = {
 // ---------------------------------------------------------------------------
 export interface DashboardSummary {
   totalRevenue: number;
+  todaySales: number;
+  todayProfit: number;
+  todayOrders: number;
   totalOrders: number;
   totalCustomers: number;
   totalProducts: number;
+  outstandingUdhar: number;
   lowStockCount: number;
+  outOfStockCount: number;
+  inventoryValue: number;
   recentInvoices: Array<{
     id: string;
     invoiceNumber: string;

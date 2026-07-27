@@ -44,7 +44,7 @@ export default function ExpensesPage() {
         toast(describeApiError(err, 'Loading expenses (GET /expenses)'), 'error');
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [toast]);
   const [searchTerm, setSearchTerm] = useState('');
   
   // Modals & Panels
