@@ -90,10 +90,43 @@ function BillingContent() {
         addToCart(product, 1);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [products, searchParams]);
 
-  // Sync cart total to manualTotal when cart changes
-  const cartTotal = cart.reduce((acc, item) => acc + (item.product.price * item.qty), 0);
+  // Exact replica of Backend BillingService Tax Math
+  const gstRateMap: Record<string, number> = { ZERO: 0, FIVE: 5, TWELVE: 12, EIGHTEEN: 18, TWENTYEIGHT: 28 };
+  
+  const calculateCartTotal = () => {
+    let subtotal = 0;
+    const taxBrackets: Record<number, number> = { 0: 0, 5: 0, 12: 0, 18: 0, 28: 0 };
+    
+    cart.forEach(item => {
+      const lineSubtotal = item.product.price * item.qty;
+      const taxableAmt = lineSubtotal; 
+      subtotal += lineSubtotal;
+      
+      const gstStr = item.product.gstRate || 'EIGHTEEN';
+      const rate = gstRateMap[gstStr] ?? 18;
+      taxBrackets[rate] = (taxBrackets[rate] || 0) + taxableAmt;
+    });
+
+    let totalTax = 0;
+    for (const rateStr of Object.keys(taxBrackets)) {
+      const rate = Number(rateStr);
+      const taxableSum = taxBrackets[rate];
+      if (rate > 0 && taxableSum > 0) {
+        const halfRate = rate / 2;
+        const cgst = Math.round((taxableSum * halfRate / 100) * 100) / 100;
+        const sgst = Math.round((taxableSum * halfRate / 100) * 100) / 100;
+        totalTax += cgst + sgst;
+      }
+    }
+    
+    const grandTotal = subtotal + totalTax;
+    return Math.round(grandTotal);
+  };
+  
+  const cartTotal = calculateCartTotal();
   useEffect(() => {
     if (cartTotal > 0) {
       setManualTotal(cartTotal.toString());
@@ -103,10 +136,23 @@ function BillingContent() {
   }, [cartTotal]);
 
   const addToCart = (product: any, quantity: number = 1) => {
+    if (quantity <= 0) {
+      toast('Quantity must be greater than 0', 'error');
+      return;
+    }
+    
     setCart(prev => {
       const existing = prev.find(item => item.product.id === product.id);
+      const currentQty = existing ? existing.qty : 0;
+      const newQty = currentQty + quantity;
+      
+      if (newQty > product.quantity) {
+        toast(`Cannot add more than available stock (${product.quantity})`, 'error');
+        return prev;
+      }
+      
       if (existing) {
-        return prev.map(item => item.product.id === product.id ? { ...item, qty: item.qty + quantity } : item);
+        return prev.map(item => item.product.id === product.id ? { ...item, qty: newQty } : item);
       } else {
         return [...prev, { product, qty: quantity }];
       }
@@ -114,9 +160,13 @@ function BillingContent() {
   };
 
   const updateQty = (id: string | number, delta: number) => {
-    setCart(cart.map(item => {
+    setCart(prev => prev.map(item => {
       if (item.product.id === id) {
         const newQty = Math.max(0, item.qty + delta);
+        if (newQty > item.product.quantity) {
+          toast(`Cannot add more than available stock (${item.product.quantity})`, 'error');
+          return item;
+        }
         return { ...item, qty: newQty };
       }
       return item;
@@ -148,6 +198,11 @@ function BillingContent() {
     if (displayTotal <= 0) return;
     if (!idempotencyKey) {
       toast('Idempotency key not initialized. Please refresh.', 'error');
+      return;
+    }
+    
+    if (!selectedCustomer && pending > 0) {
+      toast('A customer must be selected for Udhar billing', 'error');
       return;
     }
     
@@ -211,7 +266,24 @@ function BillingContent() {
     }, 2000);
   };
 
-  const filteredProducts = products.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
+  const filteredProducts = products.filter(p => {
+    // Only active and non-deleted products
+    if (p.isActive === false || p.isDeleted === true) return false;
+    
+    const term = search.toLowerCase().trim();
+    if (!term) return true;
+    
+    // 1. Exact Barcode Match
+    if (p.barcode && p.barcode.toLowerCase() === term) return true;
+    
+    // 2. SKU Match (Partial)
+    if (p.sku && p.sku.toLowerCase().includes(term)) return true;
+    
+    // 3. Name Match (Partial/Case-insensitive)
+    if (p.name && p.name.toLowerCase().includes(term)) return true;
+    
+    return false;
+  });
 
   if (isLoading) {
     return (

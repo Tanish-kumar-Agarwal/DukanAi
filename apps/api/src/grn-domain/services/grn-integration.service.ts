@@ -84,6 +84,29 @@ export class GrnIntegrationService {
         }
       });
       
+      // Dual-write to Legacy Product Engine (Fixes Phase 8 synchronization)
+      const legacyProduct = await tx.product.findUnique({ where: { id: line.productId } });
+      if (legacyProduct) {
+        const legacyOldStock = legacyProduct.currentStock.toNumber();
+        await tx.product.update({
+          where: { id: line.productId },
+          data: { currentStock: { increment: quantityChange } }
+        });
+        
+        await tx.inventoryLog.create({
+          data: {
+            shopId,
+            productId: line.productId,
+            quantityBefore: legacyOldStock,
+            quantityChange: quantityChange,
+            quantityAfter: legacyOldStock + quantityChange,
+            type: 'PURCHASE',
+            notes: `GRN Acceptance: ${grn.id}`,
+            recordedById: grn.createdBy || null
+          }
+        });
+      }
+      
       // We would also invoke Batch Engine here if batchId exists
       if (line.batchId) {
          this.logger.debug(`Integrating batch ${line.batchId} into batch stock`);

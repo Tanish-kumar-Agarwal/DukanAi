@@ -44,6 +44,7 @@ function mapProduct(raw: Record<string, unknown>): Product {
     category: (raw.category as { name?: string } | undefined)?.name ?? (raw.category as string) ?? 'General',
     description: (raw.description as string) ?? undefined,
     image: ((raw.images as Array<{ url: string }>) ?? [])[0]?.url ?? (raw.image as string) ?? undefined,
+    gstRate: (raw.gstRate as string) ?? 'ZERO',
   };
 }
 

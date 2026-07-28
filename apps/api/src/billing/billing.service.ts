@@ -415,6 +415,46 @@ export class BillingService {
               })
             });
 
+            // Step H.5: InventoryItem and StockLedgerEntry (Fixes Phase 2 & 9 sync)
+            for (const item of dto.items) {
+              const product = productMap.get(item.productId)!;
+              let invItem = await tx.inventoryItem.findFirst({
+                where: { shopId: user.shopId, productId: item.productId, locationId: 'DEFAULT' }
+              });
+              let oldOnHand = 0;
+              if (invItem) {
+                oldOnHand = invItem.onHand.toNumber();
+                invItem = await tx.inventoryItem.update({
+                  where: { id: invItem.id },
+                  data: { onHand: { decrement: item.quantity } }
+                });
+              } else {
+                invItem = await tx.inventoryItem.create({
+                  data: {
+                    shopId: user.shopId,
+                    productId: item.productId,
+                    locationId: 'DEFAULT',
+                    onHand: -item.quantity,
+                    status: 'AVAILABLE'
+                  }
+                });
+              }
+              
+              await tx.stockLedgerEntry.create({
+                data: {
+                  shopId: user.shopId,
+                  inventoryItemId: invItem.id,
+                  movementType: 'SALE',
+                  quantity: -item.quantity,
+                  unitCost: product.costPrice,
+                  referenceType: 'INVOICE',
+                  referenceId: invoice.id,
+                  balanceAfter: oldOnHand - item.quantity,
+                  createdBy: user.userId
+                }
+              });
+            }
+
             // Step I: Udhar Update
             if ((dto.paymentMode === 'UDHAR' || dto.paymentMode === 'SPLIT') && dto.customerId && customer) {
               if (udharAmt.greaterThan(0)) {
@@ -511,7 +551,7 @@ export class BillingService {
                   correlationId,
                   invoiceId: invoice.id,
                   shopId: user.shopId,
-                  userId: user.userId,
+                  openedById: user.userId,
                   type: 'CREDIT',
                   createdAt: new Date().toISOString(),
                   amount: finalTotal.toNumber(),
@@ -660,4 +700,354 @@ export class BillingService {
       throw outerError;
     }
   }
+
+  async processReturn(dto: { invoiceId: string, reason?: string, notes?: string }, ipAddress: string): Promise<any> {
+    const user = {
+      shopId: this.tenantContext.getShopId(),
+      userId: this.tenantContext.getUserId(),
+      ipAddress
+    };
+
+    return await this.prisma.$transaction(async (tx: any) => {
+      // 1. Fetch and validate original invoice
+      const original = await tx.invoice.findUnique({
+        where: { id: dto.invoiceId, shopId: user.shopId },
+        include: { items: true, customer: true }
+      });
+
+      if (!original) {
+        throw new NotFoundException('Invoice not found');
+      }
+
+      if (original.type !== 'SALE' || original.status !== 'COMPLETED') {
+        throw new BadRequestException('Only completed sales can be returned');
+      }
+
+      // Idempotency: Prisma unique constraint on originalId will prevent duplicate return invoices
+      // but we also check here to provide a clear error message.
+      const existingReturn = await tx.invoice.findFirst({
+        where: { originalId: original.id, type: 'SALES_RETURN' }
+      });
+
+      if (existingReturn) {
+        throw new ConflictException('Invoice has already been returned');
+      }
+
+      // 2. Inventory Validation
+      const productIds = original.items.map((i: any) => i.productId);
+      const products = await tx.product.findMany({
+        where: { id: { in: productIds }, shopId: user.shopId, isDeleted: false }
+      });
+
+      if (products.length !== new Set(productIds).size) {
+        throw new BadRequestException('One or more products from this invoice have been deleted or corrupted.');
+      }
+
+      // 3. Shift Validation for Cash
+      if (original.paymentMode === 'CASH') {
+        const shift = await tx.shift.findFirst({
+          where: { shopId: user.shopId, status: 'OPEN', openedById: user.userId }
+        });
+        if (!shift) {
+          throw new BadRequestException('Cannot refund a cash invoice when there is no open shift.');
+        }
+
+        // Refund cash drawer
+        await tx.shift.update({
+          where: { id: shift.id },
+          data: {
+            expectedCash: { decrement: original.totalAmount }
+          }
+        });
+      }
+
+      // 4. Create Compensating Invoice
+      const date = new Date();
+      const year = date.getFullYear();
+      const month = date.getMonth() + 1;
+      const dateStr = month >= 4 
+        ? `${year}-${(year + 1).toString().slice(2)}`
+        : `${year - 1}-${year.toString().slice(2)}`;
+
+      const lastReturn: any[] = await tx.$queryRaw`
+        SELECT invoiceNumber FROM Invoice
+        WHERE shopId = ${user.shopId}
+          AND invoiceNumber LIKE ${`RET-${dateStr}-%`}
+        ORDER BY createdAt DESC LIMIT 1 FOR UPDATE
+      `;
+
+      let seq = 1;
+      if (lastReturn.length > 0) {
+        const parts = lastReturn[0].invoiceNumber.split('-');
+        seq = parseInt(parts[parts.length - 1], 10) + 1;
+      }
+
+      const returnInvoiceNumber = `RET-${dateStr}-${seq.toString().padStart(6, '0')}`;
+
+      const returnInvoice = await tx.invoice.create({
+        data: {
+          invoiceNumber: returnInvoiceNumber,
+          idempotencyKey: `RET-${original.id}`,
+          financialYear: original.financialYear,
+          shopId: user.shopId,
+          customerId: original.customerId,
+          cashierId: user.userId,
+          originalId: original.id,
+          subtotal: original.subtotal,
+          taxableAmount: original.taxableAmount,
+          cgstAmount: original.cgstAmount,
+          sgstAmount: original.sgstAmount,
+          igstAmount: original.igstAmount,
+          taxAmount: original.taxAmount,
+          discountAmount: original.discountAmount,
+          roundOffAmount: original.roundOffAmount,
+          totalAmount: original.totalAmount,
+          paidAmount: original.paidAmount,
+          udharAmount: original.udharAmount,
+          changeAmount: original.changeAmount,
+          paymentMode: original.paymentMode,
+          paymentRef: original.paymentRef,
+          isInterState: original.isInterState,
+          type: 'SALES_RETURN',
+          status: 'COMPLETED',
+          items: {
+            create: original.items.map((item: any) => ({
+              productId: item.productId,
+              productName: item.productName,
+              productSku: item.productSku,
+              quantity: item.quantity,
+              unit: item.unit,
+              costPrice: item.costPrice,
+              sellingPrice: item.sellingPrice,
+              mrp: item.mrp,
+              discountPercent: item.discountPercent,
+              gstRate: item.gstRate,
+              cgstAmount: item.cgstAmount,
+              sgstAmount: item.sgstAmount,
+              igstAmount: item.igstAmount,
+              totalAmount: item.totalAmount
+            }))
+          }
+        }
+      });
+
+      // 5. Restore Inventory & Log
+      for (const item of original.items) {
+        const p = products.find((x: any) => x.id === item.productId);
+        
+        await tx.product.update({
+          where: { id: item.productId },
+          data: {
+            currentStock: { increment: item.quantity }
+          }
+        });
+
+        await tx.inventoryLog.create({
+          data: {
+            productId: item.productId,
+            shopId: user.shopId,
+            type: 'RETURN_IN',
+            quantityBefore: p.currentStock,
+            quantityChange: item.quantity,
+            quantityAfter: new Prisma.Decimal(p.currentStock).plus(new Prisma.Decimal(item.quantity)),
+            invoiceId: returnInvoice.id,
+            notes: dto.reason ? `Return Reason: ${dto.reason} - ${dto.notes || ''}` : 'Sales Return',
+            recordedById: user.userId
+          }
+        });
+
+        // 5.5 Dual-write to InventoryItem and StockLedgerEntry
+        let invItem = await tx.inventoryItem.findFirst({
+          where: { shopId: user.shopId, productId: item.productId, locationId: 'DEFAULT' }
+        });
+        let oldOnHand = 0;
+        if (invItem) {
+          oldOnHand = invItem.onHand.toNumber();
+          invItem = await tx.inventoryItem.update({
+            where: { id: invItem.id },
+            data: { onHand: { increment: item.quantity } }
+          });
+        } else {
+          invItem = await tx.inventoryItem.create({
+            data: {
+              shopId: user.shopId,
+              productId: item.productId,
+              locationId: 'DEFAULT',
+              onHand: item.quantity,
+              status: 'AVAILABLE'
+            }
+          });
+        }
+        
+        await tx.stockLedgerEntry.create({
+          data: {
+            shopId: user.shopId,
+            inventoryItemId: invItem.id,
+            movementType: 'SALE_RETURN',
+            quantity: item.quantity,
+            unitCost: p.costPrice,
+            referenceType: 'INVOICE_RETURN',
+            referenceId: returnInvoice.id,
+            balanceAfter: oldOnHand + item.quantity,
+            createdBy: user.userId
+          }
+        });
+      }
+
+      // 6. Ledger Reversal (if Udhar)
+      if (original.paymentMode === 'UDHAR' && original.customerId) {
+        const customer = await tx.customer.findUnique({ where: { id: original.customerId } });
+        
+        await tx.customer.update({
+          where: { id: original.customerId },
+          data: {
+            outstandingBalance: { decrement: original.udharAmount }
+          }
+        });
+
+        await tx.udharTransaction.create({
+          data: {
+            customerId: original.customerId,
+            shopId: user.shopId,
+            invoiceId: returnInvoice.id,
+            amount: original.udharAmount,
+            type: 'ADJUSTMENT',
+            balanceBefore: customer.outstandingBalance,
+            balanceAfter: new Prisma.Decimal(customer.outstandingBalance).minus(new Prisma.Decimal(original.udharAmount)),
+            recordedById: user.userId,
+            notes: `Return against Invoice ${original.invoiceNumber}`
+          }
+        });
+      }
+
+      // 8. Ledger Double-Entry Reversal (ENG-302)
+      const existingLedgers = await tx.ledgerTransaction.count({
+        where: { invoiceId: returnInvoice.id }
+      });
+      if (existingLedgers === 0) {
+        const creditAccount = original.paymentMode === 'UDHAR' || (original.udharAmount && original.udharAmount.toNumber() > 0)
+          ? 'ACCOUNTS_RECEIVABLE' as const
+          : 'CASH' as const;
+
+        // Debit SALES_REVENUE
+        const lastDebitEntry = await tx.ledgerTransaction.findFirst({
+          where: { account: 'SALES_REVENUE' },
+          orderBy: { createdAt: 'desc' }
+        });
+        const debitBalanceBefore = lastDebitEntry ? lastDebitEntry.balanceAfter.toNumber() : 0;
+        const debitBalanceAfter = debitBalanceBefore - original.totalAmount.toNumber();
+
+        await tx.ledgerTransaction.create({
+          data: {
+            shopId: user.shopId,
+            invoiceId: returnInvoice.id,
+            account: 'SALES_REVENUE',
+            type: 'DEBIT',
+            amount: original.totalAmount,
+            balanceAfter: debitBalanceAfter,
+            description: `Return ${original.invoiceNumber} - SALES_REVENUE Reversal`
+          }
+        });
+
+        // Credit CASH / AR
+        const lastCreditEntry = await tx.ledgerTransaction.findFirst({
+          where: { account: creditAccount },
+          orderBy: { createdAt: 'desc' }
+        });
+        const creditBalanceBefore = lastCreditEntry ? lastCreditEntry.balanceAfter.toNumber() : 0;
+        const creditBalanceAfter = creditBalanceBefore - original.totalAmount.toNumber();
+
+        await tx.ledgerTransaction.create({
+          data: {
+            shopId: user.shopId,
+            invoiceId: returnInvoice.id,
+            account: creditAccount,
+            type: 'CREDIT',
+            amount: original.totalAmount,
+            balanceAfter: creditBalanceAfter,
+            description: `Return ${original.invoiceNumber} - ${creditAccount} Reversal`
+          }
+        });
+      }
+
+      // 9. Shift update reversal
+      if (original.shiftId) {
+        if (original.paymentMode === 'SPLIT') {
+          const cashPortion = original.paidAmount.toNumber();
+          const udharPortion = original.udharAmount.toNumber();
+          await tx.shift.update({
+            where: { id: original.shiftId },
+            data: {
+              totalSales: { decrement: original.totalAmount.toNumber() },
+              cashSales: { decrement: cashPortion },
+              udharSales: { decrement: udharPortion },
+            }
+          });
+        } else {
+          const paymentFieldMap: Record<string, string> = {
+            CASH: 'cashSales', UPI: 'upiSales', CARD: 'cardSales', UDHAR: 'udharSales',
+          };
+          const paymentField = paymentFieldMap[original.paymentMode] ?? 'cashSales';
+          await tx.shift.update({
+            where: { id: original.shiftId },
+            data: {
+              totalSales: { decrement: original.totalAmount.toNumber() },
+              [paymentField]: { decrement: original.totalAmount.toNumber() }
+            }
+          });
+        }
+      }
+
+      // 10. Outbox Event Integration
+      const eventId = crypto.randomUUID();
+      const correlationId = this.tenantContext.getCorrelationId();
+
+      await tx.outboxEvent.create({
+        data: {
+          id: eventId,
+          shopId: user.shopId,
+          type: 'INVOICE_RETURNED',
+          payload: {
+            eventId,
+            correlationId,
+            invoiceId: returnInvoice.id,
+            originalInvoiceId: original.id,
+            shopId: user.shopId,
+            openedById: user.userId,
+            type: 'DEBIT',
+            createdAt: new Date().toISOString(),
+            amount: original.totalAmount.toNumber(),
+            description: `Invoice ${original.invoiceNumber} returned`
+          }
+        }
+      });
+
+      // 11. Audit Log
+      await tx.auditLog.create({
+        data: {
+          action: 'RETURN_CREATED',
+          entity: 'INVOICE',
+          entityId: returnInvoice.id,
+          shopId: user.shopId,
+          userId: user.userId,
+          afterData: {
+            originalInvoiceId: original.id,
+            reason: dto.reason,
+            refundAmount: original.totalAmount,
+            paymentMode: original.paymentMode
+          },
+          ipAddress: user.ipAddress
+        }
+      });
+
+      return returnInvoice;
+    }, {
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      timeout: 10000
+    });
+  }
 }
+
+
+
+

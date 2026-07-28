@@ -216,6 +216,20 @@ export class InventoryDomainService {
         data: { currentStock: newOnHand },
       });
 
+      // 6.5 Sync InventoryLog (Fixes Phase 10 audit synchronization)
+      await tx.inventoryLog.create({
+        data: {
+          shopId,
+          productId: item.productId,
+          quantityBefore: oldOnHand,
+          quantityChange: quantityChange,
+          quantityAfter: newOnHand,
+          type: 'ADJUSTMENT',
+          notes: opts?.notes || `Inventory adjustment: ${reason}`,
+          recordedById: createdBy,
+        }
+      });
+
       // 7. Emit event to Outbox
       await this.eventPublisher.publish(tx as any, {
         shopId,

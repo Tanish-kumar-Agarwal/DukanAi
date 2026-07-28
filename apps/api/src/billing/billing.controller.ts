@@ -1,6 +1,7 @@
-import { Controller, Post, Body, Request, BadRequestException, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, Request, UseGuards } from '@nestjs/common';
 import { BillingService } from './billing.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
+import { ReturnInvoiceDto } from './dto/return-invoice.dto';
 import { Role } from '@prisma/client';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
@@ -18,4 +19,11 @@ export class BillingController {
 
     return this.billingService.createInvoice(dto, req.ip);
   }
+
+  @Post('returns')
+  @Roles(Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER, Role.CASHIER)
+  async returnInvoice(@Request() req: any, @Body() dto: ReturnInvoiceDto) {
+    return this.billingService.processReturn(dto, req.ip);
+  }
 }
+

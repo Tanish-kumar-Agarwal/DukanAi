@@ -1252,6 +1252,7 @@ model Invoice {
   @@index([cashierId])
   @@index([shiftId])
   @@index([originalId])
+  @@unique([originalId])
   @@index([shopId, createdAt])
 }
 
