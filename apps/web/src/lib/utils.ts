@@ -1,6 +1,7 @@
 /**
  * Utility functions for the application
  */
+import Decimal from 'decimal.js';
 
 export const formatCurrency = (value: number, currency: string = '₹'): string => {
   return `${currency}${value.toLocaleString('en-IN')}`;
@@ -27,15 +28,16 @@ export const formatDateTime = (date: Date | string): string => {
 };
 
 export const calculatePercentage = (value: number, total: number): number => {
-  return Math.round((value / total) * 100);
+  if (!total) return 0;
+  return new Decimal(value).div(total).mul(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
 };
 
 export const calculateTax = (amount: number, taxRate: number = 5): number => {
-  return Math.round(amount * (taxRate / 100));
+  return new Decimal(amount).mul(taxRate).div(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
 };
 
 export const calculateDiscount = (amount: number, discountPercentage: number): number => {
-  return Math.round(amount * (discountPercentage / 100));
+  return new Decimal(amount).mul(discountPercentage).div(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
 };
 
 export const truncateText = (text: string, maxLength: number = 50): string => {

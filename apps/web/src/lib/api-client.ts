@@ -45,6 +45,15 @@ function mapProduct(raw: Record<string, unknown>): Product {
     description: (raw.description as string) ?? undefined,
     image: ((raw.images as Array<{ url: string }>) ?? [])[0]?.url ?? (raw.image as string) ?? undefined,
     gstRate: (raw.gstRate as string) ?? 'ZERO',
+    barcode: (raw.barcode as string) ?? undefined,
+    isActive: raw.isActive as boolean | undefined,
+    isDeleted: raw.isDeleted as boolean | undefined,
+    trackInventory: raw.trackInventory as boolean | undefined,
+    currentStock: toNumber(raw.currentStock),
+    brand: (raw.brand as { name?: string } | undefined)?.name ?? (raw.brand as string) ?? undefined,
+    aliases: Array.isArray(raw.aliases) ? raw.aliases : [],
+    variants: Array.isArray(raw.variants) ? raw.variants : [],
+    tax: toNumber(raw.tax),
   };
 }
 
@@ -70,6 +79,15 @@ function mapCustomer(raw: Record<string, unknown>): Customer {
 export const productsApi = {
   list: () =>
     get<unknown[]>('/products').then((arr) => arr.map((item) => mapProduct(item as Record<string, unknown>))),
+  
+  search: (query: string, options?: { signal?: AbortSignal }) => {
+    // If we have an axios-based client, we would pass options.signal to it.
+    // Assuming apiClient supports standard axios config:
+    const config = options?.signal ? { signal: options.signal } : {};
+    return apiClient.get<unknown[]>(`/search?q=${encodeURIComponent(query)}`, config)
+      .then(res => res.data.map(item => mapProduct(item as Record<string, unknown>)));
+  },
+
   get: (id: string) =>
     get<Record<string, unknown>>(`/products/${id}`).then(mapProduct),
 

@@ -4,7 +4,8 @@
   "description": "DukaanAI - AI-Powered Retail Operating System",
   "private": true,
   "workspaces": [
-    "apps/*"
+    "apps/*",
+    "packages/*"
   ],
   "scripts": {
     "dev": "turbo run dev",

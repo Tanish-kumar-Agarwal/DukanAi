@@ -197,9 +197,9 @@ export class VendorBillRepository {
       const { paymentAmount } = payload;
       
       const { paidAmount, outstandingAmount, isFullyPaid } = this.outstanding.processPayment(
-        parseFloat(bill.totalAmount as any), 
-        parseFloat(bill.paidAmount as any), 
-        paymentAmount
+        bill.totalAmount.toString(), 
+        bill.paidAmount.toString(), 
+        paymentAmount.toString()
       );
 
       await tx.vendorBill.update({

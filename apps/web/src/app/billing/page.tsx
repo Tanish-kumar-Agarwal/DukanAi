@@ -1,8 +1,10 @@
-  'use client';
+'use client';
 
 import React, { useState, useEffect, Suspense } from 'react';
+
 import { Card } from '@/components/ui/Card';
 import { Search, Plus, Mic, Receipt, IndianRupee, Minus, CheckCircle2, ArrowRight } from 'lucide-react';
+import { InvoiceMathEngine, InvoiceMathInput, DISCOUNT_TYPES } from '@dukaanai/invoice-math';
 import { productsApi, customersApi } from '@/lib/api-client';
 import { Modal } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
@@ -11,6 +13,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import apiClient from '@/lib/api';
 import { describeApiError } from '@/lib/api-error';
+import { useDebounce } from '@/hooks/useDebounce';
 
 function BillingContent() {
   const { toast } = useToast();
@@ -19,14 +22,22 @@ function BillingContent() {
 
   const [cart, setCart] = useState<{product: any, qty: number}[]>([]);
   const [products, setProducts] = useState<any[]>([]);
+  const [activeProducts, setActiveProducts] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 300);
+  
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [activeIndex, setActiveIndex] = useState(-1);
+
   const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   
   // Right Sidebar State
-  const [manualTotal, setManualTotal] = useState<string>('');
+  const [requestedDiscountAmount, setRequestedDiscountAmount] = useState<string>('');
+  const [discountReason, setDiscountReason] = useState<string>('');
   const [amountPaid, setAmountPaid] = useState<string>('');
   
   const [isSuccess, setIsSuccess] = useState(false);
@@ -51,6 +62,7 @@ function BillingContent() {
       ]);
 
       setProducts(productsData);
+      setActiveProducts(productsData);
       setCustomers(
         customersData.map((customer: any) => ({
           ...customer,
@@ -68,6 +80,34 @@ function BillingContent() {
   useEffect(() => {
     fetchBillingData();
   }, []);
+
+  useEffect(() => {
+    setActiveIndex(-1);
+    
+    if (!debouncedSearch.trim()) {
+      setActiveProducts(products);
+      return;
+    }
+    
+    const abortController = new AbortController();
+    setIsSearching(true);
+    setSearchError(null);
+    
+    productsApi.search(debouncedSearch.trim(), { signal: abortController.signal })
+      .then(res => {
+        setActiveProducts(res);
+      })
+      .catch(err => {
+        if (err.name !== 'AbortError' && err.name !== 'CanceledError') {
+          setSearchError('Search failed');
+        }
+      })
+      .finally(() => {
+        setIsSearching(false);
+      });
+      
+    return () => abortController.abort();
+  }, [debouncedSearch, products]);
 
   // Handle URL query parameters for AI Voice Billing
   useEffect(() => {
@@ -90,50 +130,49 @@ function BillingContent() {
         addToCart(product, 1);
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [products, searchParams]);
 
-  // Exact replica of Backend BillingService Tax Math
-  const gstRateMap: Record<string, number> = { ZERO: 0, FIVE: 5, TWELVE: 12, EIGHTEEN: 18, TWENTYEIGHT: 28 };
+  // POS-MATH-002: Exact replica of Backend BillingService Math using the SHARED engine.
+  const requestedDiscount = Number(requestedDiscountAmount) || 0;
   
-  const calculateCartTotal = () => {
-    let subtotal = 0;
-    const taxBrackets: Record<number, number> = { 0: 0, 5: 0, 12: 0, 18: 0, 28: 0 };
-    
-    cart.forEach(item => {
-      const lineSubtotal = item.product.price * item.qty;
-      const taxableAmt = lineSubtotal; 
-      subtotal += lineSubtotal;
+  const cartMath = React.useMemo(() => {
+    try {
+      const mathInput: InvoiceMathInput = {
+        items: cart.map(item => ({
+          productId: item.product.id,
+          quantity: item.qty,
+          unitPrice: item.product.price,
+          discountPercent: 0, // Frontend does not currently support line-item discount inputs
+          gstRateStr: item.product.gstRate || 'EIGHTEEN',
+          isInterState: selectedCustomer?.state ? false /* TODO: Shop state not in frontend context yet */ : false,
+        })),
+        discountAmount: requestedDiscount > 0 ? requestedDiscount : undefined,
+        discountType: requestedDiscount > 0 ? DISCOUNT_TYPES.FIXED_AMOUNT : undefined,
+        discountReason: discountReason || undefined,
+        paymentMode: 'CASH', // Dummy for preview
+        amountPaid: 99999999 // Dummy to bypass strict validation in preview
+      };
       
-      const gstStr = item.product.gstRate || 'EIGHTEEN';
-      const rate = gstRateMap[gstStr] ?? 18;
-      taxBrackets[rate] = (taxBrackets[rate] || 0) + taxableAmt;
-    });
-
-    let totalTax = 0;
-    for (const rateStr of Object.keys(taxBrackets)) {
-      const rate = Number(rateStr);
-      const taxableSum = taxBrackets[rate];
-      if (rate > 0 && taxableSum > 0) {
-        const halfRate = rate / 2;
-        const cgst = Math.round((taxableSum * halfRate / 100) * 100) / 100;
-        const sgst = Math.round((taxableSum * halfRate / 100) * 100) / 100;
-        totalTax += cgst + sgst;
-      }
+      const result = InvoiceMathEngine.calculate(mathInput);
+      return {
+        subtotal: result.subtotal.toNumber(),
+        totalTax: result.totalTax.toNumber(),
+        grandTotal: result.grandTotal.toNumber(),
+        finalTotal: result.finalTotal.toNumber(),
+        roundOffAmount: result.roundOff.toNumber(),
+      };
+    } catch (e) {
+      // In case of negative discount or exceeded subtotal limits during live typing
+      return {
+        subtotal: 0,
+        totalTax: 0,
+        grandTotal: 0,
+        finalTotal: 0,
+        roundOffAmount: 0,
+      };
     }
-    
-    const grandTotal = subtotal + totalTax;
-    return Math.round(grandTotal);
-  };
-  
-  const cartTotal = calculateCartTotal();
-  useEffect(() => {
-    if (cartTotal > 0) {
-      setManualTotal(cartTotal.toString());
-    } else {
-      setManualTotal('');
-    }
-  }, [cartTotal]);
+  }, [cart, requestedDiscount, discountReason, selectedCustomer]);
 
   const addToCart = (product: any, quantity: number = 1) => {
     if (quantity <= 0) {
@@ -190,14 +229,19 @@ function BillingContent() {
     setCustomName('');
   };
 
-  const displayTotal = Number(manualTotal) || 0;
-  const paid = Number(amountPaid) || 0;
+  const displayTotal = Math.max(0, cartMath.finalTotal);
+  const paid = Number(amountPaid) || displayTotal; // If amountPaid is empty, assume full cash paid
   const pending = Math.max(0, displayTotal - paid);
-
+  
   const handleCheckout = async () => {
     if (displayTotal <= 0) return;
     if (!idempotencyKey) {
       toast('Idempotency key not initialized. Please refresh.', 'error');
+      return;
+    }
+
+    if (requestedDiscount > 0 && !discountReason.trim()) {
+      toast('Discount reason is required', 'error');
       return;
     }
     
@@ -206,18 +250,30 @@ function BillingContent() {
       return;
     }
     
-    // Update Udhar if customer selected and there is pending amount
     if (selectedCustomer && pending > 0) {
       toast(`Udhar of ₹${pending} added to ${selectedCustomer.name}'s account`, 'info');
     }
 
     try {
-      // Create payload adhering to idempotency rules
+      let derivedPaymentMode = 'CASH';
+      if (pending > 0) {
+        if (paid === 0) {
+          derivedPaymentMode = 'UDHAR';
+        } else {
+          derivedPaymentMode = 'SPLIT';
+        }
+      }
+
       const payload = {
-        idempotencyKey, // Use the persistent session key
+        idempotencyKey,
         customerId: selectedCustomer?.id,
-        paymentMode: pending > 0 ? 'SPLIT' : 'CASH',
+        paymentMode: derivedPaymentMode,
         udharAmount: pending,
+        amountPaid: paid,
+        discountAmount: requestedDiscount > 0 ? requestedDiscount : undefined,
+        discountReason: requestedDiscount > 0 ? discountReason : undefined,
+        discountType: requestedDiscount > 0 ? 'FIXED_AMOUNT' : undefined,
+        roundOffAmount: cartMath.roundOffAmount,
         items: cart.map(c => ({
           productId: c.product.id,
           quantity: c.qty
@@ -235,7 +291,8 @@ function BillingContent() {
         setTimeout(() => {
           setCart([]);
           setSelectedCustomer(null);
-          setManualTotal('');
+          setRequestedDiscountAmount('');
+          setDiscountReason('');
           setAmountPaid('');
           setIsSuccess(false);
           router.replace('/billing'); // Clear query params
@@ -265,25 +322,6 @@ function BillingContent() {
       }
     }, 2000);
   };
-
-  const filteredProducts = products.filter(p => {
-    // Only active and non-deleted products
-    if (p.isActive === false || p.isDeleted === true) return false;
-    
-    const term = search.toLowerCase().trim();
-    if (!term) return true;
-    
-    // 1. Exact Barcode Match
-    if (p.barcode && p.barcode.toLowerCase() === term) return true;
-    
-    // 2. SKU Match (Partial)
-    if (p.sku && p.sku.toLowerCase().includes(term)) return true;
-    
-    // 3. Name Match (Partial/Case-insensitive)
-    if (p.name && p.name.toLowerCase().includes(term)) return true;
-    
-    return false;
-  });
 
   if (isLoading) {
     return (
@@ -344,6 +382,37 @@ function BillingContent() {
                   placeholder="Search products or scan barcode..." 
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      setActiveIndex(prev => Math.min(prev + 1, activeProducts.length - 1));
+                    } else if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      setActiveIndex(prev => Math.max(prev - 1, 0));
+                    } else if (e.key === 'Escape') {
+                      setSearch('');
+                      setActiveIndex(-1);
+                    } else if (e.key === 'Tab' || (e.shiftKey && e.key === 'Tab')) {
+                      // Let browser handle focus naturally
+                    } else if (e.key === 'Enter') {
+                      e.preventDefault();
+                      if (activeIndex >= 0 && activeProducts[activeIndex]) {
+                        addToCart(activeProducts[activeIndex], 1);
+                        setSearch('');
+                      } else {
+                        const term = search.toLowerCase().trim();
+                        if (!term) return;
+                        const exactMatch = activeProducts.find(p => p.barcode && p.barcode.toLowerCase() === term);
+                        if (exactMatch) {
+                          addToCart(exactMatch, 1);
+                          setSearch('');
+                        } else if (activeProducts.length === 1) {
+                          addToCart(activeProducts[0], 1);
+                          setSearch('');
+                        }
+                      }
+                    }
+                  }}
                   className="w-full bg-white border border-gray-200 rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-[#8B5CF6] transition-all"
                 />
               </div>
@@ -373,16 +442,30 @@ function BillingContent() {
             
             {/* Product Quick Grid */}
             <div className="p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 border-b border-gray-100 max-h-[250px] overflow-y-auto scrollbar-hide">
-              {filteredProducts.map(prod => (
-                <div 
-                  key={prod.id} 
-                  onClick={() => addToCart(prod, 1)}
-                  className="bg-white border border-gray-100 p-3 rounded-xl cursor-pointer hover:border-[#8B5CF6] hover:shadow-sm transition-all group"
-                >
-                  <p className="text-xs font-bold text-gray-800 group-hover:text-[#8B5CF6] transition-colors truncate" title={prod.name}>{prod.name}</p>
-                  <p className="text-xs text-gray-500 mt-1 font-medium">₹{prod.price}</p>
-                </div>
-              ))}
+              {isSearching ? (
+                <div className="col-span-full py-8 text-center text-gray-500 text-sm">Searching...</div>
+              ) : searchError ? (
+                <div className="col-span-full py-8 text-center text-red-500 text-sm">{searchError}</div>
+              ) : activeProducts.length === 0 ? (
+                <div className="col-span-full py-8 text-center text-gray-500 text-sm">No Results</div>
+              ) : (
+                activeProducts.map((prod, index) => (
+                  <div 
+                    key={prod.id} 
+                    onClick={() => addToCart(prod, 1)}
+                    className={`bg-white border p-3 rounded-xl cursor-pointer transition-all group ${
+                      activeIndex === index 
+                        ? 'border-[#8B5CF6] bg-purple-50 shadow-sm ring-1 ring-[#8B5CF6]' 
+                        : 'border-gray-100 hover:border-[#8B5CF6] hover:shadow-sm'
+                    }`}
+                  >
+                    <p className={`text-xs font-bold truncate transition-colors ${activeIndex === index ? 'text-[#8B5CF6]' : 'text-gray-800 group-hover:text-[#8B5CF6]'}`} title={prod.name}>
+                      {prod.name}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-1 font-medium">₹{prod.price}</p>
+                  </div>
+                ))
+              )}
             </div>
 
             {/* Cart Table */}
@@ -452,19 +535,30 @@ function BillingContent() {
             <div className="mb-6">
               <div className="flex items-center gap-2 mb-1">
                 <span className="w-5 h-5 rounded-full bg-[#8B5CF6] text-white flex items-center justify-center text-xs font-bold">1</span>
-                <h3 className="font-bold text-gray-800 text-sm">Total Purchase Amount</h3>
+                <h3 className="font-bold text-gray-800 text-sm">Discount Amount (₹)</h3>
               </div>
-              <p className="text-xs text-gray-400 mb-2 pl-7">Enter the total amount of all items</p>
-              <div className="relative pl-7">
+              <p className="text-xs text-gray-400 mb-2 pl-7">Request a global discount on this bill</p>
+              <div className="relative pl-7 mb-3">
                 <IndianRupee className="absolute left-10 top-1/2 -translate-y-1/2 text-gray-400" size={14} />
                 <input 
                   type="number" 
-                  value={manualTotal}
-                  onChange={(e) => setManualTotal(e.target.value)}
+                  value={requestedDiscountAmount}
+                  onChange={(e) => setRequestedDiscountAmount(e.target.value)}
                   placeholder="0.00"
                   className="w-full bg-white border border-gray-200 rounded-lg pl-8 pr-4 py-2.5 text-sm font-bold text-gray-800 focus:outline-none focus:ring-1 focus:ring-[#8B5CF6]" 
                 />
               </div>
+              {Number(requestedDiscountAmount) > 0 && (
+                <div className="pl-7">
+                  <input 
+                    type="text" 
+                    value={discountReason}
+                    onChange={(e) => setDiscountReason(e.target.value)}
+                    placeholder="Reason for discount (Required)"
+                    className="w-full bg-white border border-gray-200 rounded-lg px-4 py-2.5 text-sm font-medium text-gray-800 focus:outline-none focus:ring-1 focus:ring-[#8B5CF6]" 
+                  />
+                </div>
+              )}
             </div>
 
             {/* Step 2 */}
@@ -515,7 +609,8 @@ function BillingContent() {
                 <button 
                   onClick={() => {
                     setAmountPaid('');
-                    setManualTotal('');
+                    setRequestedDiscountAmount('');
+                    setDiscountReason('');
                     setCart([]);
                   }}
                   className="flex-1 py-2 border border-red-500 text-red-500 hover:bg-red-50 rounded-lg text-xs font-bold transition-colors"

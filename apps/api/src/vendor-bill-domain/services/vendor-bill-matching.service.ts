@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import Decimal from 'decimal.js';
 
 @Injectable()
 export class VendorBillMatchingService {
@@ -28,24 +29,25 @@ export class VendorBillMatchingService {
         throw new BadRequestException('Matching documents not found for Three-Way match');
       }
 
-      const ordered = parseFloat(poLine.quantity as any || 0);
-      const received = parseFloat(grnLine.acceptedQuantity as any || 0);
-      const billed = parseFloat(billLine.billedQuantity || 0);
+      const ordered = new Decimal(poLine.quantity as any || 0);
+      const received = new Decimal(grnLine.acceptedQuantity as any || 0);
+      const billed = new Decimal(billLine.billedQuantity || 0);
 
       // Rule 1: Cannot bill more than what was accepted in GRN (plus tolerance)
-      const maxAllowedBill = received * (1 + (tolerancePercentage / 100));
+      const maxAllowedBill = received.mul(new Decimal(1).plus(new Decimal(tolerancePercentage).div(100)));
       
-      if (billed > maxAllowedBill) {
+      if (billed.greaterThan(maxAllowedBill)) {
         throw new BadRequestException(
-          `Three-Way Match Failed: Billed quantity (${billed}) exceeds Received quantity (${received})`
+          `Three-Way Match Failed: Billed quantity (${billed.toNumber()}) exceeds Received quantity (${received.toNumber()})`
         );
       }
 
       // Rule 2: GRN quantity should ideally match PO quantity, but that's GRN's job. 
       // Vendor Bill just checks it against PO for audit safety.
-      if (billed > ordered * (1 + (tolerancePercentage / 100))) {
+      const maxAllowedOrdered = ordered.mul(new Decimal(1).plus(new Decimal(tolerancePercentage).div(100)));
+      if (billed.greaterThan(maxAllowedOrdered)) {
          throw new BadRequestException(
-          `Three-Way Match Failed: Billed quantity (${billed}) exceeds Ordered quantity (${ordered})`
+          `Three-Way Match Failed: Billed quantity (${billed.toNumber()}) exceeds Ordered quantity (${ordered.toNumber()})`
         );
       }
     }

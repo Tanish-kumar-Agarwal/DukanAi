@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
+import Decimal from 'decimal.js';
 
 @Injectable()
 @Processor('customer-queue')
@@ -29,16 +30,16 @@ export class CustomerWorker extends WorkerHost {
       where: { customerId, isDeleted: false, status: 'COMPLETED' }
     });
 
-    const totalPurchases = invoices.reduce((acc, inv) => acc + Number(inv.totalAmount), 0);
-    const totalPaid = invoices.reduce((acc, inv) => acc + Number(inv.paidAmount), 0);
-    const outstandingBalance = totalPurchases - totalPaid;
+    const totalPurchases = invoices.reduce((acc, inv) => acc.plus(new Decimal(inv.totalAmount.toString())), new Decimal(0));
+    const totalPaid = invoices.reduce((acc, inv) => acc.plus(new Decimal(inv.paidAmount.toString())), new Decimal(0));
+    const outstandingBalance = totalPurchases.minus(totalPaid);
 
     await this.prisma.customer.update({
       where: { id: customerId },
       data: {
-        totalPurchases,
-        totalPaid,
-        outstandingBalance,
+        totalPurchases: totalPurchases.toNumber(),
+        totalPaid: totalPaid.toNumber(),
+        outstandingBalance: outstandingBalance.toNumber(),
         updatedAt: new Date()
       }
     });

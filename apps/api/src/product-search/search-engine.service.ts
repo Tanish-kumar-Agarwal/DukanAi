@@ -48,11 +48,17 @@ export class SearchEngineService {
           { name: { search: query } },
           { aliases: { search: query } },
           { name: { contains: query } },
+          { barcode: { equals: query } },
           { category: { name: { contains: query } } },
           { brand: { name: { contains: query } } },
           {
             variants: {
-              some: { sku: { contains: query } }
+              some: { 
+                OR: [
+                  { sku: { contains: query } },
+                  { barcode: { equals: query } }
+                ]
+              }
             }
           }
         ]
@@ -74,7 +80,7 @@ export class SearchEngineService {
     // We prepare the targets for the fuzzy engine
     const targets = products.map(p => ({
       ...p,
-      searchString: `${p.name} ${p.aliases || ''} ${p.category?.name || ''} ${p.brand?.name || ''} ${p.variants.map(v => v.sku).join(' ')}`
+      searchString: `${p.name} ${p.aliases || ''} ${p.barcode || ''} ${p.category?.name || ''} ${p.brand?.name || ''} ${p.variants.map(v => v.sku + ' ' + (v.barcode || '')).join(' ')}`
     }));
 
     const results = fuzzysort.go(query, targets, {

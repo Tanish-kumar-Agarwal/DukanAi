@@ -1214,9 +1214,14 @@ model Invoice {
   cgstAmount     Decimal       @db.Decimal(10, 2)
   sgstAmount     Decimal       @db.Decimal(10, 2)
   igstAmount     Decimal       @default(0) @db.Decimal(10, 2)
-  taxAmount      Decimal       @db.Decimal(10, 2)
-  discountAmount Decimal       @db.Decimal(10, 2)
-  roundOffAmount Decimal       @default(0) @db.Decimal(10, 2)
+  taxAmount          Decimal       @db.Decimal(10, 2)
+  discountAmount     Decimal       @db.Decimal(10, 2)
+  discountPercentage Decimal?      @db.Decimal(5, 2)
+  discountType       String?
+  discountReason     String?
+  approvedBy         String?
+  approvalTimestamp  DateTime?
+  roundOffAmount     Decimal       @default(0) @db.Decimal(10, 2)
   totalAmount    Decimal       @db.Decimal(10, 2)
   paidAmount     Decimal       @db.Decimal(10, 2)
   udharAmount    Decimal       @default(0) @db.Decimal(10, 2)

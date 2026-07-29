@@ -1,24 +1,28 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
+import Decimal from 'decimal.js';
 
 @Injectable()
 export class VendorBillOutstandingService {
   /**
    * Dynamically tracks outstanding limits against partial payments.
    */
-  processPayment(totalAmount: number, currentPaid: number, paymentAmount: number) {
-    const outstanding = totalAmount - currentPaid;
+  processPayment(totalAmount: number | Decimal | string, currentPaid: number | Decimal | string, paymentAmount: number | Decimal | string) {
+    const total = new Decimal(totalAmount);
+    const paid = new Decimal(currentPaid);
+    const payment = new Decimal(paymentAmount);
+    const outstanding = total.minus(paid);
 
-    if (paymentAmount > outstanding) {
-      throw new BadRequestException(`Payment amount ${paymentAmount} exceeds outstanding balance ${outstanding}`);
+    if (payment.greaterThan(outstanding)) {
+      throw new BadRequestException(`Payment amount ${payment.toNumber()} exceeds outstanding balance ${outstanding.toNumber()}`);
     }
 
-    const newPaidAmount = currentPaid + paymentAmount;
-    const newOutstanding = totalAmount - newPaidAmount;
+    const newPaidAmount = paid.plus(payment);
+    const newOutstanding = total.minus(newPaidAmount);
 
     return {
-      paidAmount: newPaidAmount,
-      outstandingAmount: newOutstanding,
-      isFullyPaid: newOutstanding <= 0
+      paidAmount: newPaidAmount.toNumber(),
+      outstandingAmount: newOutstanding.toNumber(),
+      isFullyPaid: newOutstanding.lessThanOrEqualTo(0)
     };
   }
 }

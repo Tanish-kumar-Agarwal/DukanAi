@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import Decimal from 'decimal.js';
 
 @Injectable()
 export class PurchaseReturnValidationService {
@@ -25,15 +26,15 @@ export class PurchaseReturnValidationService {
         where: { grnLineId: line.grnLineId },
         _sum: { returnQuantity: true }
       });
-      const previouslyReturned = Number(previouslyReturnedAgg._sum.returnQuantity || 0);
+      const previouslyReturned = new Decimal(previouslyReturnedAgg._sum.returnQuantity || 0);
 
-      const received = parseFloat(grnLine.acceptedQuantity as any || 0);
-      const returning = parseFloat(line.returnQuantity || 0);
-      const totalRequestedReturn = returning + previouslyReturned;
+      const received = new Decimal(grnLine.acceptedQuantity as any || 0);
+      const returning = new Decimal(line.returnQuantity || 0);
+      const totalRequestedReturn = returning.plus(previouslyReturned);
 
-      if (totalRequestedReturn > received) {
+      if (totalRequestedReturn.greaterThan(received)) {
         throw new BadRequestException(
-          `Over-Return Detected: Cannot return quantity (${totalRequestedReturn}) exceeding Accepted GRN quantity (${received}). Previously returned: ${previouslyReturned}.`
+          `Over-Return Detected: Cannot return quantity (${totalRequestedReturn.toNumber()}) exceeding Accepted GRN quantity (${received.toNumber()}). Previously returned: ${previouslyReturned.toNumber()}.`
         );
       }
     }

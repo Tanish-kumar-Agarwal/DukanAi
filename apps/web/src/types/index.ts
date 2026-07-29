@@ -26,6 +26,15 @@ export type Product = {
   image?: string;
   description?: string;
   gstRate?: string;
+  barcode?: string;
+  isActive?: boolean;
+  isDeleted?: boolean;
+  trackInventory?: boolean;
+  currentStock?: number;
+  brand?: string;
+  aliases?: string[];
+  variants?: any[];
+  tax?: number;
 };
 
 export type Customer = {

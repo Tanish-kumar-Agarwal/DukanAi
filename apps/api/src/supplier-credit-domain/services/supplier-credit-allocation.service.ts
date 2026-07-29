@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import Decimal from 'decimal.js';
 
 @Injectable()
 export class SupplierCreditAllocationService {
@@ -15,15 +16,16 @@ export class SupplierCreditAllocationService {
 
     if (!vendorBill) throw new BadRequestException(`Vendor Bill ${vendorBillId} not found for allocation`);
 
-    const remainingCredit = parseFloat(creditNote.remainingBalance as any || 0);
-    const outstandingBill = parseFloat(vendorBill.outstandingAmount as any || 0);
+    const remainingCredit = new Decimal(creditNote.remainingBalance as any || 0);
+    const outstandingBill = new Decimal(vendorBill.outstandingAmount as any || 0);
+    const allocation = new Decimal(allocationAmount);
 
-    if (allocationAmount > remainingCredit) {
-      throw new BadRequestException(`Allocation amount (${allocationAmount}) exceeds remaining credit balance (${remainingCredit})`);
+    if (allocation.greaterThan(remainingCredit)) {
+      throw new BadRequestException(`Allocation amount (${allocation.toNumber()}) exceeds remaining credit balance (${remainingCredit.toNumber()})`);
     }
 
-    if (allocationAmount > outstandingBill) {
-      throw new BadRequestException(`Allocation amount (${allocationAmount}) exceeds Vendor Bill outstanding balance (${outstandingBill})`);
+    if (allocation.greaterThan(outstandingBill)) {
+      throw new BadRequestException(`Allocation amount (${allocation.toNumber()}) exceeds Vendor Bill outstanding balance (${outstandingBill.toNumber()})`);
     }
 
     // 1. Create Allocation Mapping Record

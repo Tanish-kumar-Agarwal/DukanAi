@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Prisma, StockMovementType } from '@prisma/client';
 import { StockLedgerService } from '../../stock-ledger-domain/services/stock-ledger.service';
 import { ProductEventPublisher } from '../../product-events/services/product-event-publisher.service';
+import Decimal from 'decimal.js';
 
 @Injectable()
 export class PurchaseReturnInventoryService {
@@ -18,7 +19,7 @@ export class PurchaseReturnInventoryService {
    */
   async processInventoryReversal(tx: Prisma.TransactionClient, shopId: string, returnAggregate: any) {
     for (const line of returnAggregate.lines) {
-      const returnQty = parseFloat(line.returnQuantity);
+      const returnQty = new Decimal(line.returnQuantity);
       
       // Update Available Inventory
       const invItem = await tx.inventoryItem.findFirst({
@@ -30,15 +31,15 @@ export class PurchaseReturnInventoryService {
         await tx.inventoryItem.update({
           where: { id: invItem.id },
           data: {
-            onHand: { decrement: returnQty }
+            onHand: { decrement: returnQty.toNumber() }
           }
         });
         
         // Write Immutable Stock Ledger reversal
         await this.stockLedger.recordMovement(tx, shopId, invItem.id, {
           movementType: StockMovementType.PURCHASE_RETURN,
-          quantityChange: -returnQty,
-          unitCost: line.unitPrice ? parseFloat(line.unitPrice) : 0,
+          quantityChange: -returnQty.toNumber(),
+          unitCost: line.unitPrice ? new Decimal(line.unitPrice).toNumber() : 0,
           referenceType: 'PURCHASE_RETURN',
           referenceId: returnAggregate.id,
           createdBy: returnAggregate.createdBy || 'SYSTEM',
@@ -55,8 +56,8 @@ export class PurchaseReturnInventoryService {
             productId: line.productId,
             reason: 'RETURN',
             quantityBefore: oldOnHand,
-            quantityChange: -returnQty,
-            quantityAfter: oldOnHand - returnQty,
+            quantityChange: -returnQty.toNumber(),
+            quantityAfter: oldOnHand - returnQty.toNumber(),
           }
         });
       } else {

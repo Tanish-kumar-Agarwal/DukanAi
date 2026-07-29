@@ -1,6 +1,7 @@
 import { Controller, Post, Body, Request, UseGuards } from '@nestjs/common';
 import { BillingService } from './billing.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
+import { CalculateInvoiceDto } from './dto/calculate-invoice.dto';
 import { ReturnInvoiceDto } from './dto/return-invoice.dto';
 import { Role } from '@prisma/client';
 import { Roles } from '../auth/roles.decorator';
@@ -24,6 +25,14 @@ export class BillingController {
   @Roles(Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER, Role.CASHIER)
   async returnInvoice(@Request() req: any, @Body() dto: ReturnInvoiceDto) {
     return this.billingService.processReturn(dto, req.ip);
+  }
+
+  @Post('calculate')
+  @Roles(Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER, Role.CASHIER)
+  async calculateInvoice(@Body() dto: CalculateInvoiceDto) {
+    // This endpoint exists primarily for external consumers, diagnostics, integrations, and future clients.
+    // The web POS shall continue using the shared InvoiceMathEngine directly for instant cart preview.
+    return this.billingService.calculateInvoice(dto);
   }
 }
 

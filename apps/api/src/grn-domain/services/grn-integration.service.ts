@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Prisma, StockMovementType } from '@prisma/client';
 import { StockLedgerService } from '../../stock-ledger-domain/services/stock-ledger.service';
 import { ProductEventPublisher } from '../../product-events/services/product-event-publisher.service';
+import Decimal from 'decimal.js';
 
 @Injectable()
 export class GrnIntegrationService {
@@ -24,11 +25,11 @@ export class GrnIntegrationService {
     this.logger.debug(`Integrating GRN ${grn.id} with Inventory & Stock Ledger`);
 
     for (const line of grn.lines) {
-      if (parseFloat(line.acceptedQuantity) <= 0) continue;
+      if (new Decimal(line.acceptedQuantity).lessThanOrEqualTo(0)) continue;
 
       let inventoryItemId = '';
       let oldOnHand = 0;
-      const quantityChange = parseFloat(line.acceptedQuantity);
+      const quantityChange = new Decimal(line.acceptedQuantity).toNumber();
 
       // Update InventoryItem safely (simulating calling existing InventoryDomain logic)
       const invItem = await tx.inventoryItem.findFirst({
@@ -63,7 +64,7 @@ export class GrnIntegrationService {
       await this.stockLedger.recordMovement(tx, shopId, inventoryItemId, {
         movementType: StockMovementType.PURCHASE,
         quantityChange: quantityChange,
-        unitCost: line.unitPrice ? parseFloat(line.unitPrice) : 0,
+        unitCost: line.unitPrice ? new Decimal(line.unitPrice).toNumber() : 0,
         referenceType: 'GOODS_RECEIPT',
         referenceId: grn.id,
         createdBy: grn.createdBy || 'SYSTEM',

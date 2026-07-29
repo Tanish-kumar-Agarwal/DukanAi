@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { CreateSalesOrderDto } from '../dto/create-sales-order.dto';
 import { Prisma } from '@prisma/client';
+import Decimal from 'decimal.js';
 
 export interface OrderFinancials {
   subTotal: number;
@@ -30,44 +31,45 @@ export class OrderCalculationEngine {
    * By default, it splits the tax into CGST and SGST equally if the tax rate is provided without specific breakdowns.
    */
   calculateFinancials(dto: CreateSalesOrderDto): OrderFinancials {
-    let subTotal = 0;
-    let discountTotal = 0;
-    let taxTotal = 0;
-    let cgstTotal = 0;
-    let sgstTotal = 0;
-    let igstTotal = 0;
-    let cessTotal = 0;
+    let subTotal = new Decimal(0);
+    let discountTotal = new Decimal(0);
+    let taxTotal = new Decimal(0);
+    let cgstTotal = new Decimal(0);
+    let sgstTotal = new Decimal(0);
+    let igstTotal = new Decimal(0);
+    let cessTotal = new Decimal(0);
 
     const processedLines = dto.lines.map(line => {
-      const discountAmount = line.discount || 0;
-      const netUnitPrice = line.unitPrice - discountAmount;
-      const lineNetTotal = netUnitPrice * line.quantity;
+      const quantity = new Decimal(line.quantity);
+      const discountAmount = new Decimal(line.discount || 0);
+      const netUnitPrice = new Decimal(line.unitPrice).minus(discountAmount);
+      const lineNetTotal = netUnitPrice.mul(quantity);
       
-      const taxRate = line.taxRate || 0;
-      const lineTaxTotal = lineNetTotal * (taxRate / 100);
+      const taxRate = new Decimal(line.taxRate || 0);
+      const lineTaxTotal = lineNetTotal.mul(taxRate).div(100);
       
       // Default Enterprise Rule: Split tax equally into CGST and SGST for standard transactions
-      const cgst = lineTaxTotal / 2;
-      const sgst = lineTaxTotal / 2;
+      const cgst = lineTaxTotal.div(2);
+      const sgst = lineTaxTotal.div(2);
 
-      subTotal += lineNetTotal;
-      discountTotal += discountAmount * line.quantity;
-      taxTotal += lineTaxTotal;
-      cgstTotal += cgst;
-      sgstTotal += sgst;
+      subTotal = subTotal.plus(lineNetTotal);
+      discountTotal = discountTotal.plus(discountAmount.mul(quantity));
+      taxTotal = taxTotal.plus(lineTaxTotal);
+      cgstTotal = cgstTotal.plus(cgst);
+      sgstTotal = sgstTotal.plus(sgst);
 
       return {
         productId: line.productId,
         variantId: line.variantId,
         quantity: line.quantity,
         unitPrice: line.unitPrice,
-        discount: discountAmount,
-        taxRate: taxRate,
-        lineTotal: lineNetTotal
+        discount: discountAmount.toNumber(),
+        taxRate: taxRate.toNumber(),
+        lineTotal: this.round(lineNetTotal)
       };
     });
 
-    const grandTotal = subTotal + taxTotal;
+    const grandTotal = subTotal.plus(taxTotal);
 
     return {
       subTotal: this.round(subTotal),
@@ -82,7 +84,7 @@ export class OrderCalculationEngine {
     };
   }
 
-  private round(value: number): number {
-    return Math.round((value + Number.EPSILON) * 10000) / 10000;
+  private round(value: Decimal): number {
+    return value.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toNumber();
   }
 }

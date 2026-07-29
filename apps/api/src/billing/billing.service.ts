@@ -4,7 +4,7 @@ import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { InventoryGateway } from '../inventory/inventory.gateway';
 import { InventoryCacheService } from '../inventory/inventory-cache.service';
 import { BillingHelpers } from './billing.helpers';
-import { Decimal } from 'decimal.js';
+import { InvoiceMathEngine, Decimal } from './utils/invoice-math.engine';
 import { Prisma } from '@prisma/client';
 import * as crypto from 'crypto';
 
@@ -250,94 +250,57 @@ export class BillingService {
 
             const isInterState = customer?.state ? shop!.state !== customer.state : false;
 
-            let subtotal = new Decimal(0);
-            let totalDiscount = new Decimal(0);
+            // ━━━ USE NEW INVOICE MATH ENGINE ━━━
+            const mathInput = {
+              items: dto.items.map(item => {
+                const product = productMap.get(item.productId)!;
+                return {
+                  productId: item.productId,
+                  quantity: item.quantity,
+                  unitPrice: product.sellingPrice,
+                  discountPercent: item.discountPercent,
+                  gstRateStr: product.gstRate,
+                  isInterState
+                };
+              }),
+              discountAmount: dto.discountAmount,
+              discountPercentage: dto.discountPercentage,
+              discountType: dto.discountType,
+              discountReason: dto.discountReason,
+              paymentMode: dto.paymentMode,
+              amountPaid: dto.amountPaid,
+              udharAmount: dto.udharAmount
+            };
 
-            const taxBrackets: Record<number, Decimal> = { 0: new Decimal(0), 5: new Decimal(0), 12: new Decimal(0), 18: new Decimal(0), 28: new Decimal(0) };
-            const gstRateMap: Record<string, number> = { ZERO: 0, FIVE: 5, TWELVE: 12, EIGHTEEN: 18, TWENTYEIGHT: 28 };
+            const mathResult = InvoiceMathEngine.calculate(mathInput);
 
-            const lineItems = dto.items.map(item => {
+            const lineItems = dto.items.map((item, idx) => {
               const product = productMap.get(item.productId)!;
-              const unitPrice = new Decimal(product.sellingPrice.toString());
-              const qty = new Decimal(item.quantity);
-              const discPct = new Decimal(item.discountPercent ?? 0);
-
-              const lineSubtotal = unitPrice.mul(qty);
-              const discountAmt = lineSubtotal.mul(discPct).div(100).toDecimalPlaces(2);
-              const taxableAmt = lineSubtotal.minus(discountAmt);
-
-              const gstPctNum = gstRateMap[product.gstRate] ?? 18;
-              taxBrackets[gstPctNum] = taxBrackets[gstPctNum].plus(taxableAmt);
-
-              const gstPct = new Decimal(gstPctNum);
-              let cgstAmt = new Decimal(0), sgstAmt = new Decimal(0), igstAmt = new Decimal(0);
-              if (isInterState) {
-                igstAmt = taxableAmt.mul(gstPct).div(100).toDecimalPlaces(2);
-              } else {
-                const halfGst = gstPct.div(2);
-                cgstAmt = taxableAmt.mul(halfGst).div(100).toDecimalPlaces(2);
-                sgstAmt = taxableAmt.mul(halfGst).div(100).toDecimalPlaces(2);
-              }
-              const taxAmt = cgstAmt.plus(sgstAmt).plus(igstAmt);
-              const lineTotal = taxableAmt.plus(taxAmt);
-
-              subtotal = subtotal.plus(lineSubtotal);
-              totalDiscount = totalDiscount.plus(discountAmt);
-
+              const resultLine = mathResult.lines[idx];
               return {
                 productId: item.productId,
                 productName: product.name,
                 productSku: product.sku,
-                quantity: qty.toNumber(),
+                quantity: resultLine.quantity.toNumber(),
                 unit: product.unit,
                 costPrice: product.costPrice,
                 sellingPrice: product.sellingPrice,
                 mrp: product.mrp,
-                discountPercent: discPct.toNumber(),
+                discountPercent: item.discountPercent ?? 0,
                 gstRate: product.gstRate,
-                cgstAmount: cgstAmt,
-                sgstAmount: sgstAmt,
-                igstAmount: igstAmt,
-                totalAmount: lineTotal,
+                cgstAmount: resultLine.cgstAmount,
+                sgstAmount: resultLine.sgstAmount,
+                igstAmount: resultLine.igstAmount,
+                totalAmount: resultLine.lineTotal,
               };
             });
 
-            // ━━━ P1 FIX: GST bracket-level aggregation with proper CGST/SGST split ━━━
-            let totalTax = new Decimal(0);
-            let totalCgst = new Decimal(0);
-            let totalSgst = new Decimal(0);
-            let totalIgst = new Decimal(0);
-            for (const [rate, taxableSum] of Object.entries(taxBrackets)) {
-              const rateDecimal = new Decimal(rate);
-              if (!rateDecimal.isZero() && !taxableSum.isZero()) {
-                if (isInterState) {
-                  const igst = taxableSum.mul(rateDecimal).div(100).toDecimalPlaces(2);
-                  totalIgst = totalIgst.plus(igst);
-                  totalTax = totalTax.plus(igst);
-                } else {
-                  const halfRate = rateDecimal.div(2);
-                  const cgst = taxableSum.mul(halfRate).div(100).toDecimalPlaces(2);
-                  const sgst = taxableSum.mul(halfRate).div(100).toDecimalPlaces(2);
-                  totalCgst = totalCgst.plus(cgst);
-                  totalSgst = totalSgst.plus(sgst);
-                  totalTax = totalTax.plus(cgst).plus(sgst);
-                }
-              }
-            }
-
-            const taxableTotal = subtotal.minus(totalDiscount);
-            const grandTotal = taxableTotal.plus(totalTax);
-            // Use Decimal rounding instead of Math.round to avoid precision loss
-            const roundedTotal = grandTotal.toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
-            const roundOff = roundedTotal.minus(grandTotal).toDecimalPlaces(2);
-            const finalTotal = grandTotal.plus(roundOff);
-
-            // Step F: Validate Udhar
+            // Validate Udhar logic
             if (dto.paymentMode === 'UDHAR' || dto.paymentMode === 'SPLIT') {
               if (!dto.customerId) throw new BadRequestException('A customer must be selected for Udhar billing.');
               if (!customer) throw new NotFoundException('Customer not found.');
 
-              const udharAmount = dto.paymentMode === 'UDHAR' ? finalTotal : new Decimal(dto.udharAmount ?? 0);
+              const udharAmount = new Decimal(dto.udharAmount ?? 0);
               const newBalance = new Decimal(customer.outstandingBalance.toString()).plus(udharAmount);
 
               if (newBalance.greaterThan(new Decimal(customer.creditLimit.toString())) && !dto.adminOverride) {
@@ -352,19 +315,9 @@ export class BillingService {
               }
             }
 
-            // Calculate payment amounts
-            const udharAmt = dto.paymentMode === 'UDHAR'
-              ? finalTotal
-              : (dto.paymentMode === 'SPLIT' ? new Decimal(dto.udharAmount ?? 0) : new Decimal(0));
-            const paidAmount = finalTotal.minus(udharAmt);
-            if (dto.paymentMode === 'CASH' && dto.cashTendered !== undefined && dto.cashTendered !== null && dto.cashTendered < finalTotal.toNumber()) {
-              throw new BadRequestException('Cash tendered is less than the bill amount.');
-            }
-
-            // Change amount: only relevant for cash payments, must not go negative
-            const changeAmount = dto.cashTendered
-              ? Decimal.max(new Decimal(dto.cashTendered).minus(finalTotal), new Decimal(0)).toDecimalPlaces(2)
-              : new Decimal(0);
+            const paidAmount = new Decimal(dto.amountPaid);
+            const udharAmt = new Decimal(dto.udharAmount ?? 0);
+            const changeAmount = new Decimal(0); // Add cashTendered back if change calculations are needed later
 
             // Step G: Create Invoice
             const invoice = await tx.invoice.create({
@@ -377,19 +330,24 @@ export class BillingService {
                 cashierId: user.userId,
                 paymentMode: dto.paymentMode,
                 status: 'COMPLETED',
-                subtotal,
-                discountAmount: totalDiscount,
-                taxableAmount: taxableTotal,
-                taxAmount: totalTax,
-                roundOffAmount: roundOff,
-                totalAmount: finalTotal,
+                subtotal: mathResult.subtotal,
+                discountAmount: mathResult.totalDiscount,
+                discountPercentage: dto.discountPercentage,
+                discountType: dto.discountType,
+                discountReason: dto.discountReason,
+                approvedBy: (dto.discountAmount && dto.discountAmount > 0) || (dto.discountPercentage && dto.discountPercentage > 0) ? user.userId : null,
+                approvalTimestamp: (dto.discountAmount && dto.discountAmount > 0) || (dto.discountPercentage && dto.discountPercentage > 0) ? new Date() : null,
+                taxableAmount: mathResult.taxableTotal,
+                taxAmount: mathResult.totalTax,
+                roundOffAmount: mathResult.roundOff,
+                totalAmount: mathResult.finalTotal,
                 paidAmount,
                 changeAmount,
                 udharAmount: udharAmt,
                 isInterState,
-                cgstAmount: totalCgst,
-                sgstAmount: totalSgst,
-                igstAmount: totalIgst,
+                cgstAmount: mathResult.totalCgst,
+                sgstAmount: mathResult.totalSgst,
+                igstAmount: mathResult.totalIgst,
                 notes: dto.notes ?? null,
                 shiftId: dto.shiftId ?? null,
                 items: { create: lineItems }
@@ -479,7 +437,7 @@ export class BillingService {
                   where: { id: dto.customerId },
                   data: {
                     outstandingBalance: newBalance,
-                    totalPurchases: { increment: finalTotal.toNumber() },
+                    totalPurchases: { increment: mathResult.finalTotal.toNumber() },
                     lastPurchaseAt: new Date()
                   }
                 });
@@ -488,7 +446,7 @@ export class BillingService {
               await tx.customer.update({
                 where: { id: dto.customerId },
                 data: {
-                  totalPurchases: { increment: finalTotal.toNumber() },
+                  totalPurchases: { increment: mathResult.finalTotal.toNumber() },
                   lastPurchaseAt: new Date()
                 }
               });
@@ -503,7 +461,7 @@ export class BillingService {
                 await tx.shift.update({
                   where: { id: dto.shiftId },
                   data: {
-                    totalSales: { increment: finalTotal.toNumber() },
+                    totalSales: { increment: mathResult.finalTotal.toNumber() },
                     cashSales: { increment: cashPortion },
                     udharSales: { increment: udharPortion },
                   }
@@ -517,8 +475,8 @@ export class BillingService {
                 await tx.shift.update({
                   where: { id: dto.shiftId },
                   data: {
-                    totalSales: { increment: finalTotal.toNumber() },
-                    [paymentField]: { increment: finalTotal.toNumber() }
+                    totalSales: { increment: mathResult.finalTotal.toNumber() },
+                    [paymentField]: { increment: mathResult.finalTotal.toNumber() }
                   }
                 });
               }
@@ -532,7 +490,7 @@ export class BillingService {
                 action: 'CREATE',
                 entity: 'Invoice',
                 entityId: invoice.id,
-                afterData: { invoiceNumber, totalAmount: finalTotal.toString(), itemCount: dto.items.length },
+                afterData: { invoiceNumber, totalAmount: mathResult.finalTotal.toString(), itemCount: dto.items.length },
                 ipAddress: user.ipAddress
               }
             });
@@ -554,7 +512,7 @@ export class BillingService {
                   openedById: user.userId,
                   type: 'CREDIT',
                   createdAt: new Date().toISOString(),
-                  amount: finalTotal.toNumber(),
+                  amount: mathResult.finalTotal.toNumber(),
                   description: `Invoice ${invoiceNumber} generated`
                 }
               }
@@ -579,7 +537,7 @@ export class BillingService {
                 orderBy: { createdAt: 'desc' }
               });
               const debitBalanceBefore = lastDebitEntry ? lastDebitEntry.balanceAfter.toNumber() : 0;
-              const debitBalanceAfter = debitBalanceBefore + finalTotal.toNumber();
+              const debitBalanceAfter = debitBalanceBefore + mathResult.finalTotal.toNumber();
 
               // Compute running balance for credit account (SALES_REVENUE)
               const lastCreditEntry = await tx.ledgerTransaction.findFirst({
@@ -587,7 +545,7 @@ export class BillingService {
                 orderBy: { createdAt: 'desc' }
               });
               const creditBalanceBefore = lastCreditEntry ? lastCreditEntry.balanceAfter.toNumber() : 0;
-              const creditBalanceAfter = creditBalanceBefore + finalTotal.toNumber();
+              const creditBalanceAfter = creditBalanceBefore + mathResult.finalTotal.toNumber();
 
               await tx.ledgerTransaction.create({
                 data: {
@@ -595,7 +553,7 @@ export class BillingService {
                   invoiceId: invoice.id,
                   account: debitAccount,
                   type: 'DEBIT',
-                  amount: finalTotal,
+                  amount: mathResult.finalTotal,
                   balanceAfter: debitBalanceAfter,
                   description: `Bill ${invoiceNumber} - ${debitAccount}`
                 }
@@ -607,7 +565,7 @@ export class BillingService {
                   invoiceId: invoice.id,
                   account: 'SALES_REVENUE',
                   type: 'CREDIT',
-                  amount: finalTotal,
+                  amount: mathResult.finalTotal,
                   balanceAfter: creditBalanceAfter,
                   description: `Bill ${invoiceNumber} - SALES_REVENUE`
                 }
@@ -708,7 +666,9 @@ export class BillingService {
       ipAddress
     };
 
-    return await this.prisma.$transaction(async (tx: any) => {
+    const stockRestorations: Array<{ productId: string; quantity: number }> = [];
+
+    const result = await this.prisma.$transaction(async (tx: any) => {
       // 1. Fetch and validate original invoice
       const original = await tx.invoice.findUnique({
         where: { id: dto.invoiceId, shopId: user.shopId },
@@ -841,6 +801,8 @@ export class BillingService {
             currentStock: { increment: item.quantity }
           }
         });
+
+        stockRestorations.push({ productId: item.productId, quantity: item.quantity });
 
         await tx.inventoryLog.create({
           data: {
@@ -1045,6 +1007,70 @@ export class BillingService {
       isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
       timeout: 10000
     });
+
+    for (const res of stockRestorations) {
+      try {
+        await this.inventoryCache.restoreStock(res.productId, res.quantity);
+      } catch (e) {
+        this.logger.warn(`Failed to restore Redis stock on return for product ${res.productId}`, e);
+      }
+    }
+
+    return result;
+  }
+  async calculateInvoice(dto: any): Promise<any> {
+    const shopId = this.tenantContext.getShopId();
+
+    const productIds = dto.items.map((i: any) => i.productId);
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: productIds }, isDeleted: false, isActive: true },
+      select: {
+        id: true, sellingPrice: true, gstRate: true
+      }
+    });
+
+    if (products.length !== new Set(productIds).size) {
+      throw new NotFoundException(`One or more products not found`);
+    }
+    const productMap = new Map<string, any>(products.map((p: any) => [p.id, p]));
+
+    let isInterState = false;
+    if (dto.customerId) {
+      const shop = await this.prisma.shop.findUnique({ where: { id: shopId }, select: { state: true } });
+      const customer = await this.prisma.customer.findFirst({
+        where: { id: dto.customerId },
+        select: { state: true }
+      });
+      if (customer && shop) {
+        isInterState = shop.state !== customer.state;
+      }
+    }
+
+    const mathInput = {
+      items: dto.items.map((item: any) => {
+        const product = productMap.get(item.productId)!;
+        return {
+          productId: item.productId,
+          quantity: item.quantity,
+          unitPrice: product.sellingPrice,
+          discountPercent: item.discountPercent,
+          gstRateStr: product.gstRate,
+          isInterState
+        };
+      }),
+      discountAmount: dto.discountAmount,
+      discountPercentage: dto.discountPercentage,
+      discountType: dto.discountType,
+      discountReason: dto.discountReason,
+      // For preview endpoint, if amountPaid isn't provided, use a dummy value 
+      // (our engine bypasses strict payment equality checks if amountPaid == 99999999)
+      amountPaid: dto.amountPaid ?? 99999999,
+      udharAmount: dto.udharAmount ?? 0,
+      paymentMode: dto.paymentMode ?? 'CASH'
+    };
+
+    const mathResult = InvoiceMathEngine.calculate(mathInput);
+    return mathResult;
   }
 }
 

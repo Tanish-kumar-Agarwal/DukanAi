@@ -20,7 +20,7 @@ export class ProductsService {
     // findUnique lookup with deletedAt: null is invalid and can throw before
     // creation. Check the active record explicitly instead.
     const activeExisting = await this.prisma.product.findFirst({
-      where: { shopId, sku: createProductDto.sku, isDeleted: false },
+      where: { shopId, sku: createProductDto.sku, isDeleted: false, isActive: true },
     });
     if (activeExisting) {
       throw new BadRequestException(`Product with SKU ${createProductDto.sku} already exists.`);
@@ -51,7 +51,7 @@ export class ProductsService {
   async findAll(limit: number = 50, offset: number = 0) {
     const shopId = this.tenantContext.getShopId();
     return this.prisma.product.findMany({
-      where: { shopId, isDeleted: false },
+      where: { shopId, isDeleted: false, isActive: true },
       include: { category: true, brand: true },
       orderBy: { createdAt: 'desc' },
       take: limit,
