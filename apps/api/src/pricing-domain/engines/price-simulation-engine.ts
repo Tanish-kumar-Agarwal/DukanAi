@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { PricingRuleEngine } from './pricing-rule-engine';
 import { PricingSimulationContext, PricingSimulationResult } from '../dto/pricing-simulation.dto';
 import { PricingRule } from '@prisma/client';
+import { Decimal } from '@dukaanai/invoice-math';
 
 @Injectable()
 export class PriceSimulationEngine {
@@ -54,32 +55,33 @@ export class PriceSimulationEngine {
     const allApplicableRules = [...activeRules, ...couponRules];
 
     // 3. Evaluate line by line
-    let subTotal = 0;
-    let grandTotal = 0;
+    let subTotal = new Decimal(0);
+    let grandTotal = new Decimal(0);
     const processedLines = [];
 
     for (const line of cartLines) {
       const { finalUnitPrice, appliedDiscounts } = this.ruleEngine.applyRulesToLine(line, allApplicableRules);
       
-      const lineTotal = finalUnitPrice * line.quantity;
-      const lineSubTotal = line.basePrice * line.quantity;
+      const qty = new Decimal(line.quantity);
+      const lineTotal = new Decimal(finalUnitPrice).mul(qty).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+      const lineSubTotal = new Decimal(line.basePrice).mul(qty).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
       
-      subTotal += lineSubTotal;
-      grandTotal += lineTotal;
+      subTotal = subTotal.plus(lineSubTotal);
+      grandTotal = grandTotal.plus(lineTotal);
 
       processedLines.push({
         ...line,
         finalUnitPrice,
-        lineTotal,
+        lineTotal: lineTotal.toNumber(),
         appliedDiscounts
       });
     }
 
     return {
       lines: processedLines,
-      subTotal,
-      discountTotal: subTotal - grandTotal,
-      grandTotal
+      subTotal: subTotal.toNumber(),
+      discountTotal: subTotal.minus(grandTotal).toNumber(),
+      grandTotal: grandTotal.toNumber()
     };
   }
 }

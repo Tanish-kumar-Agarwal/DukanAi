@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import Decimal from 'decimal.js';
+import { TaxCalculator } from '@dukaanai/invoice-math';
+import { Decimal } from 'decimal.js';
 
 @Injectable()
 export class VendorBillTaxService {
@@ -14,24 +15,20 @@ export class VendorBillTaxService {
     for (const line of lines) {
       const qty = new Decimal(line.billedQuantity || 0);
       const price = new Decimal(line.unitPrice || 0);
-      const taxRate = new Decimal(line.taxPercentage || 0).div(100);
+      const taxRate = Number(line.taxPercentage || 0);
       
-      if (taxMode === 'EXCLUSIVE') {
-        const base = qty.mul(price);
-        const tax = base.mul(taxRate);
-        line.taxAmount = tax.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toNumber();
-        line.totalAmount = base.plus(tax).toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toNumber();
-        totalBase = totalBase.plus(base);
-        totalTax = totalTax.plus(tax);
-      } else {
-        const total = qty.mul(price);
-        const base = total.div(new Decimal(1).plus(taxRate));
-        const tax = total.minus(base);
-        line.taxAmount = tax.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toNumber();
-        line.totalAmount = total.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toNumber();
-        totalBase = totalBase.plus(base);
-        totalTax = totalTax.plus(tax);
-      }
+      const taxResult = TaxCalculator.calculateTax({
+        taxableAmount: qty.mul(price),
+        gstRate: taxRate,
+        isInterState: false, // Vendor bills do not track interstate at this granular level in the current model
+        mode: taxMode
+      });
+
+      line.taxAmount = taxResult.totalTaxAmount.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toNumber();
+      line.totalAmount = taxResult.totalAmount.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toNumber();
+      
+      totalBase = totalBase.plus(taxResult.baseAmount);
+      totalTax = totalTax.plus(taxResult.totalTaxAmount);
     }
 
     return { 

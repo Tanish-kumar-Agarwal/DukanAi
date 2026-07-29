@@ -4,6 +4,7 @@
 export { Decimal } from './decimal'; // Decimal is our current Money abstraction
 export { InvoiceMathEngine } from './invoice-math.engine';
 export { InvoiceMathError } from './invoice-math.error';
+export * from './tax';
 
 // Public Types
 export type {
@@ -19,6 +20,5 @@ export {
   DISCOUNT_TYPES,
   FULL_PAYMENT_MODES,
   CREDIT_PAYMENT_MODE,
-  SPLIT_PAYMENT_MODE,
-  GST_RATE_MAP
+  SPLIT_PAYMENT_MODE
 } from './invoice.constants';

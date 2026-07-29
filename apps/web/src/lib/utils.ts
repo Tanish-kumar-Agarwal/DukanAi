@@ -32,14 +32,6 @@ export const calculatePercentage = (value: number, total: number): number => {
   return new Decimal(value).div(total).mul(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
 };
 
-export const calculateTax = (amount: number, taxRate: number = 5): number => {
-  return new Decimal(amount).mul(taxRate).div(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
-};
-
-export const calculateDiscount = (amount: number, discountPercentage: number): number => {
-  return new Decimal(amount).mul(discountPercentage).div(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
-};
-
 export const truncateText = (text: string, maxLength: number = 50): string => {
   if (text.length <= maxLength) return text;
   return text.slice(0, maxLength) + '...';

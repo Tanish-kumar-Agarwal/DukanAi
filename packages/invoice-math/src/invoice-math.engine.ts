@@ -9,9 +9,9 @@ import {
   DISCOUNT_TYPES, 
   FULL_PAYMENT_MODES, 
   CREDIT_PAYMENT_MODE, 
-  SPLIT_PAYMENT_MODE,
-  GST_RATE_MAP
+  SPLIT_PAYMENT_MODE
 } from './invoice.constants';
+import { TaxCalculator, GST_RATE_MAP } from './tax';
 import { InvoiceMathError } from './invoice-math.error';
 
 // A simple deterministic hash generator for audit trails
@@ -133,22 +133,19 @@ export class InvoiceMathEngine {
 
       // 5. Calculate GST on the final taxable amount
       const gstPctNum = GST_RATE_MAP[lineData.item.gstRateStr || 'EIGHTEEN'] ?? 18;
-      const gstPct = new Decimal(gstPctNum);
       
-      let cgstAmt = new Decimal(0);
-      let sgstAmt = new Decimal(0);
-      let igstAmt = new Decimal(0);
+      const taxResult = TaxCalculator.calculateTax({
+        taxableAmount,
+        gstRate: gstPctNum,
+        isInterState: !!lineData.item.isInterState,
+        mode: 'EXCLUSIVE' // POS invoices are traditionally built bottom-up (Exclusive)
+      });
 
-      if (lineData.item.isInterState) {
-        igstAmt = taxableAmount.mul(gstPct).div(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-      } else {
-        const halfGst = gstPct.div(2);
-        cgstAmt = taxableAmount.mul(halfGst).div(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-        sgstAmt = taxableAmount.mul(halfGst).div(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-      }
-
-      const taxAmount = cgstAmt.plus(sgstAmt).plus(igstAmt);
-      const lineTotal = taxableAmount.plus(taxAmount);
+      const cgstAmt = taxResult.cgstAmount;
+      const sgstAmt = taxResult.sgstAmount;
+      const igstAmt = taxResult.igstAmount;
+      const taxAmount = taxResult.totalTaxAmount;
+      const lineTotal = taxResult.totalAmount;
 
       lines.push({
         productId: lineData.item.productId,

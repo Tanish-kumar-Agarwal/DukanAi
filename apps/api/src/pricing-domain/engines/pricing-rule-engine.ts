@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PricingRule } from '@prisma/client';
 import { CartLineItem } from '../dto/pricing-simulation.dto';
+import { Decimal } from '@dukaanai/invoice-math';
 
 @Injectable()
 export class PricingRuleEngine {
@@ -16,7 +17,7 @@ export class PricingRuleEngine {
     // 1. Sort rules by priority (Highest first)
     const sortedRules = [...rules].sort((a, b) => b.priority - a.priority);
     
-    let currentPrice = line.basePrice;
+    let currentPrice = new Decimal(line.basePrice);
     const appliedDiscounts: Array<{ ruleId: string; amount: number; description: string }> = [];
     let hasExclusiveRuleApplied = false;
 
@@ -27,11 +28,11 @@ export class PricingRuleEngine {
 
       const discountAmount = this.calculateDiscount(currentPrice, rule);
       
-      if (discountAmount > 0) {
-        currentPrice -= discountAmount;
+      if (discountAmount.greaterThan(0)) {
+        currentPrice = currentPrice.minus(discountAmount);
         appliedDiscounts.push({
           ruleId: rule.id,
-          amount: discountAmount,
+          amount: discountAmount.toNumber(),
           description: rule.name
         });
 
@@ -41,14 +42,14 @@ export class PricingRuleEngine {
       }
 
       // Safeguard: Never let price go negative
-      if (currentPrice <= 0) {
-        currentPrice = 0;
+      if (currentPrice.lessThanOrEqualTo(0)) {
+        currentPrice = new Decimal(0);
         break; 
       }
     }
 
     return {
-      finalUnitPrice: currentPrice,
+      finalUnitPrice: currentPrice.toNumber(),
       appliedDiscounts
     };
   }
@@ -61,17 +62,17 @@ export class PricingRuleEngine {
     return true; 
   }
 
-  private calculateDiscount(currentPrice: number, rule: PricingRule): number {
-    const value = Number(rule.value);
+  private calculateDiscount(currentPrice: Decimal, rule: PricingRule): Decimal {
+    const value = new Decimal(rule.value.toString());
     switch (rule.type) {
       case 'PERCENTAGE':
-        return currentPrice * (value / 100);
+        return currentPrice.mul(value).div(100).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
       case 'FLAT':
-        return value;
+        return value.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
       case 'BOGO': // Simplified BOGO for simulation (requires quantity context normally)
-        return 0; 
+        return new Decimal(0); 
       default:
-        return 0;
+        return new Decimal(0);
     }
   }
 }

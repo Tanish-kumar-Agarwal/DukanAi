@@ -19,10 +19,3 @@ export const CREDIT_PAYMENT_MODE = 'UDHAR';
 
 export const SPLIT_PAYMENT_MODE = 'SPLIT';
 
-export const GST_RATE_MAP: Record<string, number> = {
-  ZERO: 0,
-  FIVE: 5,
-  TWELVE: 12,
-  EIGHTEEN: 18,
-  TWENTYEIGHT: 28,
-};

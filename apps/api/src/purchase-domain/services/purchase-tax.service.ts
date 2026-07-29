@@ -1,4 +1,6 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { TaxCalculator } from '@dukaanai/invoice-math';
+import { Decimal } from 'decimal.js';
 
 @Injectable()
 export class PurchaseTaxService {
@@ -26,29 +28,26 @@ export class PurchaseTaxService {
       const igstRate = item.igstRate || 0;
       const cessRate = item.cessRate || 0;
       
-      const totalTaxRate = cgstRate + sgstRate + igstRate + cessRate;
+      const isInterState = igstRate > 0;
+      const gstRate = isInterState ? igstRate : (cgstRate + sgstRate);
 
-      let taxableValue = subtotal;
-      let taxAmount = 0;
-
-      if (mode === 'INCLUSIVE') {
-        taxableValue = subtotal / (1 + (totalTaxRate / 100));
-        taxAmount = subtotal - taxableValue;
-      } else {
-        taxAmount = subtotal * (totalTaxRate / 100);
-      }
-
-      const totalCost = taxableValue + taxAmount;
+      const taxResult = TaxCalculator.calculateTax({
+        taxableAmount: new Decimal(subtotal),
+        gstRate,
+        cessRate,
+        isInterState,
+        mode
+      });
 
       return {
         ...item,
-        price: taxableValue,
-        tax: taxAmount,
-        totalCost: totalCost,
-        cgstAmount: mode === 'INCLUSIVE' ? taxableValue * (cgstRate / 100) : subtotal * (cgstRate / 100),
-        sgstAmount: mode === 'INCLUSIVE' ? taxableValue * (sgstRate / 100) : subtotal * (sgstRate / 100),
-        igstAmount: mode === 'INCLUSIVE' ? taxableValue * (igstRate / 100) : subtotal * (igstRate / 100),
-        cessAmount: mode === 'INCLUSIVE' ? taxableValue * (cessRate / 100) : subtotal * (cessRate / 100),
+        price: taxResult.baseAmount.toNumber(),
+        tax: taxResult.totalTaxAmount.toNumber(),
+        totalCost: taxResult.totalAmount.toNumber(),
+        cgstAmount: taxResult.cgstAmount.toNumber(),
+        sgstAmount: taxResult.sgstAmount.toNumber(),
+        igstAmount: taxResult.igstAmount.toNumber(),
+        cessAmount: taxResult.cessAmount.toNumber(),
       };
     });
   }
