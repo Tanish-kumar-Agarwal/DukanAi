@@ -11,7 +11,7 @@ import {
   BarChart, Bar, PieChart, Pie, Cell,
 } from 'recharts';
 import { useToast } from '@/components/ui/Toast';
-import { analyticsApi, type AnalyticsPagePayload, type AnalyticsRange } from '@/lib/api-client';
+import { analyticsApi, type AnalyticsPagePayload, type AnalyticsRange, type DashboardSummary } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
 
 const RANGE_OPTIONS: Array<{ label: string; value: AnalyticsRange }> = [
@@ -54,16 +54,22 @@ export default function AnalyticsPage() {
   const { toast } = useToast();
   const [range, setRange] = useState<AnalyticsRange>('week');
   const [data, setData] = useState<AnalyticsPagePayload | null>(null);
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
     setLoadError(null);
-    analyticsApi
-      .analyticsPage(range)
-      .then(setData)
-      .catch((err) => setLoadError(describeApiError(err, 'Loading analytics (GET /dashboard/analytics)')))
+    Promise.all([
+      analyticsApi.analyticsPage(range),
+      analyticsApi.dashboardSummary()
+    ])
+      .then(([pageData, summaryData]) => {
+        setData(pageData);
+        setSummary(summaryData);
+      })
+      .catch((err) => setLoadError(describeApiError(err, 'Loading analytics')))
       .finally(() => setLoading(false));
   }, [range]);
 
@@ -362,6 +368,53 @@ export default function AnalyticsPage() {
               </button>
             </Card>
           </div>
+
+          {/* Recent Transactions Table */}
+          <Card className="p-6 shadow-[0_4px_20px_rgba(15,23,42,0.04)] mt-6">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                <Wallet size={18} className="text-[#8B5CF6]" />
+                Recent Transactions
+              </h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm text-gray-600">
+                <thead className="text-xs text-gray-400 uppercase border-b border-gray-100">
+                  <tr>
+                    <th className="px-4 py-3 font-medium">Invoice No</th>
+                    <th className="px-4 py-3 font-medium">Customer</th>
+                    <th className="px-4 py-3 font-medium">Date</th>
+                    <th className="px-4 py-3 font-medium">Mode</th>
+                    <th className="px-4 py-3 font-medium text-right">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(summary?.recentInvoices ?? []).map((invoice) => (
+                    <tr key={invoice.id} className="border-b border-gray-50 hover:bg-gray-50/50">
+                      <td className="px-4 py-3 font-semibold text-gray-800">#{invoice.invoiceNumber}</td>
+                      <td className="px-4 py-3">{invoice.customer?.name ?? 'Walk-in'}</td>
+                      <td className="px-4 py-3">{new Date(invoice.createdAt).toLocaleDateString()}</td>
+                      <td className="px-4 py-3">
+                        <span className="bg-gray-100 text-gray-600 px-2 py-1 rounded text-[10px] font-bold">
+                          {invoice.paymentMode}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 font-bold text-gray-800 text-right">
+                        ₹{invoice.totalAmount.toLocaleString('en-IN')}
+                      </td>
+                    </tr>
+                  ))}
+                  {summary && summary.recentInvoices.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
+                        No transactions found.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
         </>
       )}
     </div>

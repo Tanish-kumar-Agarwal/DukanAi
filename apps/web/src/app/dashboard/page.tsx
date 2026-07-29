@@ -561,7 +561,7 @@ export default function DashboardPage() {
         <Card className="lg:col-span-3 p-5">
           <div className="flex justify-between items-center mb-4">
             <h3 className="font-bold text-gray-800 text-[15px]">Recent Transactions</h3>
-            <span className="text-xs text-[#8B5CF6] font-semibold cursor-pointer">View All</span>
+            <span onClick={() => router.push('/analytics')} className="text-xs text-[#8B5CF6] font-semibold cursor-pointer">View All</span>
           </div>
           <div className="space-y-4">
             {(summary?.recentInvoices ?? []).map((invoice) => (
@@ -577,7 +577,7 @@ export default function DashboardPage() {
               </div>
             ))}
             {summary && summary.recentInvoices.length === 0 && <p className="text-xs text-gray-500">No transactions yet.</p>}
-            <button className="w-full text-center mt-2 pt-3 border-t border-gray-100 text-[#8B5CF6] text-[11px] font-bold flex items-center justify-center gap-1">
+            <button onClick={() => router.push('/analytics')} className="w-full text-center mt-2 pt-3 border-t border-gray-100 text-[#8B5CF6] text-[11px] font-bold flex items-center justify-center gap-1">
               See All Transactions &rarr;
             </button>
           </div>
