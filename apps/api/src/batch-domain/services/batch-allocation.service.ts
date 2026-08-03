@@ -1,10 +1,13 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { Prisma, BatchStatus } from '@prisma/client';
+import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 
 @Injectable()
 export class BatchAllocationService {
   private readonly logger = new Logger(BatchAllocationService.name);
+
+  constructor(private readonly inventoryMutationEngine: InventoryMutationEngine) {}
 
   /**
    * FEFO (First-Expired-First-Out) Allocation Engine
@@ -54,10 +57,18 @@ export class BatchAllocationService {
           data: { reservedQuantity: { increment: allocateFromHere } }
         });
 
-        // 2. Lock the physical InventoryItem (Phase 3.2.4 integration)
-        await tx.inventoryItem.update({
-          where: { id: batchStock.inventoryItemId },
-          data: { reserved: { increment: allocateFromHere } }
+        // 2. Lock the physical InventoryItem via Engine
+        await this.inventoryMutationEngine.mutateStock(tx, {
+          shopId,
+          locationId: batchStock.inventoryItem.locationId,
+          productId: batchStock.inventoryItem.productId,
+          quantity: allocateFromHere,
+          mutationType: MutationType.RESERVATION,
+          reason: `FEFO Batch Allocation: ${reservationItemId}`,
+          referenceId: reservationItemId,
+          performedBy: 'SYSTEM',
+          occurredAt: new Date(),
+          allowNegative: batchStock.inventoryItem.isNegativeAllowed
         });
 
         // 3. Create the Reservation Allocation record (Phase 3.2.4)

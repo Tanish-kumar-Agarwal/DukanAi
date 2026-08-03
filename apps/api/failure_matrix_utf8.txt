@@ -1,0 +1,56 @@
+--- FAILURE MATRIX & ROLLBACK TESTS ---
+
+[STATE SNAPSHOT] BEFORE ROLLBACK TEST
+Product: { currentStock: 10, stockVersion: 1 }
+InventoryItem [DEFAULT]: { onHand: 10, reserved: undefined }
+Ledger Rows: 0
+InventoryLog Rows: 0
+INVARIANT CHECK: SUM(InventoryItem.onHand) [10] === Product.currentStock [10] -> PASS
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[2fba9db7-95ee-4f1e-ac83-509f6c4a5d39] State: PENDING[39m
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[2fba9db7-95ee-4f1e-ac83-509f6c4a5d39] State: VALIDATED[39m
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[2fba9db7-95ee-4f1e-ac83-509f6c4a5d39] State: INVENTORY_MUTATED[39m
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[2fba9db7-95ee-4f1e-ac83-509f6c4a5d39] State: CACHE_SYNCED[39m
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[2fba9db7-95ee-4f1e-ac83-509f6c4a5d39] State: LEDGER_WRITTEN[39m
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[2fba9db7-95ee-4f1e-ac83-509f6c4a5d39] State: LOGGED[39m
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[2fba9db7-95ee-4f1e-ac83-509f6c4a5d39] State: EVENT_STAGED[39m
+
+Simulating CRASH immediately before commit...
+Caught expected error: SIMULATED_CRASH_BEFORE_COMMIT
+
+[STATE SNAPSHOT] AFTER ROLLBACK TEST
+Product: { currentStock: 10, stockVersion: 1 }
+InventoryItem [DEFAULT]: { onHand: 10, reserved: undefined }
+Ledger Rows: 0
+InventoryLog Rows: 0
+INVARIANT CHECK: SUM(InventoryItem.onHand) [10] === Product.currentStock [10] -> PASS
+
+--- IDEMPOTENCY TEST ---
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[26597806-1d26-4e2a-850b-575418f087a5] State: PENDING[39m
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[26597806-1d26-4e2a-850b-575418f087a5] State: VALIDATED[39m
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[26597806-1d26-4e2a-850b-575418f087a5] State: INVENTORY_MUTATED[39m
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[26597806-1d26-4e2a-850b-575418f087a5] State: CACHE_SYNCED[39m
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[26597806-1d26-4e2a-850b-575418f087a5] State: LEDGER_WRITTEN[39m
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[26597806-1d26-4e2a-850b-575418f087a5] State: LOGGED[39m
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[26597806-1d26-4e2a-850b-575418f087a5] State: EVENT_STAGED[39m
+
+First mutation executed successfully.
+
+[STATE SNAPSHOT] AFTER FIRST IDEMPOTENT REQUEST
+Product: { currentStock: 8, stockVersion: 2 }
+InventoryItem [DEFAULT]: { onHand: 8, reserved: undefined }
+Ledger Rows: 1
+InventoryLog Rows: 1
+INVARIANT CHECK: SUM(InventoryItem.onHand) [8] === Product.currentStock [8] -> PASS
+[95m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [95m  DEBUG[39m [38;5;3m[InventoryMutationEngine] [39m[95m[195439e8-2248-48ad-a6c2-004f04ad094e] State: PENDING[39m
+[32m[Nest] 12708  - [39m01/08/2026, 5:07:55 pm [32m    LOG[39m [38;5;3m[InventoryMutationEngine] [39m[32m[195439e8-2248-48ad-a6c2-004f04ad094e] Idempotency key IDEM-1785584275589 already processed. Skipping.[39m
+
+Second mutation executed.
+
+[STATE SNAPSHOT] AFTER DUPLICATE IDEMPOTENT REQUEST
+Product: { currentStock: 8, stockVersion: 2 }
+InventoryItem [DEFAULT]: { onHand: 8, reserved: undefined }
+Ledger Rows: 1
+InventoryLog Rows: 1
+INVARIANT CHECK: SUM(InventoryItem.onHand) [8] === Product.currentStock [8] -> PASS
+
+Γ£à IDEMPOTENCY SUCCESSFUL. Duplicate request detected (Result: true).

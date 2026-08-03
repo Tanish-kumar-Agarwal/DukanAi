@@ -5,6 +5,7 @@ import { StockLedgerModule } from '../stock-ledger-domain/stock-ledger.module';
 import { InventoryDomainService } from './services/inventory-domain.service';
 import { InventoryValidationService } from './services/inventory-validation.service';
 import { InventoryCalculationService } from './services/inventory-calculation.service';
+import { InventoryMutationEngine } from './services/inventory-mutation.engine';
 import { InventoryDomainController } from './inventory-domain.controller';
 
 @Module({
@@ -14,7 +15,8 @@ import { InventoryDomainController } from './inventory-domain.controller';
     InventoryDomainService,
     InventoryValidationService,
     InventoryCalculationService,
+    InventoryMutationEngine,
   ],
-  exports: [InventoryDomainService, InventoryCalculationService],
+  exports: [InventoryDomainService, InventoryCalculationService, InventoryMutationEngine],
 })
 export class InventoryDomainModule {}

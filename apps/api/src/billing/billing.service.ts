@@ -11,6 +11,8 @@ import * as crypto from 'crypto';
 
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { BillingFeatureConfig } from '../config/domains/features/billing-feature.config';
+import { InventoryMutationEngine, MutationType } from '../inventory-domain/services/inventory-mutation.engine';
+import { OptimisticLockConflictError, InsufficientStockError } from '../inventory-domain/errors/inventory.errors';
 
 @Injectable()
 export class BillingService {
@@ -22,7 +24,8 @@ export class BillingService {
     private readonly inventoryCache: InventoryCacheService,
     private readonly billingHelpers: BillingHelpers,
     private readonly tenantContext: TenantContextService,
-    private readonly billingConfig: BillingFeatureConfig
+    private readonly billingConfig: BillingFeatureConfig,
+    private readonly inventoryMutationEngine: InventoryMutationEngine
   ) {}
 
   async createInvoice(dto: CreateInvoiceDto, ipAddress: string): Promise<any> {
@@ -128,63 +131,7 @@ export class BillingService {
         attempt++;
         try {
           const result = await this.prisma.$transaction(async (tx: any) => {
-            // Clear array for each retry attempt
-            stockDeductions.length = 0;
-
-            // ━━━ CRITICAL SECTION START ━━━
-            for (const item of dto.items) {
-              const currentProduct = productMap.get(item.productId)!;
-
-              const updateResult = await tx.$executeRaw`
-                UPDATE Product
-                SET
-                  currentStock = currentStock - ${item.quantity},
-                  stockVersion = stockVersion + 1,
-                  updatedAt = NOW()
-                WHERE
-                  id = ${item.productId}
-                  AND shopId = ${user.shopId}
-                  AND currentStock >= ${item.quantity}
-                  AND stockVersion = ${currentProduct.stockVersion}
-                  AND isDeleted = false
-              `;
-
-              if (updateResult === 0) {
-                const freshProduct = await tx.product.findUnique({
-                  where: { id: item.productId },
-                  select: { currentStock: true, stockVersion: true, name: true }
-                });
-
-                if (!freshProduct) {
-                  throw new NotFoundException(`Product ${item.productId} not found`);
-                }
-
-                if (freshProduct.currentStock.toNumber() < item.quantity) {
-                  throw new ConflictException({
-                    message: `"${freshProduct.name}" is out of stock. Only ${freshProduct.currentStock} unit(s) available.`,
-                    productId: item.productId,
-                    productName: freshProduct.name,
-                    requestedQty: item.quantity,
-                    availableQty: freshProduct.currentStock.toNumber(),
-                    code: 'INSUFFICIENT_STOCK'
-                  });
-                }
-
-                throw new Error('OPTIMISTIC_LOCK_CONFLICT');
-              }
-
-              // Use Decimal math to avoid floating-point precision loss
-              const newStock = new Decimal(currentProduct.currentStock.toString())
-                .minus(new Decimal(item.quantity.toString()))
-                .toDecimalPlaces(3);
-
-              stockDeductions.push({
-                productId: item.productId,
-                newStock: newStock.toNumber(),
-                newVersion: currentProduct.stockVersion + 1
-              });
-            }
-            // ━━━ STOCK DEDUCTION COMPLETE ━━━
+            /* Legacy stock deduction block removed to migrate to single-authority mutation engine */
 
             // Step C: Generate invoice number with deterministic date formatting
             const now = new Date();
@@ -355,62 +302,40 @@ export class BillingService {
               include: { items: true, customer: true }
             });
 
-            // Step H: InventoryLog
-            await tx.inventoryLog.createMany({
-              data: dto.items.map(item => {
-                const product = productMap.get(item.productId)!;
-                const deduction = stockDeductions.find(d => d.productId === item.productId)!;
-                return {
-                  productId: item.productId,
-                  shopId: user.shopId,
-                  type: 'SALE',
-                  quantityBefore: product.currentStock,
-                  quantityChange: -item.quantity,
-                  quantityAfter: deduction.newStock,
-                  invoiceId: invoice.id,
-                  recordedById: user.userId
-                };
-              })
-            });
-
-            // Step H.5: InventoryItem and StockLedgerEntry (Fixes Phase 2 & 9 sync)
+            // Step H: Single Authority Inventory Mutation via Engine
             for (const item of dto.items) {
-              const product = productMap.get(item.productId)!;
-              let invItem = await tx.inventoryItem.findFirst({
-                where: { shopId: user.shopId, productId: item.productId, locationId: 'DEFAULT' }
-              });
-              let oldOnHand = 0;
-              if (invItem) {
-                oldOnHand = invItem.onHand.toNumber();
-                invItem = await tx.inventoryItem.update({
-                  where: { id: invItem.id },
-                  data: { onHand: { decrement: item.quantity } }
-                });
-              } else {
-                invItem = await tx.inventoryItem.create({
-                  data: {
-                    shopId: user.shopId,
-                    productId: item.productId,
-                    locationId: 'DEFAULT',
-                    onHand: -item.quantity,
-                    status: 'AVAILABLE'
+              const currentProduct = productMap.get(item.productId)!;
+              try {
+                await this.inventoryMutationEngine.mutateStock(tx, {
+                  shopId: user.shopId,
+                  locationId: 'DEFAULT',
+                  productId: item.productId,
+                  quantity: item.quantity,
+                  mutationType: MutationType.SALE,
+                  reason: `Sale via Invoice ${invoice.invoiceNumber}`,
+                  referenceId: invoice.id,
+                  performedBy: user.userId,
+                  occurredAt: new Date(),
+                  allowNegative: false,
+                  occ: {
+                    expectedProductVersion: currentProduct.stockVersion
                   }
                 });
-              }
-              
-              await tx.stockLedgerEntry.create({
-                data: {
-                  shopId: user.shopId,
-                  inventoryItemId: invItem.id,
-                  movementType: 'SALE',
-                  quantity: -item.quantity,
-                  unitCost: product.costPrice,
-                  referenceType: 'INVOICE',
-                  referenceId: invoice.id,
-                  balanceAfter: oldOnHand - item.quantity,
-                  createdBy: user.userId
+              } catch (e: any) {
+                if (e instanceof OptimisticLockConflictError) {
+                  throw new Error('OPTIMISTIC_LOCK_CONFLICT');
                 }
-              });
+                if (e instanceof InsufficientStockError) {
+                  throw new ConflictException({
+                    message: e.message,
+                    productId: item.productId,
+                    productName: currentProduct.name,
+                    requestedQty: item.quantity,
+                    code: 'INSUFFICIENT_STOCK'
+                  });
+                }
+                throw e;
+              }
             }
 
             // Step I: Udhar Update
@@ -791,69 +716,24 @@ export class BillingService {
         }
       });
 
-      // 5. Restore Inventory & Log
+      // 5. Restore Inventory & Log via Engine
       for (const item of original.items) {
         const p = products.find((x: any) => x.id === item.productId);
         
-        await tx.product.update({
-          where: { id: item.productId },
-          data: {
-            currentStock: { increment: item.quantity }
-          }
+        await this.inventoryMutationEngine.mutateStock(tx, {
+          shopId: user.shopId,
+          locationId: 'DEFAULT',
+          productId: item.productId,
+          quantity: item.quantity,
+          mutationType: MutationType.RETURN,
+          reason: dto.reason ? `Return Reason: ${dto.reason} - ${dto.notes || ''}` : 'Sales Return',
+          referenceId: returnInvoice.id,
+          performedBy: user.userId,
+          occurredAt: new Date(),
+          allowNegative: true // returns always succeed
         });
 
         stockRestorations.push({ productId: item.productId, quantity: item.quantity });
-
-        await tx.inventoryLog.create({
-          data: {
-            productId: item.productId,
-            shopId: user.shopId,
-            type: 'RETURN_IN',
-            quantityBefore: p.currentStock,
-            quantityChange: item.quantity,
-            quantityAfter: new Prisma.Decimal(p.currentStock).plus(new Prisma.Decimal(item.quantity)),
-            invoiceId: returnInvoice.id,
-            notes: dto.reason ? `Return Reason: ${dto.reason} - ${dto.notes || ''}` : 'Sales Return',
-            recordedById: user.userId
-          }
-        });
-
-        // 5.5 Dual-write to InventoryItem and StockLedgerEntry
-        let invItem = await tx.inventoryItem.findFirst({
-          where: { shopId: user.shopId, productId: item.productId, locationId: 'DEFAULT' }
-        });
-        let oldOnHand = 0;
-        if (invItem) {
-          oldOnHand = invItem.onHand.toNumber();
-          invItem = await tx.inventoryItem.update({
-            where: { id: invItem.id },
-            data: { onHand: { increment: item.quantity } }
-          });
-        } else {
-          invItem = await tx.inventoryItem.create({
-            data: {
-              shopId: user.shopId,
-              productId: item.productId,
-              locationId: 'DEFAULT',
-              onHand: item.quantity,
-              status: 'AVAILABLE'
-            }
-          });
-        }
-        
-        await tx.stockLedgerEntry.create({
-          data: {
-            shopId: user.shopId,
-            inventoryItemId: invItem.id,
-            movementType: 'SALE_RETURN',
-            quantity: item.quantity,
-            unitCost: p.costPrice,
-            referenceType: 'INVOICE_RETURN',
-            referenceId: returnInvoice.id,
-            balanceAfter: oldOnHand + item.quantity,
-            createdBy: user.userId
-          }
-        });
       }
 
       // 6. Ledger Reversal (if Udhar)

@@ -2,6 +2,7 @@ import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StockLedgerService } from '../../stock-ledger-domain/services/stock-ledger.service';
 import { AdjustmentStatus, StockMovementType, Prisma } from '@prisma/client';
+import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 
 @Injectable()
 export class AdjustmentPostingService {
@@ -9,7 +10,8 @@ export class AdjustmentPostingService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly stockLedger: StockLedgerService
+    private readonly stockLedger: StockLedgerService,
+    private readonly inventoryMutationEngine: InventoryMutationEngine
   ) {}
 
   /**
@@ -27,40 +29,33 @@ export class AdjustmentPostingService {
     return this.prisma.$transaction(async (tx) => {
       const quantityDelta = adjustment.requestedQuantityDelta.toNumber();
       
-      // 1. Post to Immutable Ledger
-      const ledgerEntry = await this.stockLedger.recordMovement(tx, shopId, adjustment.inventoryItemId, {
-        movementType: StockMovementType.CORRECTION,
-        quantityChange: quantityDelta,
-        referenceType: 'ADJUSTMENT_REQUEST',
+      // 1. Delegate to Engine for safe ledger entry and dual-write caches
+      const isDeduction = quantityDelta < 0;
+      await this.inventoryMutationEngine.mutateStock(tx, {
+        shopId,
+        locationId: adjustment.inventoryItem.locationId,
+        productId: adjustment.inventoryItem.productId,
+        quantity: Math.abs(quantityDelta),
+        mutationType: MutationType.ADJUSTMENT,
+        
+        reason: `Adjustment Request: ${adjustment.id}`,
         referenceId: adjustment.id,
-        createdBy: postedByUserId,
-        currentBalance: adjustment.inventoryItem.onHand.toNumber()
-      });
-
-      // 2. Update the Epic 2 Dual-Write Caches
-      await tx.inventoryItem.update({
-        where: { id: adjustment.inventoryItemId },
-        data: { onHand: { increment: quantityDelta } }
-      });
-
-      // Maintain legacy Product.currentStock
-      await tx.product.update({
-        where: { id: adjustment.inventoryItem.productId },
-        data: { currentStock: { increment: quantityDelta } }
+        performedBy: postedByUserId,
+        occurredAt: new Date(),
+        allowNegative: adjustment.inventoryItem.isNegativeAllowed
       });
 
       // 3. Mark Adjustment as Posted
       await tx.adjustmentRequest.update({
         where: { id: adjustment.id },
         data: { 
-          status: AdjustmentStatus.POSTED,
-          ledgerEntryId: ledgerEntry.id
+          status: AdjustmentStatus.POSTED
         }
       });
 
-      this.logger.log(`Posted Adjustment ${adjustment.id}. Ledger Entry created: ${ledgerEntry.id}.`);
+      this.logger.log(`Posted Adjustment ${adjustment.id}.`);
       
-      return ledgerEntry;
+      return { success: true };
     });
   }
 }

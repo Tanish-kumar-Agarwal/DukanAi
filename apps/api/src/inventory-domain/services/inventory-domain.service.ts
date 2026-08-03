@@ -5,6 +5,8 @@ import { AdjustmentReason, InventoryStockState, Prisma, StockMovementType } from
 import { ProductEventPublisher } from '../../product-events/services/product-event-publisher.service';
 import { StockLedgerService } from '../../stock-ledger-domain/services/stock-ledger.service';
 import { InventoryFeatureConfig } from '../../config/domains/features/inventory-feature.config';
+import { InventoryMutationEngine, MutationType } from './inventory-mutation.engine';
+import { OptimisticLockConflictError, InsufficientStockError } from '../errors/inventory.errors';
 
 @Injectable()
 export class InventoryDomainService {
@@ -16,6 +18,7 @@ export class InventoryDomainService {
     private readonly eventPublisher: ProductEventPublisher,
     private readonly stockLedger: StockLedgerService,
     private readonly inventoryFeatureConfig: InventoryFeatureConfig,
+    private readonly inventoryMutationEngine: InventoryMutationEngine,
   ) {}
 
   async ensureInventoryItem(productId: string, variantId?: string, explicitLocationId?: string) {
@@ -130,39 +133,53 @@ export class InventoryDomainService {
     const shopId = this.tenantContext.getShopId();
 
     return this.prisma.$transaction(async (tx) => {
-      // 1. Lock the inventory item with optimistic concurrency
+      // 1. Fetch item to get ProductId
       const item = await tx.inventoryItem.findFirst({
         where: { id: inventoryItemId, shopId, isDeleted: false },
       });
 
       if (!item) throw new NotFoundException('Inventory item not found');
 
+      // 2. Delegate to Engine
+      let mutationType = MutationType.ADJUSTMENT;
+      if (reason === AdjustmentReason.DAMAGE) mutationType = MutationType.DAMAGE;
+      if (reason === AdjustmentReason.EXPIRY) mutationType = MutationType.EXPIRED;
+      
+      const isDeduction = quantityChange < 0;
+
+      let engineResult;
+      try {
+        engineResult = await this.inventoryMutationEngine.mutateStock(tx, {
+          shopId,
+          locationId: item.locationId || 'DEFAULT',
+          productId: item.productId,
+          quantity: Math.abs(quantityChange),
+          mutationType: isDeduction ? mutationType : MutationType.ADJUSTMENT,
+          metadata: { direction: isDeduction ? -1 : 1 },
+          reason: opts?.notes ? `${reason} - ${opts.notes}` : reason,
+          referenceId: opts?.correlationId || `ADJ-${new Date().getTime()}`,
+          performedBy: createdBy,
+          occurredAt: new Date(),
+          allowNegative: item.isNegativeAllowed,
+          occ: {
+            expectedInventoryItemVersion: item.version
+          }
+        });
+      } catch (e: any) {
+        if (e instanceof OptimisticLockConflictError) {
+          throw new ConflictException('Concurrent modification detected. Please retry.');
+        }
+        if (e instanceof InsufficientStockError) {
+          throw new BadRequestException(
+            `Insufficient stock. Requested deduction: ${Math.abs(quantityChange)}`
+          );
+        }
+        throw e;
+      }
+
       const oldOnHand = item.onHand.toNumber();
-      const newOnHand = oldOnHand + quantityChange;
+      const newOnHand = engineResult.balanceAfter ? engineResult.balanceAfter.toNumber() : oldOnHand;
 
-      // 2. Validate business rules
-      if (newOnHand < 0 && !item.isNegativeAllowed) {
-        throw new BadRequestException(
-          `Insufficient stock. Available: ${oldOnHand}, Requested: ${Math.abs(quantityChange)}`
-        );
-      }
-
-      // 3. Optimistic Locking — prevent concurrent modifications
-      const updated = await tx.inventoryItem.updateMany({
-        where: { id: inventoryItemId, version: item.version },
-        data: {
-          onHand: newOnHand,
-          version: { increment: 1 },
-          lastAdjustedAt: new Date(),
-          updatedBy: createdBy,
-        },
-      });
-
-      if (updated.count === 0) {
-        throw new ConflictException('Concurrent modification detected. Please retry.');
-      }
-
-      // 4. Create audit adjustment record
       await tx.inventoryAdjustment.create({
         data: {
           shopId,
@@ -175,59 +192,6 @@ export class InventoryDomainService {
           notes: opts?.notes,
           correlationId: opts?.correlationId,
         },
-      });
-
-      // 5. Create movement record (double-entry logic - legacy)
-      await tx.inventoryMovement.create({
-        data: {
-          shopId,
-          inventoryItemId,
-          fromState: InventoryStockState.AVAILABLE,
-          toState: InventoryStockState.AVAILABLE,
-          quantity: Math.abs(quantityChange),
-          referenceType: 'ADJUSTMENT',
-          createdBy,
-          correlationId: opts?.correlationId,
-          notes: opts?.notes,
-        },
-      });
-
-      // 5.5 Create immutable financial StockLedgerEntry
-      let movementType: StockMovementType = StockMovementType.SYSTEM_CORRECTION;
-      if (reason === AdjustmentReason.MANUAL_COUNT) movementType = StockMovementType.CORRECTION;
-      if (reason === AdjustmentReason.DAMAGE) movementType = StockMovementType.DAMAGE;
-      if (reason === AdjustmentReason.LOSS) movementType = StockMovementType.LOSS;
-      if (reason === AdjustmentReason.RETURN) movementType = StockMovementType.SALE_RETURN;
-      if (reason === AdjustmentReason.OPENING_BALANCE) movementType = StockMovementType.OPENING_BALANCE;
-      if (reason === AdjustmentReason.EXPIRY) movementType = StockMovementType.EXPIRY;
-
-      await this.stockLedger.recordMovement(tx, shopId, inventoryItemId, {
-        movementType,
-        quantityChange,
-        referenceType: 'ADJUSTMENT',
-        correlationId: opts?.correlationId,
-        createdBy,
-        currentBalance: oldOnHand
-      });
-
-      // 6. Sync Product.currentStock (dual-write for backward compatibility)
-      await tx.product.update({
-        where: { id: item.productId },
-        data: { currentStock: newOnHand },
-      });
-
-      // 6.5 Sync InventoryLog (Fixes Phase 10 audit synchronization)
-      await tx.inventoryLog.create({
-        data: {
-          shopId,
-          productId: item.productId,
-          quantityBefore: oldOnHand,
-          quantityChange: quantityChange,
-          quantityAfter: newOnHand,
-          type: 'ADJUSTMENT',
-          notes: opts?.notes || `Inventory adjustment: ${reason}`,
-          recordedById: createdBy,
-        }
       });
 
       // 7. Emit event to Outbox

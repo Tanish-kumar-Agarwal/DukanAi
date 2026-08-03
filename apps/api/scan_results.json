@@ -1,0 +1,212 @@
+[
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\analytics-domain\\analytics.controller.ts",
+    "line": 100,
+    "match": "rawSQL",
+    "content": "const profitTodayStats = await this.prisma.$queryRaw<{ profit: number }[]>`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\analytics-domain\\analytics.controller.ts",
+    "line": 114,
+    "match": "rawSQL",
+    "content": "const inventoryStats = await this.prisma.$queryRaw<{ lowStock: bigint, outOfStock: bigint, totalValue: number }[]>`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\analytics-domain\\services\\analytics-page.service.ts",
+    "line": 85,
+    "match": "rawSQL",
+    "content": "const rows = await this.prisma.$queryRaw<"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\analytics-domain\\services\\analytics-page.service.ts",
+    "line": 125,
+    "match": "rawSQL",
+    "content": "const rows = await this.prisma.$queryRaw<Array<{ day: string; sales: Prisma.Decimal }>>`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\analytics-domain\\services\\analytics-page.service.ts",
+    "line": 173,
+    "match": "rawSQL",
+    "content": "const rows = await this.prisma.$queryRaw<Array<{ name: string; total: Prisma.Decimal }>>`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\analytics-domain\\services\\analytics-page.service.ts",
+    "line": 197,
+    "match": "rawSQL",
+    "content": "const rows = await this.prisma.$queryRaw<"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\auth\\auth-bypass.service.spec.ts",
+    "line": 71,
+    "match": "rawSQL",
+    "content": "$executeRawUnsafe: jest.fn().mockResolvedValue(0),"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\auth\\auth-bypass.service.ts",
+    "line": 111,
+    "match": "rawSQL",
+    "content": "await tx.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS = 0');"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\auth\\auth-bypass.service.ts",
+    "line": 134,
+    "match": "rawSQL",
+    "content": "await tx.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS = 1');"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\billing\\billing.service.ts",
+    "line": 141,
+    "match": "rawSQL",
+    "content": "const updateResult = await tx.$executeRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\billing\\billing.service.ts",
+    "line": 208,
+    "match": "rawSQL",
+    "content": "const lastInvoice: any[] = await tx.$queryRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\billing\\billing.service.ts",
+    "line": 232,
+    "match": "rawSQL",
+    "content": "const shiftLock: any[] = await tx.$queryRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\billing\\billing.service.ts",
+    "line": 713,
+    "match": "rawSQL",
+    "content": "const lastReturn: any[] = await tx.$queryRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\common\\outbox\\outbox-relay.service.ts",
+    "line": 38,
+    "match": "rawSQL",
+    "content": "const events: any[] = await tx.$queryRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\common\\outbox\\outbox-relay.service.ts",
+    "line": 73,
+    "match": "rawSQL",
+    "content": "await tx.$executeRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\events-domain\\workers\\outbox-relay.worker.ts",
+    "line": 30,
+    "match": "rawSQL",
+    "content": "const events = await tx.$queryRaw<any[]>`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\events-domain\\workers\\outbox-relay.worker.ts",
+    "line": 68,
+    "match": "rawSQL",
+    "content": "await tx.$executeRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\events-domain\\workers\\outbox-relay.worker.ts",
+    "line": 79,
+    "match": "rawSQL",
+    "content": "await tx.$executeRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\inventory-domain\\services\\inventory-domain.service.ts",
+    "line": 44,
+    "match": "inventoryItem.create",
+    "content": "return this.prisma.inventoryItem.create({"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\inventory-domain\\services\\inventory-mutation.engine.ts",
+    "line": 117,
+    "match": "inventoryItem.create",
+    "content": "invItem = await tx.inventoryItem.create({"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\inventory-domain\\services\\inventory-mutation.engine.ts",
+    "line": 137,
+    "match": "rawSQL",
+    "content": "const updateResult = await tx.$executeRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\inventory-domain\\services\\inventory-mutation.engine.ts",
+    "line": 166,
+    "match": "inventoryItem.updateMany",
+    "content": "const result = await tx.inventoryItem.updateMany({"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\inventory-domain\\services\\inventory-mutation.engine.ts",
+    "line": 188,
+    "match": "inventoryItem.updateMany",
+    "content": "const result = await tx.inventoryItem.updateMany({"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\inventory-domain\\services\\inventory-mutation.engine.ts",
+    "line": 214,
+    "match": "rawSQL",
+    "content": "updateResult = await tx.$executeRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\inventory-domain\\services\\inventory-mutation.engine.ts",
+    "line": 226,
+    "match": "rawSQL",
+    "content": "updateResult = await tx.$executeRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\invoice-domain\\engines\\invoice-numbering-engine.ts",
+    "line": 34,
+    "match": "rawSQL",
+    "content": "const sequence = await tx.$queryRaw<Array<{ id: string, lastNumber: number }>>`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\invoice-domain\\engines\\invoice-numbering-engine.ts",
+    "line": 48,
+    "match": "rawSQL",
+    "content": "await tx.$executeRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\product-events\\workers\\outbox.worker.ts",
+    "line": 43,
+    "match": "rawSQL",
+    "content": "const events = await tx.$queryRaw<any[]>`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\product-events\\workers\\outbox.worker.ts",
+    "line": 57,
+    "match": "rawSQL",
+    "content": "await tx.$executeRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\purchase-analytics-domain\\services\\analytics-processor.service.spec.ts",
+    "line": 17,
+    "match": "rawSQL",
+    "content": "$queryRaw: jest.fn().mockResolvedValue([{ avg_days: 5 }]),"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\purchase-analytics-domain\\services\\analytics-processor.service.ts",
+    "line": 57,
+    "match": "rawSQL",
+    "content": "const leadTimeRaw: any[] = await this.prisma.$queryRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\purchase-events-domain\\workers\\purchase-outbox-relay.cron.ts",
+    "line": 43,
+    "match": "rawSQL",
+    "content": "const events: any[] = await tx.$queryRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\purchase-events-domain\\workers\\purchase-outbox-relay.cron.ts",
+    "line": 77,
+    "match": "rawSQL",
+    "content": "await tx.$executeRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\sales-events-domain\\workers\\sales-outbox-relay.cron.ts",
+    "line": 41,
+    "match": "rawSQL",
+    "content": "const events: any[] = await tx.$queryRaw`"
+  },
+  {
+    "file": "C:\\Users\\kukpo\\OneDrive\\Desktop\\DukanAi\\DukanAi\\apps\\api\\src\\sales-events-domain\\workers\\sales-outbox-relay.cron.ts",
+    "line": 78,
+    "match": "rawSQL",
+    "content": "await tx.$executeRaw`"
+  }
+]

@@ -1,10 +1,13 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { Prisma, AllocationStatus } from '@prisma/client';
+import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 
 @Injectable()
 export class AllocationService {
   private readonly logger = new Logger(AllocationService.name);
+
+  constructor(private readonly inventoryMutationEngine: InventoryMutationEngine) {}
 
   /**
    * Performs physical stock allocation for a reservation item using a FIFO strategy 
@@ -51,12 +54,18 @@ export class AllocationService {
           }
         });
 
-        // 2. Update the dual-write cache (InventoryItem.reserved)
-        await tx.inventoryItem.update({
-          where: { id: item.id },
-          data: {
-            reserved: { increment: allocateFromHere }
-          }
+        // 2. Delegate to Engine for safe reservation update
+        await this.inventoryMutationEngine.mutateStock(tx, {
+          shopId,
+          locationId: item.locationId,
+          productId: item.productId,
+          quantity: allocateFromHere,
+          mutationType: MutationType.RESERVATION,
+          reason: `Reservation allocation: ${reservationItemId}`,
+          referenceId: reservationItemId,
+          performedBy: 'SYSTEM',
+          occurredAt: new Date(),
+          allowNegative: item.isNegativeAllowed
         });
 
         // (We do not emit a StockLedgerEntry here because this is merely a reservation lock, not a final deduction).

@@ -3,6 +3,7 @@ import { Prisma, StockMovementType } from '@prisma/client';
 import { StockLedgerService } from '../../stock-ledger-domain/services/stock-ledger.service';
 import { ProductEventPublisher } from '../../product-events/services/product-event-publisher.service';
 import Decimal from 'decimal.js';
+import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 
 @Injectable()
 export class PurchaseReturnInventoryService {
@@ -10,7 +11,8 @@ export class PurchaseReturnInventoryService {
 
   constructor(
     private readonly stockLedger: StockLedgerService,
-    private readonly eventPublisher: ProductEventPublisher
+    private readonly eventPublisher: ProductEventPublisher,
+    private readonly inventoryMutationEngine: InventoryMutationEngine
   ) {}
 
   /**
@@ -21,48 +23,19 @@ export class PurchaseReturnInventoryService {
     for (const line of returnAggregate.lines) {
       const returnQty = new Decimal(line.returnQuantity);
       
-      // Update Available Inventory
-      const invItem = await tx.inventoryItem.findFirst({
-        where: { shopId, productId: line.productId, locationId: returnAggregate.warehouseId }
+      // Delegate entirely to Engine
+      await this.inventoryMutationEngine.mutateStock(tx, {
+        shopId,
+        locationId: returnAggregate.warehouseId,
+        productId: line.productId,
+        quantity: returnQty.toNumber(),
+        mutationType: MutationType.RETURN, // Return Out
+        reason: `Purchase Return: ${returnAggregate.id}`,
+        referenceId: returnAggregate.id,
+        performedBy: returnAggregate.createdBy || 'SYSTEM',
+        occurredAt: new Date(),
+        allowNegative: true // Usually blocked, but returns should process
       });
-
-      if (invItem) {
-        const oldOnHand = invItem.onHand.toNumber();
-        await tx.inventoryItem.update({
-          where: { id: invItem.id },
-          data: {
-            onHand: { decrement: returnQty.toNumber() }
-          }
-        });
-        
-        // Write Immutable Stock Ledger reversal
-        await this.stockLedger.recordMovement(tx, shopId, invItem.id, {
-          movementType: StockMovementType.PURCHASE_RETURN,
-          quantityChange: -returnQty.toNumber(),
-          unitCost: line.unitPrice ? new Decimal(line.unitPrice).toNumber() : 0,
-          referenceType: 'PURCHASE_RETURN',
-          referenceId: returnAggregate.id,
-          createdBy: returnAggregate.createdBy || 'SYSTEM',
-          currentBalance: oldOnHand
-        });
-
-        await this.eventPublisher.publish(tx as any, {
-          shopId,
-          eventType: 'InventoryAdjusted',
-          entityId: invItem.id,
-          entityType: 'InventoryItem',
-          payload: {
-            inventoryItemId: invItem.id,
-            productId: line.productId,
-            reason: 'RETURN',
-            quantityBefore: oldOnHand,
-            quantityChange: -returnQty.toNumber(),
-            quantityAfter: oldOnHand - returnQty.toNumber(),
-          }
-        });
-      } else {
-        this.logger.warn(`Inventory Item missing during Return Reversal for product ${line.productId}`);
-      }
     }
   }
 }
