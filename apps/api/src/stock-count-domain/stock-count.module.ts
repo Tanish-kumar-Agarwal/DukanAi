@@ -6,9 +6,10 @@ import { VarianceService } from './services/variance.service';
 import { AdjustmentApprovalService } from './services/adjustment-approval.service';
 import { AdjustmentPostingService } from './services/adjustment-posting.service';
 import { StockCountController } from './stock-count.controller';
+import { InventoryDomainModule } from '../inventory-domain/inventory-domain.module';
 
 @Module({
-  imports: [PrismaModule, StockLedgerModule],
+  imports: [PrismaModule, StockLedgerModule, InventoryDomainModule],
   controllers: [StockCountController],
   providers: [
     StockCountService,

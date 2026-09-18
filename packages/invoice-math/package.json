@@ -2,11 +2,18 @@
   "name": "@dukaanai/invoice-math",
   "version": "1.0.0",
   "description": "Shared mathematical engine for DukaanAI billing",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
   "scripts": {
+    "build": "tsc -p tsconfig.json",
     "test": "jest"
   },
   "dependencies": {

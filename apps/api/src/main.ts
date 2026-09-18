@@ -72,9 +72,7 @@ async function bootstrap() {
   logger.log(`Application is running on: http://localhost:${port}`);
 }
 bootstrap().catch((error) => {
-  // `bufferLogs: true` discards buffered logs when bootstrap throws before
-  // `app.useLogger()` is reached, which turns any startup crash into a silent
-  // exit(1). Writing straight to stderr guarantees the cause is always visible.
-  console.error('[Bootstrap] Fatal error during application startup:', error);
-  setTimeout(() => process.exit(1), 100);
+  const msg = `\n\n[Bootstrap FATAL]: ${error?.stack || error?.message || error}\n\n`;
+  require('fs').writeSync(2, msg);
+  process.exit(1);
 });

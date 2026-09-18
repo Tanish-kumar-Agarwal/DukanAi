@@ -12,6 +12,7 @@ import { CronConfig } from '../config/domains/cron.config';
 import { CacheConfig } from '../config/domains/cache.config';
 import { REDIS_CLIENT } from '../common/redis/redis.module';
 import Redis from 'ioredis';
+import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 
 @Injectable()
 export class InventoryReconService implements OnApplicationBootstrap {
@@ -27,6 +28,7 @@ export class InventoryReconService implements OnApplicationBootstrap {
     private cronConfig: CronConfig,
     private schedulerRegistry: SchedulerRegistry,
     private cacheConfig: CacheConfig,
+    private tenantContextService: TenantContextService,
   ) {}
 
   onApplicationBootstrap() {
@@ -43,7 +45,9 @@ export class InventoryReconService implements OnApplicationBootstrap {
       'inventory-reconciliation',
       this.inventoryConfig.reconLockTtlMs, // Configured TTL
       async () => {
-        await this.runReconciliation();
+        await this.tenantContextService.runAsSuperAdmin(async () => {
+          await this.runReconciliation();
+        });
       }
     );
   }

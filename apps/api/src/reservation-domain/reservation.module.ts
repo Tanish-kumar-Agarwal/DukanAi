@@ -6,9 +6,10 @@ import { ReservationValidationService } from './services/reservation-validation.
 import { ReservationExpiryService } from './services/reservation-expiry.service';
 import { ReservationController } from './reservation.controller';
 import { EventsModule } from '../events-domain/events.module';
+import { InventoryDomainModule } from '../inventory-domain/inventory-domain.module';
 
 @Module({
-  imports: [PrismaModule, EventsModule],
+  imports: [PrismaModule, EventsModule, InventoryDomainModule],
   controllers: [ReservationController],
   providers: [
     ReservationService,

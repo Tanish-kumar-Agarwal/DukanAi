@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PrismaModule } from '../prisma/prisma.module';
 import { BullModule } from '@nestjs/bullmq';
-import { ScheduleModule } from '@nestjs/schedule';
 
 import { SalesEventPublisher } from './services/sales-event-publisher.service';
 import { SalesRedisBroadcaster } from './services/sales-redis-broadcaster.service';
@@ -13,7 +12,6 @@ import { SalesEventsController } from './sales-events.controller';
 @Module({
   imports: [
     PrismaModule,
-    ScheduleModule.forRoot(), // Ensure cron is active if not globally activated
     BullModule.registerQueue({
       name: 'sales-events',
     }),

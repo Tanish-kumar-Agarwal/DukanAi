@@ -9,12 +9,10 @@ import { OutboxProcessorWorker } from './workers/outbox.worker';
 import { WebhookDeliveryWorker } from './workers/webhook.worker';
 import { ProductEventsController } from './controllers/product-events/product-events.controller';
 import { WebhookController } from './controllers/webhook/webhook.controller';
-import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
     PrismaModule,
-    ScheduleModule.forRoot(),
     BullModule.registerQueue(
       { name: 'internal-events' },
       { name: 'webhook-delivery' }

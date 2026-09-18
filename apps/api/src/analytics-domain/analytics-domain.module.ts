@@ -8,6 +8,11 @@ import { TrendEngine } from './engines/trend-engine';
 import { ForecastEngine } from './engines/forecast-engine';
 import { AnalyticsCacheService } from './services/analytics-cache.service';
 import { AnalyticsPageService } from './services/analytics-page.service';
+import { KpiService } from './services/kpi.service';
+import { ClassificationService } from './services/classification.service';
+import { ForecastService } from './services/forecast.service';
+import { RecommendationEngineService } from './services/recommendation-engine.service';
+import { AnalyticsJobScheduler } from './services/analytics-job.scheduler';
 import { AnalyticsAggregationWorker, AnalyticsExportWorker } from './workers/analytics-workers';
 import { AnalyticsController } from './analytics.controller';
 
@@ -29,9 +34,19 @@ import { AnalyticsController } from './analytics.controller';
     ForecastEngine,
     AnalyticsCacheService,
     AnalyticsPageService,
+    KpiService,
+    ClassificationService,
+    ForecastService,
+    RecommendationEngineService,
+    AnalyticsJobScheduler,
     AnalyticsAggregationWorker,
-    AnalyticsExportWorker
+    AnalyticsExportWorker,
   ],
-  exports: [RevenueEngine, TrendEngine]
+  exports: [
+    RevenueEngine,
+    TrendEngine,
+    KpiService,
+    RecommendationEngineService,
+  ],
 })
 export class AnalyticsDomainModule {}

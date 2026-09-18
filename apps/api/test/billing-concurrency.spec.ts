@@ -64,6 +64,7 @@ describe('Billing Concurrency', () => {
         billingService.createInvoice({
           items: [{ productId: product.id, quantity: 1 }],
           paymentMode: PaymentMode.CASH,
+          amountPaid: 150,
           idempotencyKey: `unique-key-${idx}` // DIFFERENT keys to bypass idempotency check for this specific test
         }, '127.0.0.1')
       )
@@ -121,6 +122,7 @@ describe('Billing Concurrency', () => {
     const dto = {
       items: [{ productId: product.id, quantity: 1 }],
       paymentMode: PaymentMode.CASH,
+      amountPaid: 150,
       idempotencyKey: `idem-test-${uniqueSuffix}`
     };
 

@@ -16,6 +16,7 @@ import { GrnProcessorService } from './services/grn-processor.service';
 import { PurchaseEventsDomainModule } from '../purchase-events-domain/purchase-events-domain.module';
 import { StorageModule } from '../storage/storage.module';
 import { DocumentModule } from '../common/document/document.module';
+import { InventoryDomainModule } from '../inventory-domain/inventory-domain.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { DocumentModule } from '../common/document/document.module';
     PurchaseEventsDomainModule,
     StorageModule,
     DocumentModule,
+    InventoryDomainModule,
     BullModule.registerQueue({ name: 'grn-jobs' })
   ],
   controllers: [GrnController],

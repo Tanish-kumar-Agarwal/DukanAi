@@ -1,8 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PrismaModule } from '../prisma/prisma.module';
 import { BullModule } from '@nestjs/bullmq';
-import { ScheduleModule } from '@nestjs/schedule';
-import { EventEmitterModule } from '@nestjs/event-emitter';
 
 import { PurchaseEventsController } from './purchase-events.controller';
 import { EventsRepository } from './repositories/events.repository';
@@ -17,8 +15,6 @@ import { PurchaseOutboxRelayCron } from './workers/purchase-outbox-relay.cron';
 @Module({
   imports: [
     PrismaModule,
-    ScheduleModule.forRoot(),
-    EventEmitterModule.forRoot(),
     BullModule.registerQueue(
       { name: 'purchase-events' },
       { name: 'webhook-delivery' },

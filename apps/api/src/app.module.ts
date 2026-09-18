@@ -49,7 +49,6 @@ import { ReservationModule } from './reservation-domain/reservation.module';
 import { StockCountModule } from './stock-count-domain/stock-count.module';
 import { BatchModule } from './batch-domain/batch.module';
 import { EventsModule } from './events-domain/events.module';
-import { AnalyticsModule } from './analytics-domain/analytics.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { SalesDomainModule } from './sales-domain/sales-domain.module';
 import { PricingDomainModule } from './pricing-domain/pricing-domain.module';
@@ -153,7 +152,6 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     StockCountModule,
     BatchModule,
     EventsModule,
-    AnalyticsModule,
     SalesDomainModule,
     PricingDomainModule,
     InvoiceDomainModule,
