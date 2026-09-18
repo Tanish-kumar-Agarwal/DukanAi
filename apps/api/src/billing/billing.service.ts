@@ -1,959 +1,716 @@
-import { Injectable, NotFoundException, BadRequestException, ConflictException, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
+import { LedgerAccount, LedgerEntryType, Prisma, TenderType } from '@prisma/client';
+import * as crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateInvoiceDto } from './dto/create-invoice.dto';
-import { InventoryGateway } from '../inventory/inventory.gateway';
+import { CreateInvoiceDto, InvoiceItemDto, PaymentTenderDto } from './dto/create-invoice.dto';
+import { CalculateInvoiceDto } from './dto/calculate-invoice.dto';
 import { InventoryCacheService } from '../inventory/inventory-cache.service';
 import { BillingHelpers } from './billing.helpers';
-import { InvoiceMathEngine, Decimal } from './utils/invoice-math.engine';
-import { Prisma } from '@prisma/client';
-import * as crypto from 'crypto';
-
-
+import { InvoiceMathEngine, InvoiceMathError, Decimal, InvoiceMathInput, InvoiceCalculationResultV1 } from './utils/invoice-math.engine';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { BillingFeatureConfig } from '../config/domains/features/billing-feature.config';
 import { InventoryMutationEngine, MutationType } from '../inventory-domain/services/inventory-mutation.engine';
+import { InventoryLocationService } from '../inventory-domain/services/inventory-location.service';
 import { OptimisticLockConflictError, InsufficientStockError } from '../inventory-domain/errors/inventory.errors';
+import { InvoiceNumberService } from './services/invoice-number.service';
+import { LedgerPostingService, LedgerEntryInput } from './services/ledger-posting.service';
+import { BillingActor, INVOICE_INCLUDE, InvoiceWithRelations, StockOutcome, isManager, money, qty } from './billing.types';
+import { financialYearLabel, safeTimeZone } from '../common/time/business-day';
 
+type Tx = Prisma.TransactionClient;
+
+interface NormalisedLine {
+  productId: string;
+  quantity: number;
+  discountPercent: number;
+}
+
+interface LockedCustomer {
+  id: string;
+  name: string;
+  state: string | null;
+  outstandingBalance: Prisma.Decimal;
+  creditLimit: Prisma.Decimal;
+  isActive: boolean;
+}
+
+interface ProductRow {
+  id: string;
+  name: string;
+  sku: string;
+  type: string;
+  unit: string;
+  currentStock: Prisma.Decimal;
+  stockVersion: number;
+  sellingPrice: Prisma.Decimal;
+  costPrice: Prisma.Decimal;
+  mrp: Prisma.Decimal;
+  gstRate: string;
+  cessRate: Prisma.Decimal;
+}
+
+export interface CreateInvoiceResult {
+  invoice: InvoiceWithRelations;
+  stock: StockOutcome[];
+  shiftId: string | null;
+  replayed: boolean;
+}
+
+const OCC_RETRY_MARKER = 'OPTIMISTIC_LOCK_CONFLICT';
+const STOCKED_TYPES = new Set(['SIMPLE', 'VARIABLE', 'BUNDLE', 'COMBO']);
+
+/**
+ * POS checkout.
+ *
+ * One request = one atomic transaction that creates the invoice, its lines
+ * and tenders, deducts stock through the inventory engine, updates the
+ * customer's credit under a row lock, updates the open shift, posts a
+ * balanced double-entry ledger, writes the audit row and stages the outbox
+ * event. Any failure rolls all of it back. Redis is advisory only.
+ */
 @Injectable()
 export class BillingService {
   private readonly logger = new Logger(BillingService.name);
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly inventoryGateway: InventoryGateway,
     private readonly inventoryCache: InventoryCacheService,
     private readonly billingHelpers: BillingHelpers,
     private readonly tenantContext: TenantContextService,
     private readonly billingConfig: BillingFeatureConfig,
-    private readonly inventoryMutationEngine: InventoryMutationEngine
+    private readonly inventoryMutationEngine: InventoryMutationEngine,
+    private readonly locationService: InventoryLocationService,
+    private readonly invoiceNumbers: InvoiceNumberService,
+    private readonly ledger: LedgerPostingService,
   ) {}
 
-  async createInvoice(dto: CreateInvoiceDto, ipAddress: string): Promise<any> {
-    const user = {
-      shopId: this.tenantContext.getShopId(),
-      userId: this.tenantContext.getUserId(),
-      ipAddress
-    };
-    
-    // Step A: Pre-validate ALL items BEFORE starting the transaction
-    const productIds = dto.items.map(i => i.productId);
-    const products = await this.prisma.product.findMany({
-      where: { id: { in: productIds }, isDeleted: false, isActive: true },
-      select: {
-        id: true, name: true, sku: true, currentStock: true, stockVersion: true,
-        sellingPrice: true, costPrice: true, mrp: true, gstRate: true, hsnCode: true, unit: true,
-      }
-    });
-
-    if (products.length !== new Set(productIds).size) {
-      const foundIds = products.map((p: any) => p.id);
-      const missingIds = Array.from(new Set(productIds)).filter(id => !foundIds.includes(id));
-      throw new NotFoundException(`Products not found: ${missingIds.join(', ')}`);
-    }
-
-    const productMap = new Map<string, any>(products.map((p: any) => [p.id, p]));
-
-    for (const item of dto.items) {
-      const product = productMap.get(item.productId)!;
-      if (item.quantity <= 0) {
-        throw new BadRequestException(`Quantity for ${product.name} must be greater than 0`);
-      }
-      if (product.currentStock.toNumber() < item.quantity) {
-        throw new ConflictException({
-          message: `Insufficient stock for "${product.name}"`,
-          productId: product.id,
-          productName: product.name,
-          requestedQty: item.quantity,
-          availableQty: product.currentStock.toNumber(),
-          code: 'INSUFFICIENT_STOCK'
-        });
-      }
-    }
-
-    // Step A.5: Redis Atomic Pre-check (Layer 3)
-    // Redis is NEVER authoritative. If Redis fails, we skip to DB-only path.
-    const decrementedInRedis: Array<{ productId: string; quantity: number }> = [];
-    try {
-      for (const item of dto.items) {
-        const status = await this.inventoryCache.tryDecrementStock(item.productId, item.quantity);
-        if (status === 'insufficient') {
-          // Rollback whatever we successfully decremented in Redis before throwing
-          for (const doneItem of decrementedInRedis) {
-            await this.inventoryCache.restoreStock(doneItem.productId, doneItem.quantity);
-          }
-          throw new ConflictException({
-            message: `Insufficient stock for a product (fast rejection)`,
-            productId: item.productId,
-            code: 'INSUFFICIENT_STOCK'
-          });
-        }
-        if (status === 'ok') {
-          decrementedInRedis.push(item);
-        }
-        // 'cache_miss' → silently skip, DB will be the authority
-      }
-    } catch (e) {
-      if (e instanceof ConflictException) {
-        throw e; // Already rolled back above
-      }
-      // Redis connection failure: rollback what we can, continue to DB-only path
-      this.logger.warn('Redis pre-check failed, falling back to DB-only path', e);
-      for (const doneItem of decrementedInRedis) {
-        try { await this.inventoryCache.restoreStock(doneItem.productId, doneItem.quantity); } catch { /* best-effort rollback */ }
-      }
-      decrementedInRedis.length = 0; // Nothing to compensate later
-    }
-
-    // Step B: Idempotency check
-    if (!dto.idempotencyKey) {
-      throw new BadRequestException('Idempotency key is required to prevent duplicate billing');
-    }
-
-    const existing = await this.prisma.invoice.findFirst({
-      where: { idempotencyKey: dto.idempotencyKey },
-      include: { items: true, customer: true }
-    });
-    if (existing) {
-      // If we pre-decremented, rollback since we aren't executing the transaction
-      for (const doneItem of decrementedInRedis) {
-        await this.inventoryCache.restoreStock(doneItem.productId, doneItem.quantity);
-      }
-      return existing;
-    }
-
-    const MAX_RETRIES = 3;
-    let attempt = 0;
-    const stockDeductions: Array<{ productId: string; newStock: number; newVersion: number }> = [];
-
-    // ━━━ MASTER TRY/CATCH: guarantees Redis compensation on ANY failure path ━━━
-    try {
-      while (attempt < MAX_RETRIES) {
-        attempt++;
-        try {
-          const result = await this.prisma.$transaction(async (tx: any) => {
-            /* Legacy stock deduction block removed to migrate to single-authority mutation engine */
-
-            // Step C: Generate invoice number with deterministic date formatting
-            const now = new Date();
-            // Use UTC-based calculation adjusted for IST (+5:30)
-            const istOffset = 5.5 * 60 * 60 * 1000;
-            const istDate = new Date(now.getTime() + istOffset);
-            const year = istDate.getUTCFullYear();
-            const month = String(istDate.getUTCMonth() + 1).padStart(2, '0');
-            const day = String(istDate.getUTCDate()).padStart(2, '0');
-            const dateStr = `${year}${month}${day}`;
-
-            // Financial year: April to March
-            const istMonth = istDate.getUTCMonth(); // 0-indexed
-            const financialYear = istMonth >= 3
-              ? `${year}-${(year + 1).toString().slice(2)}`
-              : `${year - 1}-${year.toString().slice(2)}`;
-
-            const lastInvoice: any[] = await tx.$queryRaw`
-              SELECT invoiceNumber FROM Invoice
-              WHERE shopId = ${user.shopId}
-                AND invoiceNumber LIKE ${`INV-${dateStr}-%`}
-              ORDER BY invoiceNumber DESC
-              LIMIT 1
-              FOR UPDATE
-            `;
-
-            let sequence = 1;
-            if (lastInvoice.length > 0) {
-              const parts = lastInvoice[0].invoiceNumber.split('-');
-              const lastSeq = parseInt(parts[parts.length - 1], 10);
-              if (!isNaN(lastSeq)) {
-                sequence = lastSeq + 1;
-              }
-            }
-            const invoiceNumber = `INV-${dateStr}-${String(sequence).padStart(5, '0')}`;
-
-            // Step D: Calculate GST
-            const shop = await tx.shop.findUnique({ where: { id: user.shopId }, select: { state: true } });
-
-            // ━━━ P0 FIX: Pessimistic shift lock via SELECT FOR SHARE ━━━
-            if (dto.shiftId) {
-              const shiftLock: any[] = await tx.$queryRaw`
-                SELECT id FROM Shift
-                WHERE id = ${dto.shiftId}
-                  AND shopId = ${user.shopId}
-                  AND status = 'OPEN'
-                  AND isDeleted = false
-                FOR SHARE
-              `;
-              if (!shiftLock || shiftLock.length === 0) {
-                throw new BadRequestException('Shift is invalid, closed, or belongs to another shop.');
-              }
-            }
-
-            let customer = null;
-            if (dto.customerId) {
-              customer = await tx.customer.findFirst({
-                where: { id: dto.customerId },
-                select: { state: true, outstandingBalance: true, creditLimit: true }
-              });
-              if (!customer) throw new NotFoundException('Customer not found or belongs to another shop.');
-            }
-
-            const isInterState = customer?.state ? shop!.state !== customer.state : false;
-
-            // ━━━ USE NEW INVOICE MATH ENGINE ━━━
-            const mathInput = {
-              items: dto.items.map(item => {
-                const product = productMap.get(item.productId)!;
-                return {
-                  productId: item.productId,
-                  quantity: item.quantity,
-                  unitPrice: product.sellingPrice,
-                  discountPercent: item.discountPercent,
-                  gstRateStr: product.gstRate,
-                  isInterState
-                };
-              }),
-              discountAmount: dto.discountAmount,
-              discountPercentage: dto.discountPercentage,
-              discountType: dto.discountType,
-              discountReason: dto.discountReason,
-              paymentMode: dto.paymentMode,
-              amountPaid: dto.amountPaid,
-              udharAmount: dto.udharAmount
-            };
-
-            const mathResult = InvoiceMathEngine.calculate(mathInput);
-
-            const lineItems = dto.items.map((item, idx) => {
-              const product = productMap.get(item.productId)!;
-              const resultLine = mathResult.lines[idx];
-              return {
-                productId: item.productId,
-                productName: product.name,
-                productSku: product.sku,
-                quantity: resultLine.quantity.toNumber(),
-                unit: product.unit,
-                costPrice: product.costPrice,
-                sellingPrice: product.sellingPrice,
-                mrp: product.mrp,
-                discountPercent: item.discountPercent ?? 0,
-                gstRate: product.gstRate,
-                cgstAmount: resultLine.cgstAmount,
-                sgstAmount: resultLine.sgstAmount,
-                igstAmount: resultLine.igstAmount,
-                totalAmount: resultLine.lineTotal,
-              };
-            });
-
-            // Validate Udhar logic
-            if (dto.paymentMode === 'UDHAR' || dto.paymentMode === 'SPLIT') {
-              if (!dto.customerId) throw new BadRequestException('A customer must be selected for Udhar billing.');
-              if (!customer) throw new NotFoundException('Customer not found.');
-
-              const udharAmount = new Decimal(dto.udharAmount ?? 0);
-              const newBalance = new Decimal(customer.outstandingBalance.toString()).plus(udharAmount);
-
-              if (newBalance.greaterThan(new Decimal(customer.creditLimit.toString())) && !dto.adminOverride) {
-                throw new ConflictException({
-                  message: `Credit limit exceeded.`,
-                  code: 'CREDIT_LIMIT_EXCEEDED',
-                  creditLimit: customer.creditLimit,
-                  currentBalance: customer.outstandingBalance,
-                  requestedAmount: udharAmount,
-                  projectedBalance: newBalance
-                });
-              }
-            }
-
-            const paidAmount = new Decimal(dto.amountPaid);
-            const udharAmt = new Decimal(dto.udharAmount ?? 0);
-            const changeAmount = new Decimal(0); // Add cashTendered back if change calculations are needed later
-
-            // Step G: Create Invoice
-            const invoice = await tx.invoice.create({
-              data: {
-                invoiceNumber,
-                financialYear,
-                shopId: user.shopId,
-                idempotencyKey: dto.idempotencyKey,
-                customerId: dto.customerId ?? null,
-                cashierId: user.userId,
-                paymentMode: dto.paymentMode,
-                status: 'COMPLETED',
-                subtotal: mathResult.subtotal,
-                discountAmount: mathResult.totalDiscount,
-                discountPercentage: dto.discountPercentage,
-                discountType: dto.discountType,
-                discountReason: dto.discountReason,
-                approvedBy: (dto.discountAmount && dto.discountAmount > 0) || (dto.discountPercentage && dto.discountPercentage > 0) ? user.userId : null,
-                approvalTimestamp: (dto.discountAmount && dto.discountAmount > 0) || (dto.discountPercentage && dto.discountPercentage > 0) ? new Date() : null,
-                taxableAmount: mathResult.taxableTotal,
-                taxAmount: mathResult.totalTax,
-                roundOffAmount: mathResult.roundOff,
-                totalAmount: mathResult.finalTotal,
-                paidAmount,
-                changeAmount,
-                udharAmount: udharAmt,
-                isInterState,
-                cgstAmount: mathResult.totalCgst,
-                sgstAmount: mathResult.totalSgst,
-                igstAmount: mathResult.totalIgst,
-                notes: dto.notes ?? null,
-                shiftId: dto.shiftId ?? null,
-                items: { create: lineItems }
-              },
-              include: { items: true, customer: true }
-            });
-
-            // Step H: Single Authority Inventory Mutation via Engine
-            for (const item of dto.items) {
-              const currentProduct = productMap.get(item.productId)!;
-              try {
-                await this.inventoryMutationEngine.mutateStock(tx, {
-                  shopId: user.shopId,
-                  locationId: 'DEFAULT',
-                  productId: item.productId,
-                  quantity: item.quantity,
-                  mutationType: MutationType.SALE,
-                  reason: `Sale via Invoice ${invoice.invoiceNumber}`,
-                  referenceId: invoice.id,
-                  performedBy: user.userId,
-                  occurredAt: new Date(),
-                  allowNegative: false,
-                  occ: {
-                    expectedProductVersion: currentProduct.stockVersion
-                  }
-                });
-              } catch (e: any) {
-                if (e instanceof OptimisticLockConflictError) {
-                  throw new Error('OPTIMISTIC_LOCK_CONFLICT');
-                }
-                if (e instanceof InsufficientStockError) {
-                  throw new ConflictException({
-                    message: e.message,
-                    productId: item.productId,
-                    productName: currentProduct.name,
-                    requestedQty: item.quantity,
-                    code: 'INSUFFICIENT_STOCK'
-                  });
-                }
-                throw e;
-              }
-            }
-
-            // Step I: Udhar Update
-            if ((dto.paymentMode === 'UDHAR' || dto.paymentMode === 'SPLIT') && dto.customerId && customer) {
-              if (udharAmt.greaterThan(0)) {
-                const currentBalance = new Decimal(customer.outstandingBalance.toString());
-                const newBalance = currentBalance.plus(udharAmt);
-
-                await tx.udharTransaction.create({
-                  data: {
-                    customerId: dto.customerId,
-                    invoiceId: invoice.id,
-                    shopId: user.shopId,
-                    recordedById: user.userId,
-                    type: 'CREDIT',
-                    amount: udharAmt,
-                    balanceBefore: currentBalance,
-                    balanceAfter: newBalance,
-                    notes: `Bill ${invoiceNumber}`
-                  }
-                });
-
-                await tx.customer.update({
-                  where: { id: dto.customerId },
-                  data: {
-                    outstandingBalance: newBalance,
-                    totalPurchases: { increment: mathResult.finalTotal.toNumber() },
-                    lastPurchaseAt: new Date()
-                  }
-                });
-              }
-            } else if (dto.customerId) {
-              await tx.customer.update({
-                where: { id: dto.customerId },
-                data: {
-                  totalPurchases: { increment: mathResult.finalTotal.toNumber() },
-                  lastPurchaseAt: new Date()
-                }
-              });
-            }
-
-            // Step J: Shift update
-            if (dto.shiftId) {
-              // For SPLIT mode, distribute sales across the correct payment buckets
-              if (dto.paymentMode === 'SPLIT') {
-                const cashPortion = paidAmount.toNumber();
-                const udharPortion = udharAmt.toNumber();
-                await tx.shift.update({
-                  where: { id: dto.shiftId },
-                  data: {
-                    totalSales: { increment: mathResult.finalTotal.toNumber() },
-                    cashSales: { increment: cashPortion },
-                    udharSales: { increment: udharPortion },
-                  }
-                });
-              } else {
-                const paymentFieldMap: Record<string, string> = {
-                  CASH: 'cashSales', UPI: 'upiSales', CARD: 'cardSales', UDHAR: 'udharSales',
-                };
-                const paymentField = paymentFieldMap[dto.paymentMode] ?? 'cashSales';
-
-                await tx.shift.update({
-                  where: { id: dto.shiftId },
-                  data: {
-                    totalSales: { increment: mathResult.finalTotal.toNumber() },
-                    [paymentField]: { increment: mathResult.finalTotal.toNumber() }
-                  }
-                });
-              }
-            }
-
-            // Step K: Audit Log
-            await tx.auditLog.create({
-              data: {
-                shopId: user.shopId,
-                userId: user.userId,
-                action: 'CREATE',
-                entity: 'Invoice',
-                entityId: invoice.id,
-                afterData: { invoiceNumber, totalAmount: mathResult.finalTotal.toString(), itemCount: dto.items.length },
-                ipAddress: user.ipAddress
-              }
-            });
-
-            // Step L: Outbox Event Integration
-            const eventId = crypto.randomUUID();
-            const correlationId = this.tenantContext.getCorrelationId();
-
-            await tx.outboxEvent.create({
-              data: {
-                id: eventId,
-                shopId: user.shopId,
-                type: 'INVOICE_CREATED',
-                payload: {
-                  eventId,
-                  correlationId,
-                  invoiceId: invoice.id,
-                  shopId: user.shopId,
-                  openedById: user.userId,
-                  type: 'CREDIT',
-                  createdAt: new Date().toISOString(),
-                  amount: mathResult.finalTotal.toNumber(),
-                  description: `Invoice ${invoiceNumber} generated`
-                }
-              }
-            });
-
-            // Step M: Ledger Double-Entry Creation (ENG-302)
-            // Duplicate protection check
-            const existingLedgers = await tx.ledgerTransaction.count({
-              where: { invoiceId: invoice.id }
-            });
-            if (existingLedgers > 0) {
-              this.logger.warn(`Ledger entries already exist for Invoice ${invoice.id}. Skipping double-entry creation to preserve immutability.`);
-            } else {
-              // Determine the debit account based on payment mode
-              const debitAccount = dto.paymentMode === 'UDHAR' || (dto.udharAmount && dto.udharAmount > 0)
-                ? 'ACCOUNTS_RECEIVABLE' as const
-                : 'CASH' as const;
-
-              // Compute running balance for debit account
-              const lastDebitEntry = await tx.ledgerTransaction.findFirst({
-                where: { account: debitAccount },
-                orderBy: { createdAt: 'desc' }
-              });
-              const debitBalanceBefore = lastDebitEntry ? lastDebitEntry.balanceAfter.toNumber() : 0;
-              const debitBalanceAfter = debitBalanceBefore + mathResult.finalTotal.toNumber();
-
-              // Compute running balance for credit account (SALES_REVENUE)
-              const lastCreditEntry = await tx.ledgerTransaction.findFirst({
-                where: { account: 'SALES_REVENUE' },
-                orderBy: { createdAt: 'desc' }
-              });
-              const creditBalanceBefore = lastCreditEntry ? lastCreditEntry.balanceAfter.toNumber() : 0;
-              const creditBalanceAfter = creditBalanceBefore + mathResult.finalTotal.toNumber();
-
-              await tx.ledgerTransaction.create({
-                data: {
-                  shopId: user.shopId,
-                  invoiceId: invoice.id,
-                  account: debitAccount,
-                  type: 'DEBIT',
-                  amount: mathResult.finalTotal,
-                  balanceAfter: debitBalanceAfter,
-                  description: `Bill ${invoiceNumber} - ${debitAccount}`
-                }
-              });
-
-              await tx.ledgerTransaction.create({
-                data: {
-                  shopId: user.shopId,
-                  invoiceId: invoice.id,
-                  account: 'SALES_REVENUE',
-                  type: 'CREDIT',
-                  amount: mathResult.finalTotal,
-                  balanceAfter: creditBalanceAfter,
-                  description: `Bill ${invoiceNumber} - SALES_REVENUE`
-                }
-              });
-            }
-
-            return invoice;
-          }, {
-            timeout: this.billingConfig.gatewayTimeoutMs,
-            maxWait: this.billingConfig.transactionMaxWaitMs,
-            isolationLevel: 'ReadCommitted' as any
-          });
-
-          // ━━━ DB COMMITTED SUCCESSFULLY — Redis is now authoritative for these items ━━━
-          // Sync Redis with actual DB values for absolute truth alignment
-          for (const deduction of stockDeductions) {
-            try {
-              await this.inventoryCache.syncStock(deduction.productId, deduction.newStock);
-            } catch (syncErr) {
-              this.logger.warn(`Redis sync failed for product ${deduction.productId}, will self-heal`, syncErr);
-            }
-          }
-
-          this.inventoryGateway.broadcastStockUpdate(stockDeductions);
-          this.billingHelpers.checkLowStockAlerts(stockDeductions);
-
-          return result;
-
-        } catch (error: any) {
-          // ━━━ P0 FIX: Handle P2002 idempotency race — return existing invoice ━━━
-          if (
-            error instanceof Prisma.PrismaClientKnownRequestError &&
-            error.code === 'P2002' &&
-            (error.meta as any)?.target?.toString()?.includes('idempotencyKey')
-          ) {
-            this.logger.warn(`Idempotency race detected for key ${dto.idempotencyKey}, returning existing invoice`);
-            const duplicate = await this.prisma.invoice.findFirst({
-              where: { idempotencyKey: dto.idempotencyKey },
-              include: { items: true, customer: true }
-            });
-            if (duplicate) {
-              // Redis was already decremented by the winning thread's commit;
-              // our pre-check decrement is a surplus — restore it
-              for (const doneItem of decrementedInRedis) {
-                try { await this.inventoryCache.restoreStock(doneItem.productId, doneItem.quantity); } catch { /* best-effort rollback */ }
-              }
-              return duplicate;
-            }
-            // Extremely unlikely: P2002 fired but row not found (deleted between?). Fall through to throw.
-          }
-
-          if (error.message === 'OPTIMISTIC_LOCK_CONFLICT' && attempt < MAX_RETRIES) {
-            this.logger.warn(`Optimistic lock conflict on attempt ${attempt}, retrying...`);
-            const jitterMs = Math.random() * this.billingConfig.jitterDelayRandomMultiplier + this.billingConfig.jitterDelayBaseMs;
-            await new Promise(resolve => setTimeout(resolve, jitterMs));
-            const freshProducts = await this.prisma.product.findMany({
-              where: { id: { in: productIds } },
-              select: {
-                id: true, name: true, sku: true, currentStock: true, stockVersion: true,
-                sellingPrice: true, costPrice: true, mrp: true, gstRate: true, hsnCode: true, unit: true,
-              }
-            });
-            freshProducts.forEach((p: any) => productMap.set(p.id, p));
-            continue;
-          }
-
-          // Any other error: propagate up to the master catch for Redis compensation
-          throw error;
-        }
-      }
-
-      throw new ConflictException({
-        message: 'Could not complete the bill due to high concurrent activity. Please try again.',
-        code: 'MAX_RETRIES_EXCEEDED'
-      });
-
-    } catch (outerError: any) {
-      // ━━━ P0 FIX: MASTER COMPENSATION — restore Redis on ANY failure path ━━━
-      // This fires for: DB failures, credit limit rejects, shift lock rejects,
-      // max retries exceeded, or any unexpected error.
-      // It does NOT fire for P2002 idempotency (already handled above with early return).
-      this.logger.warn('Billing failed, compensating Redis stock', outerError?.message);
-      for (const doneItem of decrementedInRedis) {
-        try {
-          await this.inventoryCache.restoreStock(doneItem.productId, doneItem.quantity);
-        } catch (restoreErr) {
-          this.logger.error(`CRITICAL: Failed to restore Redis stock for product ${doneItem.productId}`, restoreErr);
-        }
-      }
-      throw outerError;
-    }
-  }
-
-  async processReturn(dto: { invoiceId: string, reason?: string, notes?: string }, ipAddress: string): Promise<any> {
-    const user = {
-      shopId: this.tenantContext.getShopId(),
-      userId: this.tenantContext.getUserId(),
-      ipAddress
-    };
-
-    const stockRestorations: Array<{ productId: string; quantity: number }> = [];
-
-    const result = await this.prisma.$transaction(async (tx: any) => {
-      // 1. Fetch and validate original invoice
-      const original = await tx.invoice.findUnique({
-        where: { id: dto.invoiceId, shopId: user.shopId },
-        include: { items: true, customer: true }
-      });
-
-      if (!original) {
-        throw new NotFoundException('Invoice not found');
-      }
-
-      if (original.type !== 'SALE' || original.status !== 'COMPLETED') {
-        throw new BadRequestException('Only completed sales can be returned');
-      }
-
-      // Idempotency: Prisma unique constraint on originalId will prevent duplicate return invoices
-      // but we also check here to provide a clear error message.
-      const existingReturn = await tx.invoice.findFirst({
-        where: { originalId: original.id, type: 'SALES_RETURN' }
-      });
-
-      if (existingReturn) {
-        throw new ConflictException('Invoice has already been returned');
-      }
-
-      // 2. Inventory Validation
-      const productIds = original.items.map((i: any) => i.productId);
-      const products = await tx.product.findMany({
-        where: { id: { in: productIds }, shopId: user.shopId, isDeleted: false }
-      });
-
-      if (products.length !== new Set(productIds).size) {
-        throw new BadRequestException('One or more products from this invoice have been deleted or corrupted.');
-      }
-
-      // 3. Shift Validation for Cash
-      if (original.paymentMode === 'CASH') {
-        const shift = await tx.shift.findFirst({
-          where: { shopId: user.shopId, status: 'OPEN', openedById: user.userId }
-        });
-        if (!shift) {
-          throw new BadRequestException('Cannot refund a cash invoice when there is no open shift.');
-        }
-
-        // Refund cash drawer
-        await tx.shift.update({
-          where: { id: shift.id },
-          data: {
-            expectedCash: { decrement: original.totalAmount }
-          }
-        });
-      }
-
-      // 4. Create Compensating Invoice
-      const date = new Date();
-      const year = date.getFullYear();
-      const month = date.getMonth() + 1;
-      const dateStr = month >= 4 
-        ? `${year}-${(year + 1).toString().slice(2)}`
-        : `${year - 1}-${year.toString().slice(2)}`;
-
-      const lastReturn: any[] = await tx.$queryRaw`
-        SELECT invoiceNumber FROM Invoice
-        WHERE shopId = ${user.shopId}
-          AND invoiceNumber LIKE ${`RET-${dateStr}-%`}
-        ORDER BY createdAt DESC LIMIT 1 FOR UPDATE
-      `;
-
-      let seq = 1;
-      if (lastReturn.length > 0) {
-        const parts = lastReturn[0].invoiceNumber.split('-');
-        seq = parseInt(parts[parts.length - 1], 10) + 1;
-      }
-
-      const returnInvoiceNumber = `RET-${dateStr}-${seq.toString().padStart(6, '0')}`;
-
-      const returnInvoice = await tx.invoice.create({
-        data: {
-          invoiceNumber: returnInvoiceNumber,
-          idempotencyKey: `RET-${original.id}`,
-          financialYear: original.financialYear,
-          shopId: user.shopId,
-          customerId: original.customerId,
-          cashierId: user.userId,
-          originalId: original.id,
-          subtotal: original.subtotal,
-          taxableAmount: original.taxableAmount,
-          cgstAmount: original.cgstAmount,
-          sgstAmount: original.sgstAmount,
-          igstAmount: original.igstAmount,
-          taxAmount: original.taxAmount,
-          discountAmount: original.discountAmount,
-          roundOffAmount: original.roundOffAmount,
-          totalAmount: original.totalAmount,
-          paidAmount: original.paidAmount,
-          udharAmount: original.udharAmount,
-          changeAmount: original.changeAmount,
-          paymentMode: original.paymentMode,
-          paymentRef: original.paymentRef,
-          isInterState: original.isInterState,
-          type: 'SALES_RETURN',
-          status: 'COMPLETED',
-          items: {
-            create: original.items.map((item: any) => ({
-              productId: item.productId,
-              productName: item.productName,
-              productSku: item.productSku,
-              quantity: item.quantity,
-              unit: item.unit,
-              costPrice: item.costPrice,
-              sellingPrice: item.sellingPrice,
-              mrp: item.mrp,
-              discountPercent: item.discountPercent,
-              gstRate: item.gstRate,
-              cgstAmount: item.cgstAmount,
-              sgstAmount: item.sgstAmount,
-              igstAmount: item.igstAmount,
-              totalAmount: item.totalAmount
-            }))
-          }
-        }
-      });
-
-      // 5. Restore Inventory & Log via Engine
-      for (const item of original.items) {
-        const p = products.find((x: any) => x.id === item.productId);
-        
-        await this.inventoryMutationEngine.mutateStock(tx, {
-          shopId: user.shopId,
-          locationId: 'DEFAULT',
-          productId: item.productId,
-          quantity: item.quantity,
-          mutationType: MutationType.RETURN,
-          reason: dto.reason ? `Return Reason: ${dto.reason} - ${dto.notes || ''}` : 'Sales Return',
-          referenceId: returnInvoice.id,
-          performedBy: user.userId,
-          occurredAt: new Date(),
-          allowNegative: true // returns always succeed
-        });
-
-        stockRestorations.push({ productId: item.productId, quantity: item.quantity });
-      }
-
-      // 6. Ledger Reversal (if Udhar)
-      if (original.paymentMode === 'UDHAR' && original.customerId) {
-        const customer = await tx.customer.findUnique({ where: { id: original.customerId } });
-        
-        await tx.customer.update({
-          where: { id: original.customerId },
-          data: {
-            outstandingBalance: { decrement: original.udharAmount }
-          }
-        });
-
-        await tx.udharTransaction.create({
-          data: {
-            customerId: original.customerId,
-            shopId: user.shopId,
-            invoiceId: returnInvoice.id,
-            amount: original.udharAmount,
-            type: 'ADJUSTMENT',
-            balanceBefore: customer.outstandingBalance,
-            balanceAfter: new Prisma.Decimal(customer.outstandingBalance).minus(new Prisma.Decimal(original.udharAmount)),
-            recordedById: user.userId,
-            notes: `Return against Invoice ${original.invoiceNumber}`
-          }
-        });
-      }
-
-      // 8. Ledger Double-Entry Reversal (ENG-302)
-      const existingLedgers = await tx.ledgerTransaction.count({
-        where: { invoiceId: returnInvoice.id }
-      });
-      if (existingLedgers === 0) {
-        const creditAccount = original.paymentMode === 'UDHAR' || (original.udharAmount && original.udharAmount.toNumber() > 0)
-          ? 'ACCOUNTS_RECEIVABLE' as const
-          : 'CASH' as const;
-
-        // Debit SALES_REVENUE
-        const lastDebitEntry = await tx.ledgerTransaction.findFirst({
-          where: { account: 'SALES_REVENUE' },
-          orderBy: { createdAt: 'desc' }
-        });
-        const debitBalanceBefore = lastDebitEntry ? lastDebitEntry.balanceAfter.toNumber() : 0;
-        const debitBalanceAfter = debitBalanceBefore - original.totalAmount.toNumber();
-
-        await tx.ledgerTransaction.create({
-          data: {
-            shopId: user.shopId,
-            invoiceId: returnInvoice.id,
-            account: 'SALES_REVENUE',
-            type: 'DEBIT',
-            amount: original.totalAmount,
-            balanceAfter: debitBalanceAfter,
-            description: `Return ${original.invoiceNumber} - SALES_REVENUE Reversal`
-          }
-        });
-
-        // Credit CASH / AR
-        const lastCreditEntry = await tx.ledgerTransaction.findFirst({
-          where: { account: creditAccount },
-          orderBy: { createdAt: 'desc' }
-        });
-        const creditBalanceBefore = lastCreditEntry ? lastCreditEntry.balanceAfter.toNumber() : 0;
-        const creditBalanceAfter = creditBalanceBefore - original.totalAmount.toNumber();
-
-        await tx.ledgerTransaction.create({
-          data: {
-            shopId: user.shopId,
-            invoiceId: returnInvoice.id,
-            account: creditAccount,
-            type: 'CREDIT',
-            amount: original.totalAmount,
-            balanceAfter: creditBalanceAfter,
-            description: `Return ${original.invoiceNumber} - ${creditAccount} Reversal`
-          }
-        });
-      }
-
-      // 9. Shift update reversal
-      if (original.shiftId) {
-        if (original.paymentMode === 'SPLIT') {
-          const cashPortion = original.paidAmount.toNumber();
-          const udharPortion = original.udharAmount.toNumber();
-          await tx.shift.update({
-            where: { id: original.shiftId },
-            data: {
-              totalSales: { decrement: original.totalAmount.toNumber() },
-              cashSales: { decrement: cashPortion },
-              udharSales: { decrement: udharPortion },
-            }
-          });
-        } else {
-          const paymentFieldMap: Record<string, string> = {
-            CASH: 'cashSales', UPI: 'upiSales', CARD: 'cardSales', UDHAR: 'udharSales',
-          };
-          const paymentField = paymentFieldMap[original.paymentMode] ?? 'cashSales';
-          await tx.shift.update({
-            where: { id: original.shiftId },
-            data: {
-              totalSales: { decrement: original.totalAmount.toNumber() },
-              [paymentField]: { decrement: original.totalAmount.toNumber() }
-            }
-          });
-        }
-      }
-
-      // 10. Outbox Event Integration
-      const eventId = crypto.randomUUID();
-      const correlationId = this.tenantContext.getCorrelationId();
-
-      await tx.outboxEvent.create({
-        data: {
-          id: eventId,
-          shopId: user.shopId,
-          type: 'INVOICE_RETURNED',
-          payload: {
-            eventId,
-            correlationId,
-            invoiceId: returnInvoice.id,
-            originalInvoiceId: original.id,
-            shopId: user.shopId,
-            openedById: user.userId,
-            type: 'DEBIT',
-            createdAt: new Date().toISOString(),
-            amount: original.totalAmount.toNumber(),
-            description: `Invoice ${original.invoiceNumber} returned`
-          }
-        }
-      });
-
-      // 11. Audit Log
-      await tx.auditLog.create({
-        data: {
-          action: 'RETURN_CREATED',
-          entity: 'INVOICE',
-          entityId: returnInvoice.id,
-          shopId: user.shopId,
-          userId: user.userId,
-          afterData: {
-            originalInvoiceId: original.id,
-            reason: dto.reason,
-            refundAmount: original.totalAmount,
-            paymentMode: original.paymentMode
-          },
-          ipAddress: user.ipAddress
-        }
-      });
-
-      return returnInvoice;
-    }, {
-      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
-      timeout: 10000
-    });
-
-    for (const res of stockRestorations) {
-      try {
-        await this.inventoryCache.restoreStock(res.productId, res.quantity);
-      } catch (e) {
-        this.logger.warn(`Failed to restore Redis stock on return for product ${res.productId}`, e);
-      }
-    }
-
-    return result;
-  }
-  async calculateInvoice(dto: any): Promise<any> {
-    const shopId = this.tenantContext.getShopId();
-
-    const productIds = dto.items.map((i: any) => i.productId);
-    const products = await this.prisma.product.findMany({
-      where: { id: { in: productIds }, isDeleted: false, isActive: true },
-      select: {
-        id: true, sellingPrice: true, gstRate: true
-      }
-    });
-
-    if (products.length !== new Set(productIds).size) {
-      throw new NotFoundException(`One or more products not found`);
-    }
-    const productMap = new Map<string, any>(products.map((p: any) => [p.id, p]));
-
-    let isInterState = false;
-    if (dto.customerId) {
-      const shop = await this.prisma.shop.findUnique({ where: { id: shopId }, select: { state: true } });
-      const customer = await this.prisma.customer.findFirst({
-        where: { id: dto.customerId },
-        select: { state: true }
-      });
-      if (customer && shop) {
-        isInterState = shop.state !== customer.state;
-      }
-    }
-
-    const mathInput = {
-      items: dto.items.map((item: any) => {
-        const product = productMap.get(item.productId)!;
-        return {
-          productId: item.productId,
-          quantity: item.quantity,
-          unitPrice: product.sellingPrice,
-          discountPercent: item.discountPercent,
-          gstRateStr: product.gstRate,
-          isInterState
-        };
-      }),
+  // ---------------------------------------------------------------------------
+  // Preview
+  // ---------------------------------------------------------------------------
+
+  async calculateInvoice(dto: CalculateInvoiceDto, actor: BillingActor) {
+    const lines = this.normaliseLines(dto.items);
+    const products = await this.loadProducts(actor.shopId, lines.map((l) => l.productId));
+    const { isInterState, shopState, customerState } = await this.resolveInterState(actor.shopId, dto.customerId);
+
+    const payments = dto.payments ? this.toPaymentInput(dto.payments, dto.udharAmount) : undefined;
+    const result = this.runEngine({
+      items: lines.map((l) => this.toMathItem(l, products.get(l.productId)!, isInterState)),
       discountAmount: dto.discountAmount,
       discountPercentage: dto.discountPercentage,
       discountType: dto.discountType,
       discountReason: dto.discountReason,
-      // For preview endpoint, if amountPaid isn't provided, use a dummy value 
-      // (our engine bypasses strict payment equality checks if amountPaid == 99999999)
-      amountPaid: dto.amountPaid ?? 99999999,
-      udharAmount: dto.udharAmount ?? 0,
-      paymentMode: dto.paymentMode ?? 'CASH'
-    };
+      payment: payments,
+    });
 
-    const mathResult = InvoiceMathEngine.calculate(mathInput);
-    return mathResult;
+    return { ...result, isInterState, shopState, customerState };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Create
+  // ---------------------------------------------------------------------------
+
+  async createInvoice(dto: CreateInvoiceDto, actor: BillingActor): Promise<CreateInvoiceResult> {
+    const lines = this.normaliseLines(dto.items);
+    const paymentInput = this.toPaymentInput(dto.payments ?? this.legacyPayments(dto), dto.udharAmount ?? (dto.payments ? 0 : this.legacyUdhar(dto)));
+    const requestHash = this.hashRequest({ lines, dto, paymentInput });
+
+    // 1. Idempotent replay (same key + same payload) or reuse rejection.
+    const existing = await this.prisma.invoice.findFirst({
+      where: { idempotencyKey: dto.idempotencyKey, shopId: actor.shopId },
+      include: INVOICE_INCLUDE,
+    });
+    if (existing) {
+      if (existing.requestHash && existing.requestHash !== requestHash) {
+        throw new UnprocessableEntityException({
+          message: 'This idempotency key was already used for a different request.',
+          code: 'IDEMPOTENCY_KEY_REUSED',
+          details: { invoiceId: existing.id, invoiceNumber: existing.invoiceNumber },
+        });
+      }
+      return { invoice: existing, stock: [], shiftId: existing.shiftId, replayed: true };
+    }
+
+    // 2. Products, location, availability (fail fast before any lock).
+    const products = await this.loadProducts(actor.shopId, lines.map((l) => l.productId));
+    const locationId = await this.locationService.resolveSaleLocation(this.prisma, actor.shopId);
+    const availability = await this.loadAvailability(actor.shopId, locationId, products);
+    for (const line of lines) {
+      const product = products.get(line.productId)!;
+      if (!STOCKED_TYPES.has(product.type)) continue;
+      const available = availability.get(line.productId) ?? 0;
+      if (available < line.quantity) {
+        await this.billingHelpers.auditRejected(actor, 'INSUFFICIENT_STOCK', { productId: product.id, requestedQty: line.quantity, availableQty: available });
+        throw this.insufficientStock(product, line.quantity, available);
+      }
+    }
+
+    // 3. Redis advisory pre-check (never authoritative, always compensated).
+    const decrementedInRedis: NormalisedLine[] = [];
+    for (const line of lines) {
+      if (!STOCKED_TYPES.has(products.get(line.productId)!.type)) continue;
+      const status = await this.inventoryCache.tryDecrementStock(line.productId, line.quantity);
+      if (status === 'ok') {
+        decrementedInRedis.push(line);
+      } else if (status === 'insufficient') {
+        // The DB said there is enough (step 2): the cache is stale. Repair it and continue.
+        await this.inventoryCache.syncStock(line.productId, products.get(line.productId)!.currentStock.toString());
+      }
+    }
+
+    const { isInterState } = await this.resolveInterState(actor.shopId, dto.customerId);
+    const requiresCustomer = paymentInput.udharAmount.greaterThan(0);
+    if (requiresCustomer && !dto.customerId) {
+      await this.restoreRedis(decrementedInRedis);
+      throw new BadRequestException({ message: 'A customer must be selected for credit (udhar) billing.', code: 'CUSTOMER_REQUIRED' });
+    }
+
+    // 4. Engine (validates discounts and the settlement before we touch the DB).
+    let math: InvoiceCalculationResultV1;
+    try {
+      math = this.runEngine({
+        items: lines.map((l) => this.toMathItem(l, products.get(l.productId)!, isInterState)),
+        discountAmount: dto.discountAmount,
+        discountPercentage: dto.discountPercentage,
+        discountType: dto.discountType,
+        discountReason: dto.discountReason,
+        payment: paymentInput,
+      });
+    } catch (e) {
+      await this.restoreRedis(decrementedInRedis);
+      throw e;
+    }
+    const timeZone = await this.billingHelpers.shopTimeZone(actor.shopId);
+    const MAX_RETRIES = 3;
+    let attempt = 0;
+
+    try {
+      while (attempt < MAX_RETRIES) {
+        attempt++;
+        try {
+          const outcome = await this.prisma.$transaction(
+            async (tx) => {
+              const now = new Date();
+              const financialYear = financialYearLabel(now, timeZone);
+
+              // Authoritative prices are the ones committed when this transaction runs:
+              // re-read the products and recompute so a price change between the
+              // preview and the checkout can never be persisted silently (the fixed
+              // tender amounts would no longer match and the engine rejects it).
+              const txProducts = await this.loadProducts(actor.shopId, lines.map((l) => l.productId), tx);
+              txProducts.forEach((p, id) => products.set(id, p));
+              math = this.runEngine({
+                items: lines.map((l) => this.toMathItem(l, products.get(l.productId)!, isInterState)),
+                discountAmount: dto.discountAmount,
+                discountPercentage: dto.discountPercentage,
+                discountType: dto.discountType,
+                discountReason: dto.discountReason,
+                payment: paymentInput,
+              });
+              const payment = math.payment!;
+
+              // a. Shift (explicit or the cashier's open one), locked for the whole transaction.
+              const shiftId = await this.lockShift(tx, actor, dto.shiftId);
+
+              // b. Customer lock + credit-limit check.
+              let customer: LockedCustomer | null = null;
+              if (dto.customerId) {
+                customer = await this.lockCustomer(tx, actor.shopId, dto.customerId);
+                if (payment.udharAmount.greaterThan(0)) {
+                  const projected = customer.outstandingBalance.plus(money(payment.udharAmount));
+                  if (projected.greaterThan(customer.creditLimit) && !isManager(actor.role)) {
+                    throw new ConflictException({
+                      message: `Credit limit exceeded for ${customer.name}.`,
+                      code: 'CREDIT_LIMIT_EXCEEDED',
+                      details: {
+                        creditLimit: customer.creditLimit.toNumber(),
+                        currentBalance: customer.outstandingBalance.toNumber(),
+                        requestedAmount: payment.udharAmount.toNumber(),
+                        projectedBalance: projected.toNumber(),
+                      },
+                    });
+                  }
+                }
+              }
+
+              // c. Gapless number.
+              const { number: invoiceNumber } = await this.invoiceNumbers.next(tx, actor.shopId, 'POS_INVOICE', `INV-${financialYear}-`);
+
+              // d. Invoice + lines + tenders.
+              const discountApplied = math.invoiceDiscount.greaterThan(0);
+              const invoice = await tx.invoice.create({
+                data: {
+                  invoiceNumber,
+                  financialYear,
+                  shopId: actor.shopId,
+                  idempotencyKey: dto.idempotencyKey,
+                  requestHash,
+                  customerId: dto.customerId ?? null,
+                  cashierId: actor.userId,
+                  paymentMode: payment.paymentMode,
+                  status: 'COMPLETED',
+                  type: 'SALE',
+                  subtotal: money(math.subtotal),
+                  discountAmount: money(math.totalDiscount),
+                  discountPercentage: dto.discountPercentage !== undefined ? new Prisma.Decimal(dto.discountPercentage) : null,
+                  discountType: discountApplied ? (dto.discountType ?? 'FIXED_AMOUNT') : null,
+                  discountReason: discountApplied ? dto.discountReason ?? null : null,
+                  approvedBy: discountApplied ? actor.userId : null,
+                  approvalTimestamp: discountApplied ? now : null,
+                  taxableAmount: money(math.taxableTotal),
+                  taxAmount: money(math.totalTax),
+                  cgstAmount: money(math.totalCgst),
+                  sgstAmount: money(math.totalSgst),
+                  igstAmount: money(math.totalIgst),
+                  roundOffAmount: money(math.roundOff),
+                  totalAmount: money(math.finalTotal),
+                  paidAmount: money(payment.paidAmount),
+                  changeAmount: money(payment.changeAmount),
+                  udharAmount: money(payment.udharAmount),
+                  paymentRef: payment.tenders.map((t) => t.reference).filter(Boolean).join(',') || null,
+                  isInterState,
+                  notes: dto.notes ?? null,
+                  shiftId,
+                  items: {
+                    create: math.lines.map((line) => {
+                      const product = products.get(line.productId)!;
+                      const dtoLine = lines.find((l) => l.productId === line.productId)!;
+                      return {
+                        productId: line.productId,
+                        productName: product.name,
+                        productSku: product.sku,
+                        quantity: qty(line.quantity),
+                        unit: product.unit as never,
+                        costPrice: product.costPrice,
+                        sellingPrice: product.sellingPrice,
+                        mrp: product.mrp,
+                        discountPercent: new Prisma.Decimal(dtoLine.discountPercent),
+                        discountAmount: money(line.discountAmount),
+                        taxableAmount: money(line.taxableAmount),
+                        gstRate: product.gstRate as never,
+                        cgstAmount: money(line.cgstAmount),
+                        sgstAmount: money(line.sgstAmount),
+                        igstAmount: money(line.igstAmount),
+                        cessAmount: money(line.cessAmount),
+                        totalAmount: money(line.lineTotal),
+                      };
+                    }),
+                  },
+                  payments: {
+                    create: payment.tenders
+                      .filter((t) => t.amount.greaterThan(0) || t.changeAmount.greaterThan(0))
+                      .map((t) => ({
+                        shopId: actor.shopId,
+                        tender: t.type as TenderType,
+                        amount: money(t.amount),
+                        tenderedAmount: money(t.tenderedAmount),
+                        changeAmount: money(t.changeAmount),
+                        reference: t.reference ?? null,
+                      })),
+                  },
+                },
+                include: INVOICE_INCLUDE,
+              });
+
+              // e. Stock, one engine call per line (OCC on the product version).
+              const stock: StockOutcome[] = [];
+              for (const line of lines) {
+                const product = products.get(line.productId)!;
+                try {
+                  const result = await this.inventoryMutationEngine.mutateStock(tx, {
+                    shopId: actor.shopId,
+                    locationId,
+                    productId: line.productId,
+                    quantity: line.quantity,
+                    mutationType: MutationType.SALE,
+                    reason: `Sale ${invoiceNumber}`,
+                    referenceId: invoice.id,
+                    performedBy: actor.userId,
+                    occurredAt: now,
+                    allowNegative: false,
+                  });
+                  if (!result.bypassed) {
+                    stock.push({
+                      productId: line.productId,
+                      quantity: line.quantity,
+                      balanceAfter: result.balanceAfter.toNumber(),
+                      productStockAfter: result.productStockAfter.toNumber(),
+                    });
+                  }
+                } catch (e) {
+                  if (e instanceof OptimisticLockConflictError) throw new Error(OCC_RETRY_MARKER);
+                  if (e instanceof InsufficientStockError) {
+                    throw this.insufficientStock(product, line.quantity, Number(e.details?.availableQty ?? 0));
+                  }
+                  throw e;
+                }
+              }
+
+              // f. Customer credit and purchase stats.
+              if (customer) {
+                if (payment.udharAmount.greaterThan(0)) {
+                  const before = customer.outstandingBalance;
+                  const after = before.plus(money(payment.udharAmount));
+                  await tx.udharTransaction.create({
+                    data: {
+                      customerId: customer.id,
+                      invoiceId: invoice.id,
+                      shopId: actor.shopId,
+                      recordedById: actor.userId,
+                      type: 'CREDIT',
+                      amount: money(payment.udharAmount),
+                      balanceBefore: before,
+                      balanceAfter: after,
+                      notes: `Credit sale ${invoiceNumber}`,
+                    },
+                  });
+                  await tx.customer.update({
+                    where: { id: customer.id },
+                    data: { outstandingBalance: after, totalPurchases: { increment: money(math.finalTotal) }, lastPurchaseAt: now },
+                  });
+                } else {
+                  await tx.customer.update({
+                    where: { id: customer.id },
+                    data: { totalPurchases: { increment: money(math.finalTotal) }, lastPurchaseAt: now },
+                  });
+                }
+              }
+
+              // g. Shift counters (cash expected = cash applied, i.e. tendered - change).
+              if (shiftId) {
+                const buckets = this.tenderBuckets(payment.tenders);
+                await tx.shift.update({
+                  where: { id: shiftId },
+                  data: {
+                    totalSales: { increment: money(math.finalTotal) },
+                    cashSales: { increment: buckets.cash },
+                    upiSales: { increment: buckets.upi },
+                    cardSales: { increment: buckets.card },
+                    udharSales: { increment: money(payment.udharAmount) },
+                    expectedCash: { increment: buckets.cash },
+                  },
+                });
+              }
+
+              // h. Balanced double-entry ledger.
+              await this.ledger.post(tx, {
+                shopId: actor.shopId,
+                invoiceId: invoice.id,
+                description: `Sale ${invoiceNumber}`,
+                entries: this.saleLedgerEntries(payment.tenders, payment.udharAmount, math, products, lines),
+              });
+
+              // i. Audit.
+              await tx.auditLog.create({
+                data: {
+                  shopId: actor.shopId,
+                  userId: actor.userId,
+                  action: 'INVOICE_CREATED',
+                  entity: 'Invoice',
+                  entityId: invoice.id,
+                  ipAddress: actor.ipAddress ?? null,
+                  afterData: {
+                    invoiceNumber,
+                    totalAmount: math.finalTotal.toFixed(2),
+                    itemCount: lines.length,
+                    paymentMode: payment.paymentMode,
+                    tenders: payment.tenders.map((t) => ({ type: t.type, amount: t.amount.toFixed(2), change: t.changeAmount.toFixed(2) })),
+                    udharAmount: payment.udharAmount.toFixed(2),
+                    discount: discountApplied
+                      ? { amount: math.invoiceDiscount.toFixed(2), reason: dto.discountReason ?? null, approvedBy: actor.userId, approverRole: actor.role }
+                      : null,
+                    customerId: dto.customerId ?? null,
+                    shiftId,
+                  },
+                },
+              });
+
+              // j. Outbox.
+              await this.billingHelpers.stageEvent(tx, actor, 'INVOICE_CREATED', invoice.id, {
+                invoiceId: invoice.id,
+                invoiceNumber,
+                type: 'SALE',
+                customerId: dto.customerId ?? null,
+                amount: math.finalTotal.toNumber(),
+                paymentMode: payment.paymentMode,
+                items: stock.map((s) => ({ productId: s.productId, quantity: s.quantity, balanceAfter: s.productStockAfter })),
+              });
+
+              return { invoice, stock, shiftId };
+            },
+            {
+              timeout: this.billingConfig.gatewayTimeoutMs,
+              maxWait: this.billingConfig.transactionMaxWaitMs,
+              isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+            },
+          );
+
+          // Committed: make the caches and listeners agree with the database.
+          await this.billingHelpers.afterStockChange(actor, outcome.stock);
+          return { ...outcome, replayed: false };
+        } catch (error) {
+          if (this.isIdempotencyRace(error)) {
+            const duplicate = await this.prisma.invoice.findFirst({
+              where: { idempotencyKey: dto.idempotencyKey, shopId: actor.shopId },
+              include: INVOICE_INCLUDE,
+            });
+            if (duplicate) {
+              await this.restoreRedis(decrementedInRedis);
+              return { invoice: duplicate, stock: [], shiftId: duplicate.shiftId, replayed: true };
+            }
+          }
+          if (error instanceof Error && error.message === OCC_RETRY_MARKER && attempt < MAX_RETRIES) {
+            this.logger.warn(`Optimistic lock conflict on attempt ${attempt}, retrying`);
+            await this.jitter();
+            const fresh = await this.loadProducts(actor.shopId, lines.map((l) => l.productId));
+            fresh.forEach((p, id) => products.set(id, p));
+            continue;
+          }
+          throw error;
+        }
+      }
+      throw new ConflictException({ message: 'Could not complete the bill due to concurrent activity. Please try again.', code: 'MAX_RETRIES_EXCEEDED' });
+    } catch (error) {
+      await this.restoreRedis(decrementedInRedis);
+      if (error instanceof ConflictException) {
+        const body = error.getResponse() as { code?: string; details?: unknown };
+        if (body?.code === 'CREDIT_LIMIT_EXCEEDED' || body?.code === 'INSUFFICIENT_STOCK') {
+          await this.billingHelpers.auditRejected(actor, body.code, body.details);
+        }
+      }
+      throw error;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Helpers shared with the reversal service
+  // ---------------------------------------------------------------------------
+
+  normaliseLines(items: InvoiceItemDto[]): NormalisedLine[] {
+    const merged = new Map<string, NormalisedLine>();
+    for (const item of items) {
+      const discount = item.discountPercent ?? 0;
+      const existing = merged.get(item.productId);
+      if (existing) {
+        if (existing.discountPercent !== discount) {
+          throw new BadRequestException({
+            message: `Product ${item.productId} appears twice with different discounts.`,
+            code: 'ERR_DUPLICATE_LINE',
+          });
+        }
+        existing.quantity = Number(new Decimal(existing.quantity).plus(item.quantity).toFixed(3));
+      } else {
+        merged.set(item.productId, { productId: item.productId, quantity: Number(new Decimal(item.quantity).toFixed(3)), discountPercent: discount });
+      }
+    }
+    return Array.from(merged.values());
+  }
+
+  async loadProducts(shopId: string, productIds: string[], db: Prisma.TransactionClient | PrismaService = this.prisma): Promise<Map<string, ProductRow>> {
+    const rows = await db.product.findMany({
+      where: { id: { in: productIds }, shopId, isDeleted: false, isActive: true },
+      select: {
+        id: true, name: true, sku: true, type: true, unit: true, currentStock: true, stockVersion: true,
+        sellingPrice: true, costPrice: true, mrp: true, gstRate: true, cessRate: true,
+      },
+    });
+    const map = new Map<string, ProductRow>(rows.map((r) => [r.id, r as ProductRow]));
+    const missing = productIds.filter((id) => !map.has(id));
+    if (missing.length > 0) {
+      throw new NotFoundException({ message: `Products not found or inactive: ${missing.join(', ')}`, code: 'PRODUCT_NOT_FOUND', details: { productIds: missing } });
+    }
+    return map;
+  }
+
+  private async loadAvailability(shopId: string, locationId: string, products: Map<string, ProductRow>): Promise<Map<string, number>> {
+    const items = await this.prisma.inventoryItem.findMany({
+      where: { shopId, locationId, variantId: null, isDeleted: false, productId: { in: Array.from(products.keys()) } },
+      select: { productId: true, onHand: true, reserved: true },
+    });
+    const anyItems = await this.prisma.inventoryItem.groupBy({
+      by: ['productId'],
+      where: { shopId, isDeleted: false, productId: { in: Array.from(products.keys()) } },
+      _count: { _all: true },
+    });
+    const hasItems = new Set(anyItems.map((a) => a.productId));
+    const map = new Map<string, number>();
+    for (const [id, product] of products) {
+      const item = items.find((i) => i.productId === id);
+      if (item) map.set(id, item.onHand.minus(item.reserved).toNumber());
+      // Legacy products without any InventoryItem: the engine bootstraps from currentStock.
+      else if (!hasItems.has(id)) map.set(id, product.currentStock.toNumber());
+      else map.set(id, 0);
+    }
+    return map;
+  }
+
+  async resolveInterState(shopId: string, customerId?: string | null) {
+    const shop = await this.prisma.shop.findUnique({ where: { id: shopId }, select: { state: true } });
+    const shopState = shop?.state ?? null;
+    let customerState: string | null = null;
+    if (customerId) {
+      const customer = await this.prisma.customer.findFirst({ where: { id: customerId, shopId, isDeleted: false }, select: { state: true } });
+      if (!customer) throw new NotFoundException({ message: 'Customer not found.', code: 'CUSTOMER_NOT_FOUND' });
+      customerState = customer.state ?? null;
+    }
+    const isInterState = !!(shopState && customerState && normaliseState(shopState) !== normaliseState(customerState));
+    return { isInterState, shopState, customerState };
+  }
+
+  toMathItem(line: NormalisedLine, product: ProductRow, isInterState: boolean) {
+    return {
+      productId: line.productId,
+      quantity: line.quantity,
+      unitPrice: product.sellingPrice.toString(),
+      discountPercent: line.discountPercent,
+      gstRateStr: product.gstRate,
+      cessRate: product.cessRate.toString(),
+      isInterState,
+    };
+  }
+
+  toPaymentInput(payments: PaymentTenderDto[], udharAmount?: number) {
+    return {
+      tenders: payments.map((p) => ({ type: p.tender as 'CASH' | 'UPI' | 'CARD' | 'BANK_TRANSFER', amount: p.amount, tenderedAmount: p.tenderedAmount, reference: p.reference })),
+      udharAmount: new Decimal(udharAmount ?? 0),
+    };
+  }
+
+  runEngine(input: InvoiceMathInput): InvoiceCalculationResultV1 {
+    try {
+      return InvoiceMathEngine.calculate(input);
+    } catch (e) {
+      if (e instanceof InvoiceMathError || (e as { name?: string })?.name === 'InvoiceMathError') {
+        throw new BadRequestException({ message: (e as Error).message, code: (e as { code: string }).code });
+      }
+      throw e;
+    }
+  }
+
+  private legacyPayments(dto: CreateInvoiceDto): PaymentTenderDto[] {
+    const mode = dto.paymentMode ?? 'CASH';
+    const paid = dto.amountPaid ?? 0;
+    if (mode === 'UDHAR' || paid === 0) return [];
+    const tender: TenderType = mode === 'SPLIT' ? 'CASH' : (mode as TenderType);
+    return [{ tender, amount: paid }];
+  }
+
+  private legacyUdhar(dto: CreateInvoiceDto): number {
+    if (dto.paymentMode === 'UDHAR') return dto.udharAmount ?? dto.amountPaid ?? 0;
+    return dto.udharAmount ?? 0;
+  }
+
+  private hashRequest(payload: { lines: NormalisedLine[]; dto: CreateInvoiceDto; paymentInput: ReturnType<BillingService['toPaymentInput']> }): string {
+    const canonical = {
+      lines: [...payload.lines].sort((a, b) => a.productId.localeCompare(b.productId)),
+      customerId: payload.dto.customerId ?? null,
+      discountAmount: payload.dto.discountAmount ?? null,
+      discountPercentage: payload.dto.discountPercentage ?? null,
+      discountType: payload.dto.discountType ?? null,
+      tenders: payload.paymentInput.tenders.map((t) => ({ type: t.type, amount: Number(t.amount), tendered: t.tenderedAmount ?? null })),
+      udhar: payload.paymentInput.udharAmount.toFixed(2),
+    };
+    return crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
+  }
+
+  async lockShift(tx: Tx, actor: BillingActor, shiftId?: string | null): Promise<string | null> {
+    if (shiftId) {
+      const rows = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM Shift WHERE id = ${shiftId} AND shopId = ${actor.shopId} AND status = 'OPEN' AND isDeleted = false FOR UPDATE
+      `;
+      if (rows.length === 0) {
+        throw new ConflictException({ message: 'Shift is closed, invalid, or belongs to another shop.', code: 'SHIFT_INVALID' });
+      }
+      return rows[0].id;
+    }
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM Shift WHERE shopId = ${actor.shopId} AND openedById = ${actor.userId} AND status = 'OPEN' AND isDeleted = false
+      ORDER BY openedAt DESC LIMIT 1 FOR UPDATE
+    `;
+    return rows[0]?.id ?? null;
+  }
+
+  async lockCustomer(tx: Tx, shopId: string, customerId: string): Promise<LockedCustomer> {
+    const rows = await tx.$queryRaw<Array<{ id: string; name: string; state: string | null; outstandingBalance: unknown; creditLimit: unknown; isActive: number | boolean }>>`
+      SELECT id, name, state, outstandingBalance, creditLimit, isActive FROM Customer
+      WHERE id = ${customerId} AND shopId = ${shopId} AND isDeleted = false FOR UPDATE
+    `;
+    if (rows.length === 0) throw new NotFoundException({ message: 'Customer not found.', code: 'CUSTOMER_NOT_FOUND' });
+    const row = rows[0];
+    return {
+      id: row.id,
+      name: row.name,
+      state: row.state,
+      outstandingBalance: new Prisma.Decimal(String(row.outstandingBalance)),
+      creditLimit: new Prisma.Decimal(String(row.creditLimit)),
+      isActive: Boolean(row.isActive),
+    };
+  }
+
+  tenderBuckets(tenders: ReadonlyArray<{ type: string; amount: Decimal }>) {
+    const sum = (types: string[]) => money(tenders.filter((t) => types.includes(t.type)).reduce((a, t) => a.plus(t.amount), new Decimal(0)));
+    return { cash: sum(['CASH']), upi: sum(['UPI']), card: sum(['CARD', 'BANK_TRANSFER']), bank: sum(['UPI', 'CARD', 'BANK_TRANSFER']) };
+  }
+
+  saleLedgerEntries(
+    tenders: ReadonlyArray<{ type: string; amount: Decimal }>,
+    udhar: Decimal,
+    math: InvoiceCalculationResultV1,
+    products: Map<string, ProductRow>,
+    lines: NormalisedLine[],
+  ): LedgerEntryInput[] {
+    const buckets = this.tenderBuckets(tenders);
+    const entries: LedgerEntryInput[] = [
+      { account: LedgerAccount.CASH, type: LedgerEntryType.DEBIT, amount: buckets.cash },
+      { account: LedgerAccount.BANK, type: LedgerEntryType.DEBIT, amount: buckets.bank },
+      { account: LedgerAccount.ACCOUNTS_RECEIVABLE, type: LedgerEntryType.DEBIT, amount: money(udhar) },
+      { account: LedgerAccount.SALES_REVENUE, type: LedgerEntryType.CREDIT, amount: money(math.taxableTotal.plus(math.roundOff)) },
+      { account: LedgerAccount.GST_PAYABLE, type: LedgerEntryType.CREDIT, amount: money(math.totalTax) },
+    ];
+    const cost = lines.reduce((acc, l) => acc.plus(new Decimal(products.get(l.productId)!.costPrice.toString()).mul(l.quantity)), new Decimal(0));
+    if (cost.greaterThan(0)) {
+      entries.push({ account: LedgerAccount.COST_OF_GOODS, type: LedgerEntryType.DEBIT, amount: money(cost) });
+      entries.push({ account: LedgerAccount.INVENTORY, type: LedgerEntryType.CREDIT, amount: money(cost) });
+    }
+    return entries;
+  }
+
+  insufficientStock(product: ProductRow, requestedQty: number, availableQty: number) {
+    return new ConflictException({
+      message: `Insufficient stock for "${product.name}": requested ${requestedQty}, available ${availableQty}.`,
+      code: 'INSUFFICIENT_STOCK',
+      details: { productId: product.id, productName: product.name, requestedQty, availableQty },
+    });
+  }
+
+  private isIdempotencyRace(error: unknown): boolean {
+    return (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2002' &&
+      String((error.meta as { target?: unknown })?.target ?? '').includes('idempotencyKey')
+    );
+  }
+
+  private async restoreRedis(lines: NormalisedLine[]) {
+    for (const line of lines) await this.inventoryCache.restoreStock(line.productId, line.quantity);
+    lines.length = 0;
+  }
+
+  private async jitter() {
+    const ms = Math.random() * this.billingConfig.jitterDelayRandomMultiplier + this.billingConfig.jitterDelayBaseMs;
+    await new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 
+function normaliseState(state: string): string {
+  return state.trim().toLowerCase().replace(/\s+/g, ' ');
+}
 
-
-
+export { safeTimeZone };

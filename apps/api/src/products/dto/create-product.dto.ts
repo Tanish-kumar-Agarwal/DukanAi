@@ -1,5 +1,5 @@
-import { IsString, IsOptional, IsNumber, IsBoolean, IsEnum, IsArray, ValidateNested } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsString, IsOptional, IsNumber, IsBoolean, IsEnum, MaxLength } from 'class-validator';
+import { PartialType } from '@nestjs/swagger';
 import { ProductType, ProductStatus, ProductUnit, GstRate } from '@prisma/client';
 
 export class CreateProductDto {
@@ -13,8 +13,10 @@ export class CreateProductDto {
   @IsString()
   sku: string;
 
+  /** Unique per shop across Product, ProductBarcode and ProductVariant (409 BARCODE_IN_USE). */
   @IsString()
   @IsOptional()
+  @MaxLength(64)
   barcode?: string;
 
   @IsString()
@@ -56,7 +58,7 @@ export class CreateProductDto {
   @IsString()
   @IsOptional()
   supplierId?: string;
-  
+
   @IsString()
   @IsOptional()
   brandId?: string;
@@ -73,4 +75,5 @@ export class CreateProductDto {
   isActive?: boolean;
 }
 
-export class UpdateProductDto extends CreateProductDto {}
+/** PATCH payload: every field optional, same validation rules as create. */
+export class UpdateProductDto extends PartialType(CreateProductDto) {}
