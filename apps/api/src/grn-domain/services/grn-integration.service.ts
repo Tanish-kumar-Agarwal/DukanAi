@@ -1,55 +1,52 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Prisma, StockMovementType } from '@prisma/client';
-import { StockLedgerService } from '../../stock-ledger-domain/services/stock-ledger.service';
-import { ProductEventPublisher } from '../../product-events/services/product-event-publisher.service';
+import { Prisma } from '@prisma/client';
 import Decimal from 'decimal.js';
 import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
+import { InventoryLocationService } from '../../inventory-domain/services/inventory-location.service';
 
 @Injectable()
 export class GrnIntegrationService {
   private readonly logger = new Logger(GrnIntegrationService.name);
 
   constructor(
-    private readonly stockLedger: StockLedgerService,
-    private readonly eventPublisher: ProductEventPublisher,
-    private readonly inventoryMutationEngine: InventoryMutationEngine
+    private readonly inventoryMutationEngine: InventoryMutationEngine,
+    private readonly locationService: InventoryLocationService,
   ) {}
 
   /**
-   * Translates GRN acceptance into immutable Stock Ledger Entries 
-   * and delegates Inventory Engine updates without bypassing domains.
+   * Translates GRN acceptance into inventory mutations through the single
+   * mutation authority. Goods are received into the default bin of the GRN's
+   * warehouse (or the shop's sale location when the GRN has no warehouse), so
+   * received stock is exactly what the POS sells from.
    */
   async updateInventoryFromGrn(
-    tx: Prisma.TransactionClient, 
-    shopId: string, 
-    grn: any
+    tx: Prisma.TransactionClient,
+    shopId: string,
+    grn: { id: string; warehouseId?: string | null; createdBy?: string | null; lines: Array<{ productId: string; acceptedQuantity: Prisma.Decimal | number | string; batchId?: string | null }> },
   ) {
     this.logger.debug(`Integrating GRN ${grn.id} with Inventory & Stock Ledger`);
+    const locationId = await this.locationService.resolveWarehouseBin(tx, shopId, grn.warehouseId ?? null);
 
     for (const line of grn.lines) {
-      if (new Decimal(line.acceptedQuantity).lessThanOrEqualTo(0)) continue;
+      const accepted = new Decimal(line.acceptedQuantity.toString());
+      if (accepted.lessThanOrEqualTo(0)) continue;
 
-      let inventoryItemId = '';
-      let oldOnHand = 0;
-      const quantityChange = new Decimal(line.acceptedQuantity).toNumber();
-
-      // Delegate entirely to InventoryMutationEngine for Single Source of Truth
       await this.inventoryMutationEngine.mutateStock(tx, {
         shopId,
-        locationId: grn.warehouseId,
+        locationId,
         productId: line.productId,
-        quantity: quantityChange,
+        quantity: accepted.toNumber(),
         mutationType: MutationType.PURCHASE,
         reason: `GRN Acceptance: ${grn.id}`,
         referenceId: grn.id,
         performedBy: grn.createdBy || 'SYSTEM',
         occurredAt: new Date(),
-        allowNegative: true // Purchases always succeed
+        allowNegative: true,
+        idempotencyKey: `GRN:${grn.id}:${line.productId}`,
       });
-      
-      // We would also invoke Batch Engine here if batchId exists
+
       if (line.batchId) {
-         this.logger.debug(`Integrating batch ${line.batchId} into batch stock`);
+        this.logger.debug(`Batch ${line.batchId} received on GRN ${grn.id}`);
       }
     }
   }

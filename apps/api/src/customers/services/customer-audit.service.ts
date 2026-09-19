@@ -17,7 +17,7 @@ export class CustomerAuditService {
     return this.prisma.customerAudit.create({
       data: {
         customerId: data.customerId,
-        actorId: data.actorId,
+        actorId: data.actorId ?? null,
         action: data.action,
         previousPayload: data.previousPayload ? data.previousPayload : undefined,
         newPayload: data.newPayload ? data.newPayload : undefined,
