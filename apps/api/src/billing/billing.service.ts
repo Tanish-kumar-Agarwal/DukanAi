@@ -6,7 +6,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { LedgerAccount, LedgerEntryType, Prisma, TenderType } from '@prisma/client';
+import { GstRate, LedgerAccount, LedgerEntryType, Prisma, ProductType, ProductUnit, TenderType } from '@prisma/client';
 import * as crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInvoiceDto, InvoiceItemDto, PaymentTenderDto } from './dto/create-invoice.dto';
@@ -45,14 +45,14 @@ interface ProductRow {
   id: string;
   name: string;
   sku: string;
-  type: string;
-  unit: string;
+  type: ProductType;
+  unit: ProductUnit;
   currentStock: Prisma.Decimal;
   stockVersion: number;
   sellingPrice: Prisma.Decimal;
   costPrice: Prisma.Decimal;
   mrp: Prisma.Decimal;
-  gstRate: string;
+  gstRate: GstRate;
   cessRate: Prisma.Decimal;
 }
 
@@ -287,14 +287,14 @@ export class BillingService {
                         productName: product.name,
                         productSku: product.sku,
                         quantity: qty(line.quantity),
-                        unit: product.unit as never,
+                        unit: product.unit,
                         costPrice: product.costPrice,
                         sellingPrice: product.sellingPrice,
                         mrp: product.mrp,
                         discountPercent: new Prisma.Decimal(dtoLine.discountPercent),
                         discountAmount: money(line.discountAmount),
                         taxableAmount: money(line.taxableAmount),
-                        gstRate: product.gstRate as never,
+                        gstRate: product.gstRate,
                         cgstAmount: money(line.cgstAmount),
                         sgstAmount: money(line.sgstAmount),
                         igstAmount: money(line.igstAmount),
@@ -521,7 +521,7 @@ export class BillingService {
         sellingPrice: true, costPrice: true, mrp: true, gstRate: true, cessRate: true,
       },
     });
-    const map = new Map<string, ProductRow>(rows.map((r) => [r.id, r as ProductRow]));
+    const map = new Map<string, ProductRow>(rows.map((r) => [r.id, r]));
     const missing = productIds.filter((id) => !map.has(id));
     if (missing.length > 0) {
       throw new NotFoundException({ message: `Products not found or inactive: ${missing.join(', ')}`, code: 'PRODUCT_NOT_FOUND', details: { productIds: missing } });

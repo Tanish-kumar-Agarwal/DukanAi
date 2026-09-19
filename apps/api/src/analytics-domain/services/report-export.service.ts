@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { GstRate, InvoiceType, Prisma } from '@prisma/client';
+import { GstRate, InvoiceStatus, InvoiceType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { businessDateString } from '../../common/time/business-day';
 import { ExportRange, resolveExportRange } from '../analytics-range';
@@ -215,7 +215,12 @@ export class ReportExportService {
     if (lines.length) await sink(lines.join(''));
   }
 
-  /** Cursor-paginates the shop's non-deleted invoices in the range, oldest first. */
+  /**
+   * Cursor-paginates the shop's COMPLETED sale/return invoices in the range,
+   * oldest first. The status/type predicate mirrors `completedInvoiceFilter`
+   * (the SQL engines' money filter) so a total summed from the CSV matches the
+   * dashboards instead of also counting DRAFT and CANCELLED rows.
+   */
   private async forEachInvoiceBatch<S extends Prisma.InvoiceSelect & { id: true }>(
     shopId: string,
     range: ExportRange,
@@ -225,7 +230,13 @@ export class ReportExportService {
     let cursorId: string | undefined;
     for (;;) {
       const batch = await this.prisma.invoice.findMany({
-        where: { shopId, isDeleted: false, createdAt: { gte: range.start, lt: range.end } },
+        where: {
+          shopId,
+          isDeleted: false,
+          status: InvoiceStatus.COMPLETED,
+          type: { in: [InvoiceType.SALE, InvoiceType.SALES_RETURN] },
+          createdAt: { gte: range.start, lt: range.end },
+        },
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         take: EXPORT_BATCH_SIZE,
         ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),

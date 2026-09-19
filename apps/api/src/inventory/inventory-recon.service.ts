@@ -18,6 +18,7 @@ interface ReconProduct {
   id: string;
   shopId: string;
   currentStock: Prisma.Decimal;
+  stockVersion: number;
 }
 
 interface DriftCounters {
@@ -105,7 +106,7 @@ export class InventoryReconService implements OnApplicationBootstrap {
             updatedAt: { gte: lookbackStart },
             isDeleted: false,
           },
-          select: { id: true, shopId: true, currentStock: true },
+          select: { id: true, shopId: true, currentStock: true, stockVersion: true },
           take: batchSize,
           skip: skip,
           orderBy: { id: 'asc' },
@@ -212,16 +213,30 @@ export class InventoryReconService implements OnApplicationBootstrap {
         },
       });
 
-      // 3. Repair Product.currentStock from the ledger
+      // 3. Repair Product.currentStock from the ledger.
+      //    `stockVersion` makes this a compare-and-swap against the row we read:
+      //    InventoryMutationEngine bumps it on every sale, so a checkout that
+      //    committed between the groupBy above and this write makes the update
+      //    match zero rows. Without that guard the stale ledger sum would
+      //    overwrite the sale's decrement and re-create the drift this job exists
+      //    to repair. A contended row is left for the next run, not an error.
       try {
         const result = await this.prisma.product.updateMany({
-          where: { id: product.id, shopId: product.shopId },
+          where: { id: product.id, shopId: product.shopId, stockVersion: product.stockVersion },
           data: { currentStock: ledgerStock, stockVersion: { increment: 1 } },
         });
-        if (result.count !== 1) {
-          throw new Error(`Expected to repair exactly one Product row, updated ${result.count}`);
+        if (result.count === 0) {
+          this.logger.warn(
+            `Skipping repair of product ${product.id}: stock changed concurrently (stockVersion moved past ${product.stockVersion}); the next run re-evaluates it.`,
+          );
+          await this.prisma.inventoryDriftLog.update({
+            where: { id: driftLog.id },
+            data: { status: DriftStatus.DETECTED },
+          });
+          continue;
         }
         product.currentStock = ledgerStock;
+        product.stockVersion += 1;
 
         await this.prisma.inventoryDriftLog.update({
           where: { id: driftLog.id },

@@ -5,8 +5,15 @@ import { TenantContextService } from '../../iam/tenant-context/tenant-context.se
 
 type AnyFn = (...args: any[]) => any;
 
-function makeJob(name: string, data: Record<string, unknown>, jobId: string | undefined = 'evt-1') {
-  return { id: jobId ?? 'bull-job-1', name, opts: { jobId }, data, attemptsMade: 0 } as any;
+/** `attempts` mirrors the retry policy the `system-events` queue is registered with. */
+function makeJob(
+  name: string,
+  data: Record<string, unknown>,
+  jobId: string | undefined = 'evt-1',
+  attemptsMade = 0,
+  attempts = 3,
+) {
+  return { id: jobId ?? 'bull-job-1', name, opts: { jobId, attempts }, data, attemptsMade } as any;
 }
 
 describe('SystemEventsProcessor', () => {
@@ -231,6 +238,25 @@ describe('SystemEventsProcessor', () => {
     expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({
       where: { id: 'evt-1' },
       data: { retryCount: { increment: 1 } },
+    });
+  });
+
+  it('marks the row FAILED when a transient error exhausts the last attempt', async () => {
+    // The relay sets the row DONE at enqueue time, so if the final attempt only
+    // bumped retryCount the event would be lost behind a DONE status.
+    prisma.$transaction.mockRejectedValue(new Error('Connection reset by peer'));
+    const lastAttempt = makeJob(
+      'INVOICE_CREATED',
+      { eventId: 'evt-1', shopId: 'shop-1', userId: 'user-1', payload: { invoiceId: 'inv-1', shopId: 'shop-1', items: [] } },
+      'evt-1',
+      2,
+      3,
+    );
+
+    await expect(processor.process(lastAttempt)).rejects.toThrow('Connection reset by peer');
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({
+      where: { id: 'evt-1' },
+      data: expect.objectContaining({ status: 'FAILED', retryCount: { increment: 1 } }),
     });
   });
 });

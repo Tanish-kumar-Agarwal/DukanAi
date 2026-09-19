@@ -171,14 +171,8 @@ export class CustomersService {
     if (!amount.greaterThan(0)) throw new BadRequestException({ message: 'Payment amount must be positive.', code: 'INVALID_AMOUNT' });
     const requestHash = crypto.createHash('sha256').update(JSON.stringify({ id, amount: amount.toFixed(2), tender: dto.tender })).digest('hex');
 
-    const existing = await this.prisma.udharTransaction.findFirst({ where: { shopId: actor.shopId, idempotencyKey: dto.idempotencyKey } });
-    if (existing) {
-      if (existing.customerId !== id || !existing.amount.equals(amount) || existing.tender !== dto.tender) {
-        throw new UnprocessableEntityException({ message: 'This idempotency key was already used for a different payment.', code: 'IDEMPOTENCY_KEY_REUSED' });
-      }
-      const customer = await this.findOne(id);
-      return { customer, transaction: existing, replayed: true };
-    }
+    const replay = await this.replayPayment(id, dto, amount, actor);
+    if (replay) return replay;
 
     const result = await this.prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<Array<{ id: string; name: string; outstandingBalance: unknown }>>`
@@ -272,24 +266,65 @@ export class CustomersService {
       });
 
       return { customer, transaction };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }).catch(async (error) => {
+      // The replay pre-check runs outside this transaction, so two concurrent
+      // requests carrying the same key both pass it and serialize on the
+      // customer lock; the loser hits the unique (shopId, idempotencyKey)
+      // constraint here. Resolve it as the replay it is instead of a 500.
+      // BillingService.createInvoice handles the same race the same way.
+      if (!this.isIdempotencyRace(error)) throw error;
+      const replayed = await this.replayPayment(id, dto, amount, actor);
+      if (!replayed) throw error;
+      return replayed;
+    });
 
-    return { ...result, replayed: false };
+    return 'replayed' in result ? result : { ...result, replayed: false };
+  }
+
+  /**
+   * Returns the stored result for an already-used idempotency key, or null when
+   * the key is new. Rejects a key reused for different payment details.
+   */
+  private async replayPayment(id: string, dto: RecordPaymentDto, amount: Prisma.Decimal, actor: BillingActor) {
+    const existing = await this.prisma.udharTransaction.findFirst({
+      where: { shopId: actor.shopId, idempotencyKey: dto.idempotencyKey },
+    });
+    if (!existing) return null;
+    if (existing.customerId !== id || !existing.amount.equals(amount) || existing.tender !== dto.tender) {
+      throw new UnprocessableEntityException({ message: 'This idempotency key was already used for a different payment.', code: 'IDEMPOTENCY_KEY_REUSED' });
+    }
+    const customer = await this.findOne(id);
+    return { customer, transaction: existing, replayed: true as const };
+  }
+
+  private isIdempotencyRace(error: unknown): boolean {
+    return (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2002' &&
+      String((error.meta as { target?: unknown })?.target ?? '').includes('idempotencyKey')
+    );
   }
 
   async softDelete(id: string, actor?: Pick<BillingActor, 'userId' | 'ipAddress'>) {
     const shopId = this.tenantContext.getShopId();
-    const customer = await this.prisma.customer.findFirst({ where: { id, shopId, isDeleted: false }, select: { id: true, outstandingBalance: true } });
-    if (!customer) throw new NotFoundException({ message: 'Customer not found', code: 'CUSTOMER_NOT_FOUND' });
-    if (!customer.outstandingBalance.isZero()) {
-      throw new ConflictException({
-        message: 'Settle the outstanding balance before deleting this customer.',
-        code: 'CUSTOMER_HAS_BALANCE',
-        details: { outstandingBalance: customer.outstandingBalance.toNumber() },
-      });
-    }
-
-    const deleted = await this.customerRepository.softDelete(id, shopId);
+    // The balance check and the delete share one transaction and the same row
+    // lock the credit path takes, so a sale or repayment cannot land between
+    // them and leave a deleted customer holding udhar.
+    const deleted = await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ outstandingBalance: unknown }>>`
+        SELECT outstandingBalance FROM Customer WHERE id = ${id} AND shopId = ${shopId} AND isDeleted = false FOR UPDATE
+      `;
+      if (rows.length === 0) throw new NotFoundException({ message: 'Customer not found', code: 'CUSTOMER_NOT_FOUND' });
+      const outstandingBalance = new Prisma.Decimal(String(rows[0].outstandingBalance));
+      if (!outstandingBalance.isZero()) {
+        throw new ConflictException({
+          message: 'Settle the outstanding balance before deleting this customer.',
+          code: 'CUSTOMER_HAS_BALANCE',
+          details: { outstandingBalance: outstandingBalance.toNumber() },
+        });
+      }
+      return tx.customer.update({ where: { id, shopId }, data: { isDeleted: true, deletedAt: new Date(), isActive: false } });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
     await this.auditService.logAction({ customerId: id, actorId: actor?.userId, ipAddress: actor?.ipAddress, action: 'CUSTOMER_DELETED' });
     await this.eventPublisher.publish(this.prisma, shopId, {
       type: 'customer.deleted',

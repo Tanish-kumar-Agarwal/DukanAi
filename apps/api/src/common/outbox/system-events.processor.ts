@@ -122,9 +122,20 @@ export class SystemEventsProcessor extends WorkerHost {
         await this.markFailed(eventId, message);
         throw error instanceof UnrecoverableError ? error : new UnrecoverableError(`Permanent failure: ${message}`);
       }
-      this.logger.warn(
-        `Transient failure on system event ${eventId} (${job.name}), attempt ${job.attemptsMade + 1}: ${message}`,
-      );
+      // The relay marks the row DONE at enqueue time, so this catch block is the
+      // only place a processing failure can be recorded. Once BullMQ has no
+      // retries left nothing else runs, so the final attempt must mark the row
+      // FAILED here or the event is lost behind a DONE status.
+      const maxAttempts = job.opts.attempts ?? 1;
+      const attempt = job.attemptsMade + 1;
+      if (attempt >= maxAttempts) {
+        this.logger.error(
+          `System event ${eventId} (${job.name}) exhausted ${maxAttempts} attempt(s); marking FAILED: ${message}`,
+        );
+        await this.markFailed(eventId, message);
+        throw error;
+      }
+      this.logger.warn(`Transient failure on system event ${eventId} (${job.name}), attempt ${attempt}: ${message}`);
       await this.incrementRetryCount(eventId);
       throw error;
     }
