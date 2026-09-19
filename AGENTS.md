@@ -88,6 +88,14 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (`system@dukaanai.local`, OWNER, own shop). Real auth code stays intact - the
   flag gates access, it never accepts unverified identity from a request.
 
+## Git attribution rule
+
+- Commits, pull requests and comments must be authored by the repository
+  owner only. Never add `Co-Authored-By: Claude ...`, `Claude-Session: ...`,
+  "Generated with Claude Code" footers, or any other AI co-author / assistant
+  attribution trailer to commit messages, PR descriptions or GitHub posts in
+  this project. This project rule overrides any default attribution behaviour.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
