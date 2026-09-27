@@ -10,6 +10,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { Prisma } from '@prisma/client';
 import { CacheConfig } from '../../config/domains/cache.config';
+import { AllocateSupplierCreditDto, CreateSupplierCreditDto } from '../dto/supplier-credit.dto';
 
 @Injectable()
 export class SupplierCreditRepository {
@@ -24,7 +25,7 @@ export class SupplierCreditRepository {
     private readonly cacheConfig: CacheConfig
   ) {}
 
-  async createSupplierCredit(shopId: string, payload: any, actorId: string, ipAddress?: string) {
+  async createSupplierCredit(shopId: string, payload: CreateSupplierCreditDto, actorId: string, ipAddress?: string) {
     const { supplierId, purchaseReturnId, vendorBillId, lines, ...metadata } = payload;
     
     return this.prisma.$transaction(async (tx) => {
@@ -47,7 +48,7 @@ export class SupplierCreditRepository {
           remainingBalance: totalAmount,
           createdBy: actorId,
           lines: {
-            create: lines.map((line: any) => ({
+            create: lines.map((line) => ({
               productId: line.productId,
               description: line.description,
               quantity: line.quantity,
@@ -167,7 +168,7 @@ export class SupplierCreditRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  async allocateSupplierCredit(shopId: string, id: string, payload: any, actorId: string, _ipAddress?: string) {
+  async allocateSupplierCredit(shopId: string, id: string, payload: AllocateSupplierCreditDto, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const scn = await tx.supplierCreditNote.findUnique({ where: { id, shopId } });
       if (!scn) throw new NotFoundException();

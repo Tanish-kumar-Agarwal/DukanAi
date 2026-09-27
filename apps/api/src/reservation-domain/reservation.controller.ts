@@ -5,6 +5,8 @@ import { CreateReservationDto } from './dto/reservation.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
+import { ADMIN_ROLES, MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('reservations')
@@ -15,12 +17,14 @@ export class ReservationController {
     private readonly tenantContext: TenantContextService
   ) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post()
   async createReservation(@Body() dto: CreateReservationDto) {
     const shopId = this.tenantContext.getShopId();
     return this.reservationService.createReservation(shopId, dto);
   }
 
+  @Roles(...ADMIN_ROLES)
   @Post('sweep')
   async runExpirySweep() {
     // In production, this would be secured to internal system calls or a cron trigger.

@@ -1,6 +1,9 @@
 import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
 import { CreateNotificationDto } from './dto/notification.dto';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
+import { AnyAuthenticated } from '../auth/any-authenticated.decorator';
 
 @Controller('notifications')
 export class NotificationsController {
@@ -11,16 +14,19 @@ export class NotificationsController {
     return this.notificationsService.findAll();
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post()
   create(@Body() dto: CreateNotificationDto) {
     return this.notificationsService.create(dto);
   }
 
+  @AnyAuthenticated()
   @Patch('read-all')
   markAllRead() {
     return this.notificationsService.markAllRead();
   }
 
+  @AnyAuthenticated()
   @Patch(':id/read')
   markRead(@Param('id') id: string) {
     return this.notificationsService.markRead(id);

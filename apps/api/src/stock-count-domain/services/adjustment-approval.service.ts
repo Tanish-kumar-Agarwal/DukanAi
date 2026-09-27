@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateAdjustmentRequestDto } from '../dto/stock-count.dto';
 import { AdjustmentPostingService } from './adjustment-posting.service';
@@ -52,6 +52,14 @@ export class AdjustmentApprovalService {
    * Called by a Manager to approve a pending request.
    */
   async approveAdjustment(shopId: string, adjustmentId: string, managerUserId: string) {
+    const request = await this.prisma.adjustmentRequest.findFirst({
+      where: { id: adjustmentId, shopId, status: AdjustmentStatus.PENDING_APPROVAL },
+      select: { requestedById: true },
+    });
+    if (!request) throw new NotFoundException('Pending adjustment request not found');
+    // Separation of duties: the requester of a stock adjustment cannot approve it.
+    if (request.requestedById === managerUserId) throw new ForbiddenException('The person who requested a stock adjustment cannot approve it.');
+
     await this.prisma.adjustmentRequest.update({
       where: { id: adjustmentId, shopId, status: AdjustmentStatus.PENDING_APPROVAL },
       data: {

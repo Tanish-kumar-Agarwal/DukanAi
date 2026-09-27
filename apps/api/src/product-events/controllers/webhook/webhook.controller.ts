@@ -3,6 +3,10 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { JwtAuthGuard } from '../../../auth/jwt-auth.guard';
 import { TenantGuard } from '../../../iam/guards/tenant.guard';
 import { EventsFeatureConfig } from '../../../config/domains/features/events-feature.config';
+import { MANAGEMENT_ROLES } from '../../../auth/role-sets';
+import { Roles } from '../../../auth/roles.decorator';
+import { randomBytes } from 'crypto';
+import { CreateWebhookEndpointDto } from '../../dto/webhook-endpoint.dto';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('webhooks')
@@ -12,13 +16,14 @@ export class WebhookController {
     private readonly eventsFeatureConfig: EventsFeatureConfig
   ) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post()
-  async createEndpoint(@Body() dto: any, @Req() req: any) {
+  async createEndpoint(@Body() dto: CreateWebhookEndpointDto, @Req() req: any) {
     return this.prisma.webhookEndpoint.create({
       data: {
         shopId: req.shop.id,
         url: dto.url,
-        secret: dto.secret, // Provide securely, or generate automatically
+        secret: dto.secret ?? randomBytes(32).toString('hex'),
         events: dto.events || ['*'],
         description: dto.description
       }
@@ -41,6 +46,7 @@ export class WebhookController {
     });
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Delete(':id')
   async deleteEndpoint(@Param('id') id: string, @Req() req: any) {
     await this.prisma.webhookEndpoint.delete({

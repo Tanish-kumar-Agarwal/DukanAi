@@ -8,6 +8,9 @@ import { IdempotencyEngine } from './engines/idempotency-engine';
 import { PaymentLedgerEngine } from './engines/payment-ledger-engine';
 import { PrismaService } from '../prisma/prisma.service';
 import Decimal from 'decimal.js';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
+import { CapturePaymentDto } from './dto/capture-payment.dto';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('payments')
@@ -20,10 +23,11 @@ export class PaymentController {
     private readonly ledgerEngine: PaymentLedgerEngine
   ) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('capture')
   async capturePayment(
     @CurrentShop() shopId: string,
-    @Body() payload: any // Abstracted DTO
+    @Body() payload: CapturePaymentDto,
   ) {
     const { idempotencyKey, amount, currency, method, reference, invoiceIds } = payload;
 

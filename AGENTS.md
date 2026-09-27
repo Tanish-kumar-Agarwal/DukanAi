@@ -167,6 +167,25 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   skip a request in flight), dashboard GETs time out after 15 s and payloads
   are shape-checked (`DashboardPayloadError`): never render a failure as zeros.
 
+## Authorization policy (roadmap phase 1)
+
+- `RolesGuard` is deny-by-default: every POST/PUT/PATCH/DELETE handler must
+  carry `@Roles(...)`, `@AnyAuthenticated()` (own-data self-service) or
+  `@Public()`; GET stays open to any signed-in user unless narrowed.
+  `RouteAuthorizationAssertion` (AppModule) refuses to boot otherwise, and
+  `src/auth/route-authorization.spec.ts` scans every controller source without
+  booting. Write roles with the sets in `src/auth/role-sets.ts`
+  (`ADMIN_ROLES`, `MANAGEMENT_ROLES`, `POS_ROLES`); `SUPER_ADMIN` is never
+  implicit, list it.
+- Every `@Body()` is a class-validator DTO (the scan spec rejects `any`,
+  `unknown`, `object` and inline object types). A body that is a free-form
+  JSON document goes through `@Body(JsonObjectPipe)`. Never spread a request
+  body into Prisma `data`: pick the columns you mean to write (see
+  `ShopsService.updateShopProfile`, `PurchaseDraftService.pickDraftFields`).
+- Separation of duties: the creator/submitter of a purchase order, the
+  creator of a goods receipt and the requester of a stock-count adjustment
+  cannot approve it (`ForbiddenException` in the approval services).
+
 ## Auth bypass flag
 
 - `AUTH_DISABLED` (API) + `NEXT_PUBLIC_AUTH_DISABLED` (web, build-time) disable

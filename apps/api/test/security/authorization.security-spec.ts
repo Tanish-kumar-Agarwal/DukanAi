@@ -34,7 +34,7 @@ describe('security: authorization and shop isolation', () => {
     run.system(() => prisma.inventoryItem.findFirstOrThrow({ where: { shopId: shop.shopId, productId, isDeleted: false } }));
 
   describe('P0-1: PATCH /shops/me accepts only the documented profile fields', () => {
-    it.failing('a MANAGER cannot change roles through the shop profile body', async () => {
+    it('a MANAGER cannot change roles through the shop profile body', async () => {
       const manager = await createUser(app, shopA, Role.MANAGER);
       const res = await httpAs(app, shopA, manager)
         .patch('/api/shops/me')
@@ -45,7 +45,7 @@ describe('security: authorization and shop isolation', () => {
       expect(after.role).toBe(Role.MANAGER);
     });
 
-    it.failing('the shop profile body cannot connect another shop\'s product', async () => {
+    it('the shop profile body cannot connect another shop\'s product', async () => {
       const foreignProduct = await createProduct(app, shopB, { key: 'foreign' });
       const res = await httpAs(app, shopA, ownerOf(shopA))
         .patch('/api/shops/me')
@@ -64,7 +64,7 @@ describe('security: authorization and shop isolation', () => {
       expect(res.status).toBe(403);
     });
 
-    it.failing('a VIEWER cannot adjust stock', async () => {
+    it('a VIEWER cannot adjust stock', async () => {
       const viewer = await createUser(app, shopA, Role.VIEWER);
       const productId = await createProduct(app, shopA, { key: 'adjust' });
       await receiveStock(app, shopA, productId, 10);
@@ -76,7 +76,7 @@ describe('security: authorization and shop isolation', () => {
       expect(await makeReaders(app, shopA).onHand(productId)).toBe(10);
     });
 
-    it.failing('a VIEWER cannot lock stock in a reservation', async () => {
+    it('a VIEWER cannot lock stock in a reservation', async () => {
       const viewer = await createUser(app, shopA, Role.VIEWER);
       const productId = await createProduct(app, shopA, { key: 'reserve' });
       await receiveStock(app, shopA, productId, 50);

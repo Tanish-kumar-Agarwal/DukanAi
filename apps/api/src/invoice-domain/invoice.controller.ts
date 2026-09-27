@@ -8,6 +8,9 @@ import { InvoiceCacheService } from './services/invoice-cache.service';
 import { Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
 import { PrismaService } from '../prisma/prisma.service';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
+import { GenerateInvoiceDto } from './dto/generate-invoice.dto';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('invoices')
@@ -20,10 +23,11 @@ export class InvoiceController {
     @InjectQueue('invoice-pdf-queue') private readonly pdfQueue: Queue
   ) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('generate')
   async generateInvoice(
     @CurrentShop() shopId: string,
-    @Body() payload: any // Abstracted DTO
+    @Body() payload: GenerateInvoiceDto,
   ) {
     // 1. Validate math and layout
     this.validationEngine.validatePayload(payload);
@@ -39,7 +43,7 @@ export class InvoiceController {
         type: payload.type || 'TAX_INVOICE',
         subTotal: payload.subTotal,
         taxTotal: payload.taxTotal,
-        discountTotal: payload.discountTotal,
+        discountTotal: payload.discountTotal ?? 0,
         grandTotal: payload.grandTotal,
         status: 'ISSUED'
       }
@@ -51,7 +55,7 @@ export class InvoiceController {
         invoiceId: invoice.id,
         shopId,
         versionNumber: 1,
-        snapshotData: payload,
+        snapshotData: JSON.parse(JSON.stringify(payload)),
         reason: 'Initial Generation'
       }
     });

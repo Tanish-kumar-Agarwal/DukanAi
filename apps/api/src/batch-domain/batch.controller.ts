@@ -10,6 +10,7 @@ import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
 import { Roles } from '../auth/roles.decorator';
 import { Role } from '@prisma/client';
+import { ADMIN_ROLES, MANAGEMENT_ROLES } from '../auth/role-sets';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('batches')
@@ -27,11 +28,13 @@ export class BatchController {
     return this.batchService.listBatches(this.tenantContext.getShopId());
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post()
   async createBatch(@Body() dto: CreateBatchDto) {
     return this.batchService.createBatch(this.tenantContext.getShopId(), dto);
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post(':batchId/stock')
   async addBatchStock(
     @Param('batchId') batchId: string,
@@ -40,12 +43,14 @@ export class BatchController {
     return this.batchService.addBatchStock(this.tenantContext.getShopId(), batchId, dto);
   }
 
+  @Roles(...ADMIN_ROLES)
   @Post('sweep-expiry')
   async sweepExpiry() {
     const count = await this.expiryService.quarantineExpiredBatches();
     return { status: 'SUCCESS', quarantinedCount: count };
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post(':batchId/recall')
   async recallBatch(
     @Param('batchId') batchId: string,

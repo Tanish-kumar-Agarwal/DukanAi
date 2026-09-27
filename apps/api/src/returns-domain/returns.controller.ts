@@ -7,6 +7,9 @@ import { ReverseInventoryEngine } from './engines/reverse-inventory-engine';
 import { ReverseFinancialEngine } from './engines/reverse-financial-engine';
 import { InspectionEngine } from './engines/inspection-engine';
 import { PrismaService } from '../prisma/prisma.service';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
+import { InitiateReturnDto } from './dto/initiate-return.dto';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('returns')
@@ -19,10 +22,11 @@ export class ReturnsController {
     private readonly inspectionEngine: InspectionEngine
   ) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('initiate')
   async initiateReturn(
     @CurrentShop() shopId: string,
-    @Body() payload: any // Abstracted DTO
+    @Body() payload: InitiateReturnDto,
   ) {
     const { invoiceId, orderId, type, returnLines, reason } = payload;
 
@@ -41,13 +45,13 @@ export class ReturnsController {
         type: type || 'PARTIAL_RETURN',
         reason,
         lines: {
-          create: returnLines.map((line: any) => ({
+          create: returnLines.map((line) => ({
             shopId,
             invoiceLineId: line.invoiceLineId,
             orderLineId: line.orderLineId,
             productId: line.productId,
             quantity: line.quantity,
-            returnReason: line.returnReason || reason
+            returnReason: line.returnReason ?? reason ?? 'UNSPECIFIED'
           }))
         },
         timelines: {

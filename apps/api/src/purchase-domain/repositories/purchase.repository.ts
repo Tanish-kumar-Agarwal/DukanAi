@@ -13,6 +13,7 @@ import { Prisma } from '@prisma/client';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { CacheConfig } from '../../config/domains/cache.config';
+import { CreatePurchaseOrderDto, UpdatePurchaseDraftDto } from '../dto/purchase-order.dto';
 
 @Injectable()
 export class PurchaseRepository {
@@ -30,7 +31,7 @@ export class PurchaseRepository {
     private readonly cacheConfig: CacheConfig
   ) {}
 
-  async createPurchaseOrder(shopId: string, payload: any, actorId: string, ipAddress?: string) {
+  async createPurchaseOrder(shopId: string, payload: CreatePurchaseOrderDto, actorId: string, ipAddress?: string) {
     const { supplierId, items, ...metadata } = payload;
     
     await this.validation.validateSupplier(shopId, supplierId);
@@ -141,7 +142,8 @@ export class PurchaseRepository {
   async submitPurchaseOrder(shopId: string, id: string, actorId: string, comments?: string) {
     return this.prisma.$transaction(async (tx) => {
       const po = await this.approval.submitForApproval(tx, shopId, id, actorId, comments);
-      
+      await this.audit.recordAudit(tx, id, shopId, 'SUBMITTED', actorId, null, { comments: comments ?? null }, undefined);
+
       await this.eventPublisher.publish(tx, shopId, {
         eventType: 'PurchaseOrderSubmitted',
         aggregateId: id,
@@ -192,7 +194,7 @@ export class PurchaseRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  async updateDraft(shopId: string, id: string, payload: any, actorId: string) {
+  async updateDraft(shopId: string, id: string, payload: UpdatePurchaseDraftDto, actorId: string) {
     return this.prisma.$transaction(async (tx) => {
       const updatedPo = await this.draft.saveDraft(tx, shopId, id, payload, actorId);
       

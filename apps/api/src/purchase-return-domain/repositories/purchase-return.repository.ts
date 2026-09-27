@@ -11,6 +11,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { Prisma } from '@prisma/client';
 import { CacheConfig } from '../../config/domains/cache.config';
+import { CreatePurchaseReturnDto, DispatchShipmentDto } from '../dto/purchase-return.dto';
 
 @Injectable()
 export class PurchaseReturnRepository {
@@ -26,7 +27,7 @@ export class PurchaseReturnRepository {
     private readonly cacheConfig: CacheConfig
   ) {}
 
-  async createPurchaseReturn(shopId: string, payload: any, actorId: string, ipAddress?: string) {
+  async createPurchaseReturn(shopId: string, payload: CreatePurchaseReturnDto, actorId: string, ipAddress?: string) {
     const { supplierId, purchaseOrderId, goodsReceiptId, warehouseId, lines, ...metadata } = payload;
     
     return this.prisma.$transaction(async (tx) => {
@@ -49,7 +50,7 @@ export class PurchaseReturnRepository {
           totalAmount: metadata.totalAmount || 0,
           createdBy: actorId,
           lines: {
-            create: lines.map((line: any) => ({
+            create: lines.map((line) => ({
               productId: line.productId,
               variantId: line.variantId,
               purchaseOrderLineId: line.purchaseOrderLineId,
@@ -169,7 +170,7 @@ export class PurchaseReturnRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  async dispatchShipment(shopId: string, id: string, payload: any, actorId: string, _ipAddress?: string) {
+  async dispatchShipment(shopId: string, id: string, payload: DispatchShipmentDto, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const pr = await tx.purchaseReturn.findUnique({ where: { id, shopId } });
       if (!pr) throw new NotFoundException();

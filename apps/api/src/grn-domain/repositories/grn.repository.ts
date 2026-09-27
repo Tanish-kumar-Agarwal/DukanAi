@@ -10,6 +10,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { Prisma } from '@prisma/client';
 import { CacheConfig } from '../../config/domains/cache.config';
+import { CreateGoodsReceiptDto, InspectGoodsDto, ReceiveGoodsDto } from '../dto/goods-receipt.dto';
 
 @Injectable()
 export class GrnRepository {
@@ -24,7 +25,7 @@ export class GrnRepository {
     private readonly cacheConfig: CacheConfig
   ) {}
 
-  async createGoodsReceipt(shopId: string, payload: any, actorId: string, ipAddress?: string) {
+  async createGoodsReceipt(shopId: string, payload: CreateGoodsReceiptDto, actorId: string, ipAddress?: string) {
     const { purchaseOrderId, supplierId, warehouseId, lines, ...metadata } = payload;
     
     return this.prisma.$transaction(async (tx) => {
@@ -49,7 +50,7 @@ export class GrnRepository {
           notes: metadata.notes,
           createdBy: actorId,
           lines: {
-            create: lines.map((line: any) => ({
+            create: lines.map((line) => ({
               productId: line.productId,
               variantId: line.variantId,
               orderedQuantity: line.orderedQuantity || 0,
@@ -122,7 +123,7 @@ export class GrnRepository {
     });
   }
 
-  async receiveGoods(shopId: string, id: string, payload: any, actorId: string, _ipAddress?: string) {
+  async receiveGoods(shopId: string, id: string, payload: ReceiveGoodsDto, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const grn = await tx.goodsReceipt.findUnique({ where: { id, shopId }, include: { lines: true } });
       if (!grn) throw new NotFoundException();
@@ -157,7 +158,7 @@ export class GrnRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  async inspectGoods(shopId: string, id: string, payload: any, actorId: string, _ipAddress?: string) {
+  async inspectGoods(shopId: string, id: string, payload: InspectGoodsDto, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const grn = await tx.goodsReceipt.findUnique({ where: { id, shopId } });
       if (!grn) throw new NotFoundException();

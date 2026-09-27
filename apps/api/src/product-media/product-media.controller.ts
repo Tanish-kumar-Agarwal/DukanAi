@@ -3,12 +3,16 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ProductMediaService } from './product-media.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
+import { TagMediaDto } from './dto/tag-media.dto';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('media')
 export class ProductMediaController {
   constructor(private readonly productMediaService: ProductMediaService) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('upload/product/:id')
   @UseInterceptors(FileInterceptor('file'))
   async uploadProductMedia(
@@ -31,6 +35,7 @@ export class ProductMediaController {
     );
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('upload/variant/:id')
   @UseInterceptors(FileInterceptor('file'))
   async uploadVariantMedia(
@@ -63,6 +68,7 @@ export class ProductMediaController {
     return this.productMediaService.getGallery(req.shop.id, undefined, variantId);
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('bulk')
   async bulkUpload() {
     // In a real scenario, this would accept an array of pre-signed URLs or S3 keys
@@ -70,8 +76,9 @@ export class ProductMediaController {
     return { message: 'Bulk upload queued successfully' };
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('tag')
-  async tagMedia(@Body() body: { assetId: string, tag: string }) {
+  async tagMedia(@Body() body: TagMediaDto) {
     // Stub implementation for semantic tagging
     return { message: `Tag ${body.tag} added to asset ${body.assetId}` };
   }
@@ -82,6 +89,7 @@ export class ProductMediaController {
     return [];
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('order')
   async updateOrder() {
     // Stub implementation for updating sort orders

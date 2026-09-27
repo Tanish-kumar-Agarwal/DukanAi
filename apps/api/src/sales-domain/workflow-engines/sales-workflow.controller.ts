@@ -5,6 +5,8 @@ import { CurrentShop } from '../../iam/decorators/current-shop.decorator';
 import { WorkflowOrchestrator } from './workflow-orchestrator';
 import { OrderSplitEngine } from './order-split-engine';
 import { SalesOrderStatus } from '@prisma/client';
+import { MANAGEMENT_ROLES } from '../../auth/role-sets';
+import { Roles } from '../../auth/roles.decorator';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('sales/workflow')
@@ -14,6 +16,7 @@ export class SalesWorkflowController {
     private readonly splitEngine: OrderSplitEngine
   ) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post(':id/transition')
   async transitionState(
     @CurrentShop() shopId: string,
@@ -24,6 +27,7 @@ export class SalesWorkflowController {
     return this.orchestrator.transitionState(shopId, orderId, newStatus, req.user.sub, { reason: 'Manual Override' });
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post(':id/split')
   async splitOrder(
     @CurrentShop() shopId: string,

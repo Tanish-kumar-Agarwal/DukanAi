@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
 
@@ -21,6 +21,13 @@ export class GrnApprovalService {
     });
 
     if (!pendingApproval) throw new BadRequestException('No pending approvals for this GRN');
+
+    if (action === 'APPROVE') {
+      // Separation of duties: the receiver who created the GRN cannot approve it.
+      const grn = await tx.goodsReceipt.findFirst({ where: { id, shopId }, select: { createdBy: true } });
+      const createdAudit = await tx.goodsReceiptAudit.findFirst({ where: { goodsReceiptId: id, shopId, actorId, action: 'CREATED' }, select: { id: true } });
+      if (grn?.createdBy === actorId || createdAudit) throw new ForbiddenException('The person who created a goods receipt cannot approve it.');
+    }
 
     const nextStatus = action === 'APPROVE' ? 'APPROVED' : 'REJECTED';
 

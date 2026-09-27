@@ -1,6 +1,8 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
 import { ExpensesService } from './expenses.service';
 import { CreateExpenseDto, UpdateExpenseDto } from './dto/expense.dto';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
 
 @Controller('expenses')
 export class ExpensesController {
@@ -11,16 +13,19 @@ export class ExpensesController {
     return this.expensesService.findAll();
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post()
   create(@Body() dto: CreateExpenseDto) {
     return this.expensesService.create(dto);
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateExpenseDto) {
     return this.expensesService.update(id, dto);
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.expensesService.softDelete(id);

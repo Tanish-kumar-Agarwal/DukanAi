@@ -4,6 +4,8 @@ import { InventoryValidationService } from './services/inventory-validation.serv
 import { AdjustStockDto, CreateInventoryItemDto } from './dto/inventory.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('inventory-domain')
@@ -38,12 +40,14 @@ export class InventoryDomainController {
     return this.inventoryDomain.getAdjustmentHistory(id);
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post()
   async create(@Body() dto: CreateInventoryItemDto) {
     await this.inventoryValidation.validateProductOwnership(dto.productId);
     return this.inventoryDomain.ensureInventoryItem(dto.productId, dto.variantId, dto.locationId);
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post(':id/adjust')
   async adjustStock(
     @Param('id') id: string,

@@ -10,6 +10,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { Prisma } from '@prisma/client';
 import { CacheConfig } from '../../config/domains/cache.config';
+import { CreateVendorBillDto, PayVendorBillDto } from '../dto/vendor-bill.dto';
 
 @Injectable()
 export class VendorBillRepository {
@@ -24,7 +25,7 @@ export class VendorBillRepository {
     private readonly cacheConfig: CacheConfig
   ) {}
 
-  async createVendorBill(shopId: string, payload: any, actorId: string, ipAddress?: string) {
+  async createVendorBill(shopId: string, payload: CreateVendorBillDto, actorId: string, ipAddress?: string) {
     const { supplierId, purchaseOrderId, goodsReceiptId, lines, taxMode, ...metadata } = payload;
     
     return this.prisma.$transaction(async (tx) => {
@@ -189,7 +190,7 @@ export class VendorBillRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  async payVendorBill(shopId: string, id: string, payload: any, actorId: string, _ipAddress?: string) {
+  async payVendorBill(shopId: string, id: string, payload: PayVendorBillDto, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const bill = await tx.vendorBill.findUnique({ where: { id, shopId } });
       if (!bill) throw new NotFoundException();
