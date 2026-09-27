@@ -1,8 +1,8 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateAdjustmentRequestDto } from '../dto/stock-count.dto';
 import { AdjustmentPostingService } from './adjustment-posting.service';
-import { AdjustmentStatus, Prisma } from '@prisma/client';
+import { AdjustmentStatus } from '@prisma/client';
 
 @Injectable()
 export class AdjustmentApprovalService {

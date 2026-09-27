@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { DiscoveryService } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { ConfigurationRegistryService } from './configuration-registry.service';
-import { ConfigDomain, EnvVariable, RuleDependencies, CONFIG_DOMAIN_KEY, ENV_VARIABLE_KEY, RULE_DEPENDENCIES_KEY } from './registry.decorators';
+import { ConfigDomain, EnvVariable, RuleDependencies, CONFIG_DOMAIN_KEY } from './registry.decorators';
 
 // Mock Classes
 @ConfigDomain({ owner: 'TeamA', feature: 'Redis', version: '1.0', description: 'Redis Config' })

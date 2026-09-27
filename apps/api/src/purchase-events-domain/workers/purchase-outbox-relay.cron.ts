@@ -26,7 +26,7 @@ export class PurchaseOutboxRelayCron implements OnApplicationBootstrap {
       return;
     }
     const job = new CronJob(this.cronConfig.purchaseOutboxRelayCron, () => {
-      this.relayPendingEvents();
+      void this.relayPendingEvents();
     });
     this.schedulerRegistry.addCronJob('PurchaseOutboxRelayCron', job);
     job.start();

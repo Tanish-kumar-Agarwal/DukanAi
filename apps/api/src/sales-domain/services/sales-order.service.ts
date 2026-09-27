@@ -31,7 +31,6 @@ export class SalesOrderService {
     const orderNumber = await this.orderNumberEngine.generateOrderNumber(shopId);
 
     const productIds = dto.lines.map(l => l.productId);
-    const variantIds = dto.lines.map(l => l.variantId).filter(Boolean) as string[];
 
     const products = await this.prisma.product.findMany({
       where: { id: { in: productIds }, shopId },

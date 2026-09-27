@@ -119,7 +119,7 @@ export class SupplierCreditRepository {
     });
   }
 
-  async submitSupplierCredit(shopId: string, id: string, actorId: string, ipAddress?: string) {
+  async submitSupplierCredit(shopId: string, id: string, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const scn = await tx.supplierCreditNote.findUnique({ where: { id, shopId } });
       if (!scn) throw new NotFoundException();
@@ -167,7 +167,7 @@ export class SupplierCreditRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  async allocateSupplierCredit(shopId: string, id: string, payload: any, actorId: string, ipAddress?: string) {
+  async allocateSupplierCredit(shopId: string, id: string, payload: any, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const scn = await tx.supplierCreditNote.findUnique({ where: { id, shopId } });
       if (!scn) throw new NotFoundException();
@@ -203,7 +203,7 @@ export class SupplierCreditRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  async closeSupplierCredit(shopId: string, id: string, actorId: string, ipAddress?: string) {
+  async closeSupplierCredit(shopId: string, id: string, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const scn = await tx.supplierCreditNote.findUnique({ where: { id, shopId } });
       if (!scn) throw new NotFoundException();

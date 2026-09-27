@@ -33,6 +33,6 @@ export class PricingCacheService {
     const keyPattern = `shop:${shopId}:pricing:*`;
     // Note: cache-manager doesn't natively support wildcard deletions well. 
     // In production with standard ioredis, this would be a LUA script.
-    this.cacheManager.del(keyPattern); // Placeholder for actual wildcard delete
+    await this.cacheManager.del(keyPattern); // Placeholder for actual wildcard delete
   }
 }

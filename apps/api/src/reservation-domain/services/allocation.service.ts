@@ -1,5 +1,4 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
 import { Prisma, AllocationStatus } from '@prisma/client';
 import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 

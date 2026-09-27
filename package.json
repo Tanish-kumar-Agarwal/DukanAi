@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "DukaanAI - AI-Powered Retail Operating System",
   "private": true,
+  "engines": {
+    "node": ">=22.12"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -13,6 +16,7 @@
     "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "type-check": "turbo run type-check",
+    "test": "turbo run test",
     "clean": "turbo clean"
   },
   "devDependencies": {

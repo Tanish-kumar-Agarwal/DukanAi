@@ -110,6 +110,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   stock alerts, insights, partial failure, tenant isolation).
   `apps/web` has `npm run test:e2e` (Playwright: checkout and dashboard
   states/polling). `npm run test:e2e` in apps/api is the boot regression.
+  `test/security/*.security-spec.ts` (also matched by `test:integration`;
+  alone: `npm run test:security`) asserts the secure behaviour the audit
+  found missing: an open finding is `it.failing`, so it runs, is expected to
+  fail, and breaks the build the moment a fix lands until it is flipped to
+  `it` (see `test/security/README.md`). Never skip or delete one.
   Point either at another database with `TEST_DATABASE_URL` (integration) or
   `DATABASE_URL` + `E2E_DATABASE_URL` (Playwright); no env file edits needed.
 - BullMQ takes host/port/credentials/db from `REDIS_URL` (`app.module.ts`).
@@ -135,6 +140,16 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   value, garbage fails boot (`IntegerFromEnv`, `IsCronExpression`). `CronConfig`
   and `CacheConfig` use it; the older `plainToInstance(X, process.env)` domains
   still silently default bad values (roadmap 2.10).
+
+## Toolchain
+
+- Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and
+  `engines` in every package.json. `npm run lint|type-check|test|build` at the
+  root go through turbo; `apps/api` lint is clean at zero errors and must stay
+  so: unused parameters that a signature must keep are `_`-prefixed, and a
+  deliberately un-awaited promise is written `void fn()` only when the callee
+  catches its own errors (`no-floating-promises` is on; `no-unsafe-argument`
+  stays off until the `any` request bodies become DTOs).
 
 ## Dashboard (EXEC-005)
 

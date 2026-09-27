@@ -122,7 +122,7 @@ export class GrnRepository {
     });
   }
 
-  async receiveGoods(shopId: string, id: string, payload: any, actorId: string, ipAddress?: string) {
+  async receiveGoods(shopId: string, id: string, payload: any, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const grn = await tx.goodsReceipt.findUnique({ where: { id, shopId }, include: { lines: true } });
       if (!grn) throw new NotFoundException();
@@ -157,7 +157,7 @@ export class GrnRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  async inspectGoods(shopId: string, id: string, payload: any, actorId: string, ipAddress?: string) {
+  async inspectGoods(shopId: string, id: string, payload: any, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const grn = await tx.goodsReceipt.findUnique({ where: { id, shopId } });
       if (!grn) throw new NotFoundException();
@@ -181,7 +181,7 @@ export class GrnRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  async acceptGoods(shopId: string, id: string, actorId: string, ipAddress?: string) {
+  async acceptGoods(shopId: string, id: string, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const grn = await tx.goodsReceipt.findUnique({ where: { id, shopId }, include: { lines: true } });
       if (!grn) throw new NotFoundException();

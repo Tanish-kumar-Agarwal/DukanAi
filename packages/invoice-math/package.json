@@ -1,6 +1,9 @@
 {
   "name": "@dukaanai/invoice-math",
   "version": "1.0.0",
+  "engines": {
+    "node": ">=22.12"
+  },
   "description": "Shared mathematical engine for DukaanAI billing",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

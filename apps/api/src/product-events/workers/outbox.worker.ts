@@ -25,7 +25,7 @@ export class OutboxProcessorWorker implements OnApplicationBootstrap {
       return;
     }
     const job = new CronJob(this.cronConfig.productOutboxRelayCron, () => {
-      this.processOutbox();
+      void this.processOutbox();
     });
     this.schedulerRegistry.addCronJob('ProductOutboxProcessorWorker', job);
     job.start();
@@ -75,7 +75,7 @@ export class OutboxProcessorWorker implements OnApplicationBootstrap {
       for (const eventId of eventsToProcess) {
         try {
           await this.eventRouter.routeEvent(eventId);
-        } catch (err) {
+        } catch {
           this.logger.error(`Failed to route event ${eventId}. It will be retried later.`);
         }
       }

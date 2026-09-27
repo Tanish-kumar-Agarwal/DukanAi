@@ -1,4 +1,4 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateStockCountSessionDto } from '../dto/stock-count.dto';
 import { CountSessionStatus } from '@prisma/client';

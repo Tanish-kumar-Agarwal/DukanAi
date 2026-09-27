@@ -9,7 +9,7 @@ import { PurchaseDraftService } from '../services/purchase-draft.service';
 import { PurchaseApprovalService } from '../services/purchase-approval.service';
 import { PurchasePricingService } from '../services/purchase-pricing.service';
 import { PurchaseTaxService } from '../services/purchase-tax.service';
-import { Prisma, PurchaseOrderStatus } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { CacheConfig } from '../../config/domains/cache.config';

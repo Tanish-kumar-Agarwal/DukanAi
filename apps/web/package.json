@@ -2,6 +2,9 @@
   "name": "dukaanai-web",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.12"
+  },
   "scripts": {
     "dev": "next dev -p 3010",
     "build": "next build",

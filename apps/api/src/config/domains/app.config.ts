@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigDomain, EnvVariable } from '../registry/registry.decorators';
-import { IsNumber, IsString, IsUrl, IsEnum } from 'class-validator';
+import { IsNumber, IsString, IsEnum } from 'class-validator';
 import { Transform } from 'class-transformer';
 
 export enum Environment {

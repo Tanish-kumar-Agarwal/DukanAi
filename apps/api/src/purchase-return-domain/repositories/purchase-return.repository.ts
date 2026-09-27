@@ -125,7 +125,7 @@ export class PurchaseReturnRepository {
     });
   }
 
-  async submitPurchaseReturn(shopId: string, id: string, actorId: string, ipAddress?: string) {
+  async submitPurchaseReturn(shopId: string, id: string, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const pr = await tx.purchaseReturn.findUnique({ where: { id, shopId }, include: { lines: true } });
       if (!pr) throw new NotFoundException();
@@ -169,7 +169,7 @@ export class PurchaseReturnRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  async dispatchShipment(shopId: string, id: string, payload: any, actorId: string, ipAddress?: string) {
+  async dispatchShipment(shopId: string, id: string, payload: any, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const pr = await tx.purchaseReturn.findUnique({ where: { id, shopId } });
       if (!pr) throw new NotFoundException();
@@ -193,7 +193,7 @@ export class PurchaseReturnRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  async completePurchaseReturn(shopId: string, id: string, actorId: string, ipAddress?: string) {
+  async completePurchaseReturn(shopId: string, id: string, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const pr = await tx.purchaseReturn.findUnique({ where: { id, shopId }, include: { lines: true } });
       if (!pr) throw new NotFoundException();

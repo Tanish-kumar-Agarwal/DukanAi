@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Body, Param, UseGuards, Req, Query, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, UseGuards, Req, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ProductMediaService } from './product-media.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -64,26 +64,26 @@ export class ProductMediaController {
   }
 
   @Post('bulk')
-  async bulkUpload(@Req() req: any) {
+  async bulkUpload() {
     // In a real scenario, this would accept an array of pre-signed URLs or S3 keys
     // and queue them into BullMQ for processing.
     return { message: 'Bulk upload queued successfully' };
   }
 
   @Post('tag')
-  async tagMedia(@Body() body: { assetId: string, tag: string }, @Req() req: any) {
+  async tagMedia(@Body() body: { assetId: string, tag: string }) {
     // Stub implementation for semantic tagging
     return { message: `Tag ${body.tag} added to asset ${body.assetId}` };
   }
 
   @Get('search')
-  async searchMedia(@Query('q') query: string, @Req() req: any) {
+  async searchMedia() {
     // Stub implementation for Redis-backed search
     return [];
   }
 
   @Post('order')
-  async updateOrder(@Body() body: { assetIds: string[] }, @Req() req: any) {
+  async updateOrder() {
     // Stub implementation for updating sort orders
     return { message: 'Order updated successfully' };
   }

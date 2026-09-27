@@ -40,7 +40,7 @@ export function tenantExtension(tenantContextService: TenantContextService) {
             let shopId: string;
             try {
               shopId = tenantContextService.getShopId();
-            } catch (e) {
+            } catch {
               // If there's no shopId and no bypass, we cannot proceed with a tenant-owned model query
               throw new InternalServerErrorException(
                 `Missing tenant context for operation ${operation} on model ${model}`

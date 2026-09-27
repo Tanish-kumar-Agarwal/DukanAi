@@ -122,7 +122,7 @@ export class VendorBillRepository {
     });
   }
 
-  async submitVendorBill(shopId: string, id: string, actorId: string, ipAddress?: string) {
+  async submitVendorBill(shopId: string, id: string, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const bill = await tx.vendorBill.findUnique({ where: { id, shopId }, include: { lines: true } });
       if (!bill) throw new NotFoundException();
@@ -166,7 +166,7 @@ export class VendorBillRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  async postVendorBill(shopId: string, id: string, actorId: string, ipAddress?: string) {
+  async postVendorBill(shopId: string, id: string, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const bill = await tx.vendorBill.findUnique({ where: { id, shopId } });
       if (!bill) throw new NotFoundException();
@@ -189,7 +189,7 @@ export class VendorBillRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  async payVendorBill(shopId: string, id: string, payload: any, actorId: string, ipAddress?: string) {
+  async payVendorBill(shopId: string, id: string, payload: any, actorId: string, _ipAddress?: string) {
     return this.prisma.$transaction(async (tx) => {
       const bill = await tx.vendorBill.findUnique({ where: { id, shopId } });
       if (!bill) throw new NotFoundException();

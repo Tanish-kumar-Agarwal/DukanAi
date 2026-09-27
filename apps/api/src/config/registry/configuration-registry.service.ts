@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { DiscoveryService } from '@nestjs/core';
-import { ConfigDomainMetadata, ConfigDomainRecord, ConfigurationRegistryData, ValidationRuleRecord } from './registry.types';
-import { CONFIG_DOMAIN_KEY, ENV_VARIABLE_KEY, RULE_DEPENDENCIES_KEY } from './registry.decorators';
+import { ConfigDomainMetadata, ConfigDomainRecord, ConfigurationRegistryData } from './registry.types';
+import { CONFIG_DOMAIN_KEY, ConfigDomainClass, ENV_VARIABLE_KEY, RULE_DEPENDENCIES_KEY } from './registry.decorators';
 
 @Injectable()
 export class ConfigurationRegistryService implements OnModuleInit {
@@ -33,11 +33,11 @@ export class ConfigurationRegistryService implements OnModuleInit {
       // class), not on wrapper.metatype (which is the factory / null). Resolve
       // the domain class from whichever carries the metadata; without this the
       // registry discovers zero domains and every rule dependency looks unknown.
-      const domainType: Function | undefined =
+      const domainType: ConfigDomainClass | undefined =
         wrapper.metatype && Reflect.getMetadata(CONFIG_DOMAIN_KEY, wrapper.metatype)
-          ? wrapper.metatype
+          ? (wrapper.metatype as ConfigDomainClass)
           : typeof wrapper.token === 'function' && Reflect.getMetadata(CONFIG_DOMAIN_KEY, wrapper.token)
-            ? (wrapper.token as Function)
+            ? (wrapper.token as ConfigDomainClass)
             : undefined;
       if (!domainType) continue;
 
@@ -81,7 +81,7 @@ export class ConfigurationRegistryService implements OnModuleInit {
     for (const wrapper of providers) {
       if (!wrapper.metatype) continue;
 
-      const ruleDependencies: Function[] = Reflect.getMetadata(RULE_DEPENDENCIES_KEY, wrapper.metatype);
+      const ruleDependencies: ConfigDomainClass[] = Reflect.getMetadata(RULE_DEPENDENCIES_KEY, wrapper.metatype);
       if (ruleDependencies) {
         const ruleName = wrapper.metatype.name;
         const depNames = ruleDependencies.map(d => d.name);

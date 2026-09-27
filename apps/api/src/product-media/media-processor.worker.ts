@@ -5,7 +5,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CdnManagerService } from './cdn-manager.service';
 import sharp from 'sharp';
 import * as path from 'path';
-import * as fs from 'fs';
 
 @Processor('media-processing')
 @Injectable()

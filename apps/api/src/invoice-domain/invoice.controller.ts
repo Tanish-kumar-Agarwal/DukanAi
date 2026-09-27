@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, Param, Inject } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';

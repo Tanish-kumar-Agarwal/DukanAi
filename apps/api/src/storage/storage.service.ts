@@ -14,7 +14,6 @@ import archiver from 'archiver';
 import * as crypto from 'crypto';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { SafeUserDto } from '../users/dto/safe-user.dto';
 import { StorageCustomerDirectory } from './storage-security.constants';
 import { DeleteStorageFileDto } from './dto/storage.dto';
 import { StoragePathBuilder } from './storage-path.builder';

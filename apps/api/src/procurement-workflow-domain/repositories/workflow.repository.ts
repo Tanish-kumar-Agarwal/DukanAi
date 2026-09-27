@@ -5,7 +5,7 @@ import { WorkflowEngineService } from '../services/workflow-engine.service';
 import { WorkflowApprovalService } from '../services/workflow-approval.service';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
-import { Prisma, WorkflowStatus } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class WorkflowRepository {

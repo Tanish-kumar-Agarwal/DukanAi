@@ -4,6 +4,9 @@
   "description": "",
   "author": "",
   "private": true,
+  "engines": {
+    "node": ">=22.12"
+  },
   "license": "UNLICENSED",
   "scripts": {
     "build": "npx @nestjs/cli build",
@@ -21,6 +24,7 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:integration": "jest --config ./test/jest-integration.json --runInBand",
+    "test:security": "jest --config ./test/jest-integration.json --runInBand --testRegex '\\.security-spec\\.ts$'",
     "db:push:test": "prisma db push --skip-generate",
     "postinstall": "prisma generate"
   },

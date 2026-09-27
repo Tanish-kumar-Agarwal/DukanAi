@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, Param, Delete } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards } from '@nestjs/common';
 import { ReservationService } from './services/reservation.service';
 import { ReservationExpiryService } from './services/reservation-expiry.service';
 import { CreateReservationDto } from './dto/reservation.dto';

@@ -24,7 +24,7 @@ export class PaymentValidationEngine {
     }
   }
 
-  async validateAllocation(shopId: string, invoiceIds: string[], amount: number) {
+  async validateAllocation(shopId: string, invoiceIds: string[], _amount: number) {
     const invoices = await this.prisma.enterpriseInvoice.findMany({
       where: { id: { in: invoiceIds }, shopId }
     });

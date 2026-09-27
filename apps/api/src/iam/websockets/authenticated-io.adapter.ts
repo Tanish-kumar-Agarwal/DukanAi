@@ -102,7 +102,7 @@ export class AuthenticatedIoAdapter extends IoAdapter {
         this.sessionService.registerSocket(userId, socket);
 
         // Force deterministic room joins based solely on validated server context
-        socket.join(`tenant:${shopId}`);
+        void socket.join(`tenant:${shopId}`);
         
         next();
       } catch (error: any) {

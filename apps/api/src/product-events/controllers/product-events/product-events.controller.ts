@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, UseGuards, Req, Body } from '@nestjs/common';
+import { Controller, Get, Post, UseGuards, Req, Body } from '@nestjs/common';
 import { ProductEventReplayService } from '../../services/event-replay.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { JwtAuthGuard } from '../../../auth/jwt-auth.guard';
