@@ -14,10 +14,12 @@ describe('background schedulers with CRON_ENABLED=true', () => {
   const FAR_AWAY = '0 0 0 29 2 *';
   const SCHEDULERS = [
     'AnalyticsJob',
+    'BatchExpirySweep',
     'EventsOutboxRelayService',
     'InventoryRecon',
     'ProductOutboxProcessorWorker',
     'PurchaseOutboxRelayCron',
+    'ReservationExpirySweep',
     'SalesOutboxRelayCron',
   ];
   let app: INestApplication;
@@ -31,6 +33,8 @@ describe('background schedulers with CRON_ENABLED=true', () => {
       productOutboxRelayCron: FAR_AWAY,
       inventoryReconCron: FAR_AWAY,
       analyticsJobCron: FAR_AWAY,
+      batchExpirySweepCron: FAR_AWAY,
+      reservationExpirySweepCron: FAR_AWAY,
     });
     app = await bootApp((builder) => builder.overrideProvider(CronConfig).useValue(config));
   });

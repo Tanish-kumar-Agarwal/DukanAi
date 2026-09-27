@@ -27,8 +27,8 @@ export class ReservationController {
   @Roles(...ADMIN_ROLES)
   @Post('sweep')
   async runExpirySweep() {
-    // In production, this would be secured to internal system calls or a cron trigger.
-    const count = await this.expiryService.releaseExpiredReservations();
+    // Sweeps the caller's shop only; the global sweep is the locked cron (ReservationExpirySweepScheduler).
+    const count = await this.expiryService.releaseExpiredReservations(this.tenantContext.getShopId());
     return { status: 'SUCCESS', releasedCount: count };
   }
 }

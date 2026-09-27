@@ -4,6 +4,7 @@ import { ReservationService } from './services/reservation.service';
 import { AllocationService } from './services/allocation.service';
 import { ReservationValidationService } from './services/reservation-validation.service';
 import { ReservationExpiryService } from './services/reservation-expiry.service';
+import { ReservationExpirySweepScheduler } from './services/reservation-expiry-sweep.scheduler';
 import { ReservationController } from './reservation.controller';
 import { EventsModule } from '../events-domain/events.module';
 import { InventoryDomainModule } from '../inventory-domain/inventory-domain.module';
@@ -15,7 +16,8 @@ import { InventoryDomainModule } from '../inventory-domain/inventory-domain.modu
     ReservationService,
     AllocationService,
     ReservationValidationService,
-    ReservationExpiryService
+    ReservationExpiryService,
+    ReservationExpirySweepScheduler
   ],
   exports: [
     ReservationService,

@@ -46,7 +46,7 @@ export class BatchController {
   @Roles(...ADMIN_ROLES)
   @Post('sweep-expiry')
   async sweepExpiry() {
-    const count = await this.expiryService.quarantineExpiredBatches();
+    const count = await this.expiryService.quarantineExpiredBatches(this.tenantContext.getShopId());
     return { status: 'SUCCESS', quarantinedCount: count };
   }
 

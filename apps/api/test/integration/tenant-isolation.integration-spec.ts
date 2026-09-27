@@ -185,4 +185,20 @@ describe('tenant isolation: foreign IDs on every write route', () => {
       expect(product.categoryId).toBeNull();
     });
   });
+  describe('TenantGuard (roadmap 1.8)', () => {
+    it('only an ACTIVE shop can use the API', async () => {
+      const bOwner = httpAs(app, B, ownerOf(B));
+      expect((await bOwner.get('/api/shops/me')).status).toBe(200);
+      try {
+        for (const status of ['SUSPENDED', 'LOCKED', 'ARCHIVED'] as const) {
+          await run.system(() => prisma.shop.update({ where: { id: B.shopId }, data: { status } }));
+          const res = await bOwner.get('/api/shops/me');
+          expect({ status, code: res.status }).toEqual({ status, code: 403 });
+        }
+      } finally {
+        await run.system(() => prisma.shop.update({ where: { id: B.shopId }, data: { status: 'ACTIVE' } }));
+      }
+      expect((await bOwner.get('/api/shops/me')).status).toBe(200);
+    });
+  });
 });

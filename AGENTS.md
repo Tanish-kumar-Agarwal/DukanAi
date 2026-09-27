@@ -200,6 +200,14 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (`src/prisma/tenant-ownership.ts`) first, inside the same transaction
   (404 for a foreign row). `test/integration/tenant-isolation.integration-spec.ts`
   sends shop B's IDs to every such route as shop A.
+- Sweeps are per shop: `POST /batches/sweep-expiry` and `POST /reservations/sweep`
+  act on the caller's shop; the global sweeps are the locked crons
+  `BatchExpirySweep` / `ReservationExpirySweep` (`CRON_BATCH_EXPIRY_SWEEP`,
+  `CRON_RESERVATION_EXPIRY_SWEEP`), which use `sweepEveryShop`
+  (`src/common/sweeps/per-shop-sweep.ts`): shop list as system tenant, each
+  shop in its own context, per-shop and per-row failures logged and skipped.
+  `TenantGuard` lets only `ACTIVE` shops through (SUSPENDED/LOCKED/ARCHIVED/
+  DELETED and an unknown status are 403).
 - Procurement line tables (`PurchaseOrderItem`, `GoodsReceiptLine`,
   `VendorBillLine`, `PurchaseReturnLine`, `SupplierCreditLine`) carry
   `shopId` (migration `20260927180000_scope_line_tables_by_shop`, backfilled

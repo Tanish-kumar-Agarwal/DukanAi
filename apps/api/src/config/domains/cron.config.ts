@@ -84,4 +84,18 @@ export class CronConfig {
   @StringFromEnv()
   @EnvVariable('CRON_ANALYTICS_JOB')
   analyticsJobCron: string = '0 0 * * *'; // EVERY_DAY_AT_MIDNIGHT
+
+  /** Global batch-expiry sweep (every shop, under a cron lock). Expiry dates are days, so hourly is plenty. */
+  @IsString()
+  @IsCronExpression()
+  @StringFromEnv()
+  @EnvVariable('CRON_BATCH_EXPIRY_SWEEP')
+  batchExpirySweepCron: string = '0 * * * *'; // EVERY_HOUR
+
+  /** Global reservation-expiry sweep (every shop, under a cron lock). Reservations expire by the second. */
+  @IsString()
+  @IsCronExpression()
+  @StringFromEnv()
+  @EnvVariable('CRON_RESERVATION_EXPIRY_SWEEP')
+  reservationExpirySweepCron: string = '* * * * *'; // EVERY_MINUTE
 }
