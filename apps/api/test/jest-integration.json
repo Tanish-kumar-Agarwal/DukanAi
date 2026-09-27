@@ -18,5 +18,6 @@
   "moduleNameMapper": {
     "^archiver$": "<rootDir>/test/stubs/archiver.stub.js"
   },
-  "forceExit": true
+  "forceExit": true,
+  "globalSetup": "<rootDir>/test/jest-integration.global-setup.ts"
 }

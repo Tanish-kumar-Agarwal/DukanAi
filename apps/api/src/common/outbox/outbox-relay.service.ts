@@ -29,6 +29,10 @@ export class OutboxRelayService implements OnApplicationBootstrap {
   ) {}
 
   onApplicationBootstrap() {
+    if (!this.cronConfig.enabled) {
+      this.logger.warn('EventsOutboxRelayService schedule not registered: CRON_ENABLED=false');
+      return;
+    }
     const job = new CronJob(this.cronConfig.eventsOutboxRelayCron, () => {
       void this.relayEvents();
     });

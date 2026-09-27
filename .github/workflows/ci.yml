@@ -60,9 +60,9 @@ jobs:
       - run: npm ci
       # invoice-math + api unit suites (web has no unit suite).
       - run: npx turbo run test
-      - name: API boot regression
+      - name: API boot regression (test:e2e)
         working-directory: apps/api
-        run: npx jest --config ./test/jest-e2e.json boot-regression
+        run: npm run test:e2e
 
   integration:
     name: Integration tests (MySQL 8 + Redis)

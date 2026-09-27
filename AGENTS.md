@@ -115,6 +115,26 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - BullMQ takes host/port/credentials/db from `REDIS_URL` (`app.module.ts`).
   The db index matters: dev (db 0) and tests (db 1) share one Redis server,
   and before the db was honoured a running dev API consumed the tests' jobs.
+- Integration runs are hermetic: `test/jest-integration.global-setup.ts`
+  flushes the test Redis db first (index >= 1 only), and the setup file sets
+  `CRON_ENABLED=false` so no scheduler registers (the two
+  `scheduler-*.integration-spec.ts` suites assert both switch positions). A
+  "never fires" cron string is not an option: `CronJob.start()` throws when an
+  expression has no run in the next 8 years, and `IsCronExpression` rejects
+  such values at boot for the same reason. `npm run test:e2e` in apps/api is
+  the boot regression only; `src/config/config-platform.spec.ts` proves
+  env -> injected config through the real module.
+- `app.init()` returns before BullMQ has opened its Redis connections; closing
+  the app inside that window surfaces as unhandled `Connection is closed`
+  errors (bullmq emits them after removing its own listeners). The shared
+  `bootApp()` fixture waits for every queue/worker with `waitUntilReady()`, so
+  boot-assert-close suites are deterministic; production shutdown has the same
+  race (roadmap 7.3).
+- Config domains read env through `hydrateFromEnv` (`src/config/hydrate-from-env.ts`):
+  only `@EnvVariable` properties are copied, blank keeps the default, `0` is a
+  value, garbage fails boot (`IntegerFromEnv`, `IsCronExpression`). `CronConfig`
+  and `CacheConfig` use it; the older `plainToInstance(X, process.env)` domains
+  still silently default bad values (roadmap 2.10).
 
 ## Dashboard (EXEC-005)
 

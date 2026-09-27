@@ -37,6 +37,10 @@ export class SalesOutboxRelayCron implements OnApplicationBootstrap {
   ) {}
 
   onApplicationBootstrap() {
+    if (!this.cronConfig.enabled) {
+      this.logger.warn('SalesOutboxRelayCron schedule not registered: CRON_ENABLED=false');
+      return;
+    }
     const job = new CronJob(this.cronConfig.salesOutboxRelayCron, () => {
       void this.relayPendingEvents();
     });

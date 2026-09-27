@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { ConfigModule as NestConfigModule } from '@nestjs/config';
 import { validateSync } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
+import { hydrateFromEnv } from './hydrate-from-env';
 
 import { AppConfig, Environment } from './domains/app.config';
 import { DatabaseConfig } from './domains/database.config';
@@ -187,14 +188,7 @@ function validateConfig<T extends object>(configClass: T): T {
     },
     {
       provide: CacheConfig,
-      useFactory: () => {
-        const config = new CacheConfig();
-        Object.assign(config, {
-          ttl: parseInt(process.env.CACHE_TTL || '3600000', 10),
-          maxItems: parseInt(process.env.CACHE_MAX_ITEMS || '1000', 10),
-        });
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(CacheConfig)),
     },
     {
       provide: MediaConfig,
@@ -316,10 +310,7 @@ function validateConfig<T extends object>(configClass: T): T {
     },
     {
       provide: CronConfig,
-      useFactory: () => {
-        const config = new CronConfig();
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(CronConfig)),
     },
     { provide: SalesFeatureConfig, useFactory: () => validateConfig(plainToInstance(SalesFeatureConfig, process.env, { enableImplicitConversion: true })) },
     { provide: PurchaseFeatureConfig, useFactory: () => validateConfig(plainToInstance(PurchaseFeatureConfig, process.env, { enableImplicitConversion: true })) },

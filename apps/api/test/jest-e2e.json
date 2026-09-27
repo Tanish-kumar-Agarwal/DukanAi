@@ -11,6 +11,6 @@
     "^.+\\.(t|j)s$": "ts-jest"
   },
   "moduleNameMapper": {
-    "^archiver$": "<rootDir>/test/stubs/archiver.stub.js"
+    "^archiver$": "<rootDir>/stubs/archiver.stub.js"
   }
 }
