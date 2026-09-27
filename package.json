@@ -10,9 +10,9 @@
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
-    "lint": "npm run lint --workspaces --if-present",
+    "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
-    "type-check": "npm run type-check --workspaces --if-present",
+    "type-check": "turbo run type-check",
     "clean": "turbo clean"
   },
   "devDependencies": {
