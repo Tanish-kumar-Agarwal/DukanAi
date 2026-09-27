@@ -8,6 +8,7 @@ import { Prisma } from '@prisma/client';
 import { BullConfig } from '../../config/domains/bull.config';
 import { CronConfig } from '../../config/domains/cron.config';
 import { EventsFeatureConfig } from '../../config/domains/features/events-feature.config';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 
 interface SalesOutboxRow {
   id: string;
@@ -33,7 +34,8 @@ export class SalesOutboxRelayCron implements OnApplicationBootstrap {
     private readonly bullConfig: BullConfig,
     private readonly cronConfig: CronConfig,
     private readonly eventsConfig: EventsFeatureConfig,
-    private readonly schedulerRegistry: SchedulerRegistry
+    private readonly schedulerRegistry: SchedulerRegistry,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   onApplicationBootstrap() {
@@ -55,7 +57,12 @@ export class SalesOutboxRelayCron implements OnApplicationBootstrap {
    * EnterpriseInvoice domain events; the SCREAMING_CASE POS events ('INVOICE_CREATED', ...)
    * belong to the system-events relay and must never be matched here.
    */
-  async relayPendingEvents() {
+  /** Relays every shop's pending events; runs as the system tenant because the outbox spans shops. */
+  relayPendingEvents(): Promise<void> {
+    return this.tenantContext.runAsSuperAdmin(() => this.relayPendingEventsAsSystem());
+  }
+
+  private async relayPendingEventsAsSystem(): Promise<void> {
     if (this.isProcessing) return;
     this.isProcessing = true;
 

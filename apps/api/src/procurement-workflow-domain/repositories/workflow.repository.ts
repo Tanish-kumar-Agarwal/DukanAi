@@ -7,6 +7,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { Prisma } from '@prisma/client';
 import { CreateWorkflowDefinitionDto } from '../dto/workflow.dto';
+import { assertOwnedMany } from '../../prisma/tenant-ownership';
 
 @Injectable()
 export class WorkflowRepository {
@@ -27,6 +28,8 @@ export class WorkflowRepository {
 
   async createDefinition(shopId: string, payload: CreateWorkflowDefinitionDto) {
     return this.prisma.$transaction(async (tx) => {
+      await assertOwnedMany(tx, 'user', payload.steps.map((s) => s.approverId), shopId, { isDeleted: false });
+      await assertOwnedMany(tx, 'user', payload.steps.map((s) => s.approverId), shopId, { isDeleted: false });
       const def = await tx.workflowDefinition.create({
         data: {
           shopId,

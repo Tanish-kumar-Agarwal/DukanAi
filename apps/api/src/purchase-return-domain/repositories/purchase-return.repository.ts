@@ -12,6 +12,7 @@ import type { Cache } from 'cache-manager';
 import { Prisma } from '@prisma/client';
 import { CacheConfig } from '../../config/domains/cache.config';
 import { CreatePurchaseReturnDto, DispatchShipmentDto } from '../dto/purchase-return.dto';
+import { assertOwned, assertOwnedMany } from '../../prisma/tenant-ownership';
 
 @Injectable()
 export class PurchaseReturnRepository {
@@ -31,6 +32,15 @@ export class PurchaseReturnRepository {
     const { supplierId, purchaseOrderId, goodsReceiptId, warehouseId, lines, ...metadata } = payload;
     
     return this.prisma.$transaction(async (tx) => {
+      await assertOwned(tx, 'supplier', supplierId, shopId);
+      await assertOwned(tx, 'purchaseOrder', purchaseOrderId, shopId);
+      await assertOwned(tx, 'goodsReceipt', goodsReceiptId, shopId);
+      await assertOwned(tx, 'warehouse', warehouseId, shopId);
+      await assertOwnedMany(tx, 'product', lines.map((l) => l.productId), shopId);
+      await assertOwnedMany(tx, 'productVariant', lines.map((l) => l.variantId), shopId);
+      await assertOwnedMany(tx, 'purchaseOrderItem', lines.map((l) => l.purchaseOrderLineId), shopId);
+      await assertOwnedMany(tx, 'goodsReceiptLine', lines.map((l) => l.grnLineId), shopId);
+
       // Return Number Engine Simulation
       const returnNumber = `PR-${Date.now()}`;
       
@@ -51,6 +61,7 @@ export class PurchaseReturnRepository {
           createdBy: actorId,
           lines: {
             create: lines.map((line) => ({
+              shopId,
               productId: line.productId,
               variantId: line.variantId,
               purchaseOrderLineId: line.purchaseOrderLineId,
@@ -132,7 +143,7 @@ export class PurchaseReturnRepository {
       if (!pr) throw new NotFoundException();
 
       // Enterprise Validation Engine: Validate return quantity vs GRN availability
-      await this.validation.validateReturnLines(tx, pr.lines);
+      await this.validation.validateReturnLines(tx, shopId, pr.lines);
 
       await this.lifecycle.transitionStatus(tx, id, shopId, pr.status, 'SUBMITTED', actorId, 'Submitted for return processing');
 

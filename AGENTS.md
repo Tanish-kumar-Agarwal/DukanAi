@@ -185,6 +185,26 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Separation of duties: the creator/submitter of a purchase order, the
   creator of a goods receipt and the requester of a stock-count adjustment
   cannot approve it (`ForbiddenException` in the approval services).
+- Shop isolation is derived from the schema (`src/prisma/tenant-scope.ts`):
+  every model with a `shopId` column is tenant-owned except `GLOBAL_MODELS`
+  (`User`, `Invitation`: read before the tenant is known). Under a tenant
+  context the Prisma extension narrows every filter to the shop, binds creates,
+  refuses `data.shopId` changes and scopes nested writes (`connect` etc. get
+  `shopId`, so a foreign target answers P2025). Code that runs outside a
+  request must pick a context: `runAsSuperAdmin` for work that spans shops
+  (outbox relays), `runWithContext(jobContext(shopId, jobId))` for a job that
+  names its shop (`src/iam/tenant-context/job-context.ts`); a tenant-model
+  query with neither throws "Missing tenant context".
+- A foreign key supplied in a request body is never read by the extension, so
+  every write that stores one calls `assertOwned` / `assertOwnedMany`
+  (`src/prisma/tenant-ownership.ts`) first, inside the same transaction
+  (404 for a foreign row). `test/integration/tenant-isolation.integration-spec.ts`
+  sends shop B's IDs to every such route as shop A.
+- Procurement line tables (`PurchaseOrderItem`, `GoodsReceiptLine`,
+  `VendorBillLine`, `PurchaseReturnLine`, `SupplierCreditLine`) carry
+  `shopId` (migration `20260927180000_scope_line_tables_by_shop`, backfilled
+  from the parent); nested creates must set it, and `BatchStock`'s unique key
+  is `(shopId, batchId, inventoryItemId)`.
 
 ## Auth bypass flag
 

@@ -11,6 +11,7 @@ import type { Cache } from 'cache-manager';
 import { Prisma } from '@prisma/client';
 import { CacheConfig } from '../../config/domains/cache.config';
 import { AllocateSupplierCreditDto, CreateSupplierCreditDto } from '../dto/supplier-credit.dto';
+import { assertOwned, assertOwnedMany } from '../../prisma/tenant-ownership';
 
 @Injectable()
 export class SupplierCreditRepository {
@@ -31,6 +32,10 @@ export class SupplierCreditRepository {
     return this.prisma.$transaction(async (tx) => {
       // Enterprise Validation Engine: validate references
       await this.validation.validateReferences(tx, shopId, payload);
+      await assertOwned(tx, 'supplier', supplierId, shopId);
+      await assertOwnedMany(tx, 'product', lines.map((l) => l.productId), shopId);
+      await assertOwned(tx, 'supplier', supplierId, shopId);
+      await assertOwnedMany(tx, 'product', lines.map((l) => l.productId), shopId);
       
       const creditNumber = `SCN-${Date.now()}`;
       const totalAmount = metadata.totalAmount || 0;
@@ -49,6 +54,7 @@ export class SupplierCreditRepository {
           createdBy: actorId,
           lines: {
             create: lines.map((line) => ({
+              shopId,
               productId: line.productId,
               description: line.description,
               quantity: line.quantity,

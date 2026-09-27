@@ -11,6 +11,7 @@ import type { Cache } from 'cache-manager';
 import { Prisma } from '@prisma/client';
 import { CacheConfig } from '../../config/domains/cache.config';
 import { CreateVendorBillDto, PayVendorBillDto } from '../dto/vendor-bill.dto';
+import { assertOwned, assertOwnedMany } from '../../prisma/tenant-ownership';
 
 @Injectable()
 export class VendorBillRepository {
@@ -29,6 +30,14 @@ export class VendorBillRepository {
     const { supplierId, purchaseOrderId, goodsReceiptId, lines, taxMode, ...metadata } = payload;
     
     return this.prisma.$transaction(async (tx) => {
+      await assertOwned(tx, 'supplier', supplierId, shopId);
+      await assertOwned(tx, 'purchaseOrder', purchaseOrderId, shopId);
+      await assertOwned(tx, 'goodsReceipt', goodsReceiptId, shopId);
+      await assertOwnedMany(tx, 'product', lines.map((l) => l.productId), shopId);
+      await assertOwnedMany(tx, 'productVariant', lines.map((l) => l.variantId), shopId);
+      await assertOwnedMany(tx, 'purchaseOrderItem', lines.map((l) => l.purchaseOrderLineId), shopId);
+      await assertOwnedMany(tx, 'goodsReceiptLine', lines.map((l) => l.grnLineId), shopId);
+
       // 1. Tax Preparation
       const { totalBase, totalTax, updatedLines } = this.tax.prepareTaxLiability(lines, taxMode || 'EXCLUSIVE');
       const billNumber = `VB-${Date.now()}`;
@@ -51,6 +60,7 @@ export class VendorBillRepository {
           createdBy: actorId,
           lines: {
             create: updatedLines.map((line: any) => ({
+              shopId,
               productId: line.productId,
               variantId: line.variantId,
               purchaseOrderLineId: line.purchaseOrderLineId,

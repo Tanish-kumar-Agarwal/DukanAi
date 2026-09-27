@@ -20,35 +20,35 @@ describe('PurchaseReturnValidationService', () => {
 
   it('should reject if grnLineId is missing', async () => {
     const tx = {} as Prisma.TransactionClient;
-    await expect(service.validateReturnLines(tx, [{ returnQuantity: 5 }]))
+    await expect(service.validateReturnLines(tx, 'shop-1', [{ returnQuantity: 5 }]))
       .rejects.toThrow(BadRequestException);
   });
 
   it('should reject if returning more than accepted minus previously returned', async () => {
     const tx = {
       goodsReceiptLine: {
-        findUnique: jest.fn().mockResolvedValue({ acceptedQuantity: 10 })
+        findFirst: jest.fn().mockResolvedValue({ acceptedQuantity: 10 })
       },
       purchaseReturnLine: {
         aggregate: jest.fn().mockResolvedValue({ _sum: { returnQuantity: 5 } })
       }
     } as unknown as Prisma.TransactionClient;
 
-    await expect(service.validateReturnLines(tx, [{ grnLineId: 'grn-1', returnQuantity: 6 }]))
+    await expect(service.validateReturnLines(tx, 'shop-1', [{ grnLineId: 'grn-1', returnQuantity: 6 }]))
       .rejects.toThrow(BadRequestException);
   });
 
   it('should allow if returning exactly remaining balance', async () => {
     const tx = {
       goodsReceiptLine: {
-        findUnique: jest.fn().mockResolvedValue({ acceptedQuantity: 10 })
+        findFirst: jest.fn().mockResolvedValue({ acceptedQuantity: 10 })
       },
       purchaseReturnLine: {
         aggregate: jest.fn().mockResolvedValue({ _sum: { returnQuantity: 5 } })
       }
     } as unknown as Prisma.TransactionClient;
 
-    await expect(service.validateReturnLines(tx, [{ grnLineId: 'grn-1', returnQuantity: 5 }]))
+    await expect(service.validateReturnLines(tx, 'shop-1', [{ grnLineId: 'grn-1', returnQuantity: 5 }]))
       .resolves.toBeUndefined();
   });
 });

@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateAdjustmentRequestDto } from '../dto/stock-count.dto';
 import { AdjustmentPostingService } from './adjustment-posting.service';
 import { AdjustmentStatus } from '@prisma/client';
+import { assertOwned } from '../../prisma/tenant-ownership';
 
 @Injectable()
 export class AdjustmentApprovalService {
@@ -21,6 +22,8 @@ export class AdjustmentApprovalService {
    * flags large ones for manual management review.
    */
   async requestAdjustment(shopId: string, requestedByUserId: string, dto: CreateAdjustmentRequestDto) {
+    await assertOwned(this.prisma, 'inventoryItem', dto.inventoryItemId, shopId);
+    await assertOwned(this.prisma, 'stockCountItem', dto.countItemId, shopId);
     const isAutoApprovable = Math.abs(dto.requestedQuantityDelta) <= this.AUTO_APPROVE_THRESHOLD;
 
     const request = await this.prisma.adjustmentRequest.create({

@@ -5,6 +5,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
 import { EventsFeatureConfig } from '../../config/domains/features/events-feature.config';
 import { CronConfig } from '../../config/domains/cron.config';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 
 @Injectable()
 export class OutboxProcessorWorker implements OnApplicationBootstrap {
@@ -16,7 +17,8 @@ export class OutboxProcessorWorker implements OnApplicationBootstrap {
     private readonly eventRouter: EventRouterService,
     private readonly eventsFeatureConfig: EventsFeatureConfig,
     private readonly cronConfig: CronConfig,
-    private readonly schedulerRegistry: SchedulerRegistry
+    private readonly schedulerRegistry: SchedulerRegistry,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   onApplicationBootstrap() {
@@ -36,7 +38,12 @@ export class OutboxProcessorWorker implements OnApplicationBootstrap {
    * In a true distributed system, we might use Debezium (CDC) or Prisma Pulse,
    * but polling is fine for this simulated architecture context.
    */
-  async processOutbox() {
+  /** Drains every shop's pending product events; runs as the system tenant because the outbox spans shops. */
+  processOutbox(): Promise<void> {
+    return this.tenantContext.runAsSuperAdmin(() => this.processOutboxAsSystem());
+  }
+
+  private async processOutboxAsSystem(): Promise<void> {
     if (this.isProcessing) return;
     this.isProcessing = true;
 

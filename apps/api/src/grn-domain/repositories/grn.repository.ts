@@ -11,6 +11,7 @@ import type { Cache } from 'cache-manager';
 import { Prisma } from '@prisma/client';
 import { CacheConfig } from '../../config/domains/cache.config';
 import { CreateGoodsReceiptDto, InspectGoodsDto, ReceiveGoodsDto } from '../dto/goods-receipt.dto';
+import { assertOwned, assertOwnedMany } from '../../prisma/tenant-ownership';
 
 @Injectable()
 export class GrnRepository {
@@ -32,6 +33,18 @@ export class GrnRepository {
       // Basic PO existence check
       const po = await tx.purchaseOrder.findUnique({ where: { id: purchaseOrderId } });
       if (!po || po.shopId !== shopId) throw new NotFoundException('Purchase Order not found');
+      await assertOwned(tx, 'supplier', supplierId, shopId);
+      await assertOwned(tx, 'warehouse', warehouseId, shopId);
+      await assertOwnedMany(tx, 'product', lines.map((l) => l.productId), shopId);
+      await assertOwnedMany(tx, 'productVariant', lines.map((l) => l.variantId), shopId);
+      await assertOwned(tx, 'supplier', supplierId, shopId);
+      await assertOwned(tx, 'warehouse', warehouseId, shopId);
+      await assertOwnedMany(tx, 'product', lines.map((l) => l.productId), shopId);
+      await assertOwnedMany(tx, 'productVariant', lines.map((l) => l.variantId), shopId);
+      await assertOwned(tx, 'supplier', supplierId, shopId);
+      await assertOwned(tx, 'warehouse', warehouseId, shopId);
+      await assertOwnedMany(tx, 'product', lines.map((l) => l.productId), shopId);
+      await assertOwnedMany(tx, 'productVariant', lines.map((l) => l.variantId), shopId);
 
       const grnNumber = `GRN-${Date.now()}`; // Or use a NumberEngine
       
@@ -51,6 +64,7 @@ export class GrnRepository {
           createdBy: actorId,
           lines: {
             create: lines.map((line) => ({
+              shopId,
               productId: line.productId,
               variantId: line.variantId,
               orderedQuantity: line.orderedQuantity || 0,
@@ -130,10 +144,12 @@ export class GrnRepository {
 
       await this.lifecycle.transitionStatus(tx, id, shopId, grn.status, 'RECEIVING', actorId, 'Started receiving');
 
-      // Process line updates for receiving
+      // Process line updates for receiving: only this receipt's lines, only this shop's batches and bins
+      await assertOwnedMany(tx, 'batch', payload.lines.map((l) => l.batchId), shopId);
+      await assertOwnedMany(tx, 'location', payload.lines.map((l) => l.binId), shopId);
       for (const lineUpdate of payload.lines) {
         await tx.goodsReceiptLine.update({
-          where: { id: lineUpdate.id },
+          where: { id: lineUpdate.id, goodsReceiptId: id, shopId },
           data: {
             receivedQuantity: lineUpdate.receivedQuantity,
             batchId: lineUpdate.batchId,

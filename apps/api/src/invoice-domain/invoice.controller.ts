@@ -11,6 +11,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
 import { GenerateInvoiceDto } from './dto/generate-invoice.dto';
+import { assertOwned, assertOwnedMany } from '../prisma/tenant-ownership';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('invoices')
@@ -31,6 +32,8 @@ export class InvoiceController {
   ) {
     // 1. Validate math and layout
     this.validationEngine.validatePayload(payload);
+    await assertOwned(this.prisma, 'customer', payload.customerId, shopId);
+    await assertOwnedMany(this.prisma, 'product', payload.lines.map((l) => l.productId), shopId);
 
     // 2. Generate Gapless Immutable Number
     const invoiceNumber = await this.numberingEngine.generateNextNumber(shopId, 'INVOICE', 'INV/26/');

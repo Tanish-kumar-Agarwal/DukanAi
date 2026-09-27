@@ -66,6 +66,7 @@ export class PurchaseDraftService {
       const taxedItems = this.tax.calculateTaxes(items, taxMode, poUpdates.currency ?? currentPo.currency ?? 'USD', poUpdates.exchangeRate ?? Number(currentPo.exchangeRate ?? 1));
       await tx.purchaseOrderItem.createMany({
         data: taxedItems.map((item) => ({
+          shopId,
           purchaseOrderId,
           productId: item.productId,
           variantId: item.variantId,

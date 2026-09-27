@@ -96,7 +96,7 @@ describe('security: authorization and shop isolation', () => {
       expect(res.status).toBe(404);
     });
 
-    it.failing('batch stock of another shop cannot be changed', async () => {
+    it('batch stock of another shop cannot be changed', async () => {
       const productB = await createProduct(app, shopB, { key: 'batch' });
       await receiveStock(app, shopB, productB, 20);
       const itemB = await inventoryItemOf(shopB, productB);
@@ -106,11 +106,11 @@ describe('security: authorization and shop isolation', () => {
       const res = await httpAs(app, shopA, ownerOf(shopA)).post(`/api/batches/${batchB.id}/stock`).send({ inventoryItemId: itemB.id, quantity: -15 });
 
       expect(res.status).toBe(404);
-      const stock = await run.system(() => prisma.batchStock.findUniqueOrThrow({ where: { batchId_inventoryItemId: { batchId: batchB.id, inventoryItemId: itemB.id } } }));
+      const stock = await run.system(() => prisma.batchStock.findUniqueOrThrow({ where: { shopId_batchId_inventoryItemId: { shopId: shopB.shopId, batchId: batchB.id, inventoryItemId: itemB.id } } }));
       expect(num(stock.quantity)).toBe(20);
     });
 
-    it.failing('a vendor bill cannot reference another shop\'s supplier', async () => {
+    it('a vendor bill cannot reference another shop\'s supplier', async () => {
       const supplierB = await run.system(() => prisma.supplier.create({ data: { name: 'Foreign supplier', phone: `8${shopB.suffix.replace(/\D/g, '').slice(-9).padStart(9, '1')}`, shopId: shopB.shopId } }));
       const productA = await createProduct(app, shopA, { key: 'vb' });
       const client = httpAs(app, shopA, ownerOf(shopA));
@@ -125,7 +125,7 @@ describe('security: authorization and shop isolation', () => {
       expect((list.body as Array<{ supplierId: string }>).some((bill) => bill.supplierId === supplierB.id)).toBe(false);
     });
 
-    it.failing('revisions of another shop cannot be read through compare', async () => {
+    it('revisions of another shop cannot be read through compare', async () => {
       const versioning = app.get(ProductVersioningService);
       const productA = await createProduct(app, shopA, { key: 'revA' });
       const productB = await createProduct(app, shopB, { key: 'revB' });

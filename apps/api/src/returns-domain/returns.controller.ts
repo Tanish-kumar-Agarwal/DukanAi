@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
 import { InitiateReturnDto } from './dto/initiate-return.dto';
+import { assertOwned, assertOwnedMany } from '../prisma/tenant-ownership';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('returns')
@@ -34,6 +35,10 @@ export class ReturnsController {
     if (invoiceId) {
       await this.validationEngine.validateReturnLines(shopId, invoiceId, returnLines);
     }
+    await assertOwned(this.prisma, 'salesOrder', orderId, shopId);
+    await assertOwnedMany(this.prisma, 'product', returnLines.map((l) => l.productId), shopId);
+    await assertOwnedMany(this.prisma, 'salesOrderLine', returnLines.map((l) => l.orderLineId), shopId);
+    await assertOwnedMany(this.prisma, 'enterpriseInvoiceLine', returnLines.map((l) => l.invoiceLineId), shopId);
 
     // 2. Create Aggregate
     const returnOrder = await this.prisma.returnOrder.create({
