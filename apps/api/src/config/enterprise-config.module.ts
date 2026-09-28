@@ -1,7 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { ConfigModule as NestConfigModule } from '@nestjs/config';
 import { validateSync } from 'class-validator';
-import { plainToInstance } from 'class-transformer';
 import { hydrateFromEnv } from './hydrate-from-env';
 
 import { AppConfig } from './domains/app.config';
@@ -147,33 +146,15 @@ function validateConfig<T extends object>(configClass: T): T {
     },
     {
       provide: PrismaConfig,
-      useFactory: () => {
-        const config = new PrismaConfig();
-        Object.assign(config, {
-          logQueries: process.env.PRISMA_LOG_QUERIES === 'true',
-          logLevelProduction: ['warn', 'error'],
-          logLevelDevelopment: ['query', 'info', 'warn', 'error'],
-          slowQueryThreshold: parseInt(process.env.PRISMA_SLOW_QUERY_THRESHOLD || '1000', 10),
-        });
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(PrismaConfig)),
     },
     {
       provide: QueueConfig,
-      useFactory: () => {
-        const config = new QueueConfig();
-        Object.assign(config, {
-          defaultConcurrency: parseInt(process.env.QUEUE_CONCURRENCY || '5', 10),
-          timeout: parseInt(process.env.QUEUE_TIMEOUT || '5000', 10),
-        });
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(QueueConfig)),
     },
     {
       provide: BullConfig,
-      useFactory: () => {
-        return validateConfig(plainToInstance(BullConfig, process.env, { enableImplicitConversion: true }));
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(BullConfig)),
     },
     {
       provide: CacheConfig,
@@ -202,10 +183,7 @@ function validateConfig<T extends object>(configClass: T): T {
     },
     {
       provide: EmailConfig,
-      useFactory: () => {
-        const config = new EmailConfig();
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(EmailConfig)),
     },
     {
       provide: SmsConfig,
@@ -299,17 +277,17 @@ function validateConfig<T extends object>(configClass: T): T {
       provide: CronConfig,
       useFactory: () => validateConfig(hydrateFromEnv(CronConfig)),
     },
-    { provide: SalesFeatureConfig, useFactory: () => validateConfig(plainToInstance(SalesFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: PurchaseFeatureConfig, useFactory: () => validateConfig(plainToInstance(PurchaseFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: AnalyticsFeatureConfig, useFactory: () => validateConfig(plainToInstance(AnalyticsFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: SearchFeatureConfig, useFactory: () => validateConfig(plainToInstance(SearchFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: ValidationFeatureConfig, useFactory: () => validateConfig(plainToInstance(ValidationFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: EventsFeatureConfig, useFactory: () => validateConfig(plainToInstance(EventsFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: InventoryFeatureConfig, useFactory: () => validateConfig(plainToInstance(InventoryFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: ImportExportFeatureConfig, useFactory: () => validateConfig(plainToInstance(ImportExportFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: OcrFeatureConfig, useFactory: () => validateConfig(plainToInstance(OcrFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: BillingFeatureConfig, useFactory: () => validateConfig(plainToInstance(BillingFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: ProcurementFeatureConfig, useFactory: () => validateConfig(plainToInstance(ProcurementFeatureConfig, process.env, { enableImplicitConversion: true })) },
+    { provide: SalesFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(SalesFeatureConfig)) },
+    { provide: PurchaseFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(PurchaseFeatureConfig)) },
+    { provide: AnalyticsFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(AnalyticsFeatureConfig)) },
+    { provide: SearchFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(SearchFeatureConfig)) },
+    { provide: ValidationFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(ValidationFeatureConfig)) },
+    { provide: EventsFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(EventsFeatureConfig)) },
+    { provide: InventoryFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(InventoryFeatureConfig)) },
+    { provide: ImportExportFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(ImportExportFeatureConfig)) },
+    { provide: OcrFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(OcrFeatureConfig)) },
+    { provide: BillingFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(BillingFeatureConfig)) },
+    { provide: ProcurementFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(ProcurementFeatureConfig)) },
   ],
   exports: [
     AppConfig,

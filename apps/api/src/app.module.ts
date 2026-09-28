@@ -13,6 +13,7 @@ import { SecurityConfig } from './config/domains/security.config';
 import { RuntimeValidationModule } from './config/validation/runtime-validation.module';
 import { ConfigurationRegistryModule } from './config/registry/configuration-registry.module';
 import { RedisModule } from './common/redis/redis.module';
+import { EmailModule } from './common/email/email.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
@@ -180,6 +181,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     PurchaseEventsDomainModule,
     DocumentModule,
     RedisModule,
+    EmailModule,
     SuppliersModule,
     ExpensesModule,
     NotificationsModule,

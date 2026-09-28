@@ -5,15 +5,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { Role } from '@prisma/client';
 import { safeUserSelect } from './user.mapper';
-
-const ROLE_WEIGHT: Record<Role, number> = {
-  [Role.SUPER_ADMIN]: 100,
-  [Role.OWNER]: 90,
-  [Role.ADMIN]: 80,
-  [Role.MANAGER]: 70,
-  [Role.CASHIER]: 60,
-  [Role.VIEWER]: 50,
-};
+import { outranks } from '../auth/role-sets';
 
 @Controller('users')
 export class UsersController {
@@ -53,7 +45,7 @@ export class UsersController {
     const userToSuspend = await this.prisma.user.findUnique({ where: { id, shopId: req.user.shopId } });
     if (!userToSuspend) throw new BadRequestException('User not found');
     
-    if (ROLE_WEIGHT[req.user.role as Role] <= ROLE_WEIGHT[userToSuspend.role]) {
+    if (!outranks(req.user.role as Role, userToSuspend.role)) {
       throw new ForbiddenException('You cannot suspend a user with an equal or higher role.');
     }
 
@@ -93,7 +85,7 @@ export class UsersController {
     const userToDelete = await this.prisma.user.findUnique({ where: { id, shopId: req.user.shopId } });
     if (!userToDelete) throw new BadRequestException('User not found');
     
-    if (ROLE_WEIGHT[req.user.role as Role] <= ROLE_WEIGHT[userToDelete.role]) {
+    if (!outranks(req.user.role as Role, userToDelete.role)) {
       throw new ForbiddenException('You cannot delete a user with an equal or higher role.');
     }
 

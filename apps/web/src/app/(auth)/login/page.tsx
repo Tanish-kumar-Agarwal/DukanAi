@@ -43,6 +43,7 @@ function LoginPageContent() {
         OAuthSignin: 'Could not start Google sign-in. Please try again.',
         OAuthCallback: 'Google sign-in failed. Please try again.',
         OAuthAccountNotLinked: 'This Google account is not linked. Sign in with email instead.',
+        AccessDenied: 'Google sign-in was refused. If you registered with a password, sign in with it instead.',
         Callback: 'Authentication failed. Please try again.',
         default: 'An unexpected error occurred.',
       };

@@ -141,10 +141,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   race (roadmap 7.3).
 - Config domains read env through `hydrateFromEnv` (`src/config/hydrate-from-env.ts`):
   only `@EnvVariable` properties are copied, blank keeps the default, `0` is a
-  value, garbage fails boot (`IntegerFromEnv`, `IsCronExpression`). `AppConfig`,
-  `JwtConfig`, `SecurityConfig`, `CronConfig` and `CacheConfig` use it; the
-  older `plainToInstance(X, process.env)` domains still silently default bad
-  values (roadmap 2.10). Shared rules live in `src/config/validation/env-rules.ts`:
+  value, garbage fails boot (`IntegerFromEnv`, `NumberFromEnv` for decimals,
+  `BooleanFromEnv`, `IsCronExpression`). Every numeric/boolean domain uses it
+  (`AppConfig`, `JwtConfig`, `SecurityConfig`, `CronConfig`, `CacheConfig`,
+  `BullConfig`, `PrismaConfig`, `QueueConfig`, `EmailConfig`, all
+  `*FeatureConfig`); never hydrate with `plainToInstance(..., {
+  enableImplicitConversion: true })`, which turned the string "false" into
+  true. Bounds live on the class (`BILLING_CASHIER_MAX_DISCOUNT_PERCENT` 0-100,
+  `OCR_FUZZY_MATCH_THRESHOLD` 0-1, `BCRYPT_ROUNDS` 4-31, limits >= 1).
+  Shared rules live in `src/config/validation/env-rules.ts`:
   `IsProductionSecret` (under `NODE_ENV=production` a secret must be 32+ chars
   and no template placeholder such as `___REPLACE_ME___`/`your_`/`CHANGE_ME`),
   `IsUrlList` (`FRONTEND_URL`: comma-separated absolute http(s) origins).
@@ -251,6 +256,27 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `isActive`, revocation is `tokenVersion`. The `auth-account` throttler
   (`AUTH_RATE_LIMIT_ACCOUNT_LIMIT` per medium window, keyed by the submitted
   email) caps attempts spread over many addresses.
+
+## Invitations, Google sign-in, email (roadmap 2.8, 2.9)
+
+- Invitations (`InvitationsService`): the invited role must rank strictly
+  below the inviter's (`ROLE_RANK`/`outranks` in `src/auth/role-sets.ts`, also
+  used by user suspend/delete), `Invitation.inviterId` records the issuer, and
+  the token reaches the invitee only by email: the API response carries no
+  token. A MANAGER revokes only their own invitations; ADMIN roles any.
+- `EmailService` (`src/common/email`, global) sends through nodemailer from
+  `SMTP_URL`; unset, it logs each message (`isConfigured` false). Production
+  refuses to issue an invitation without SMTP (503). Integration specs
+  override the provider (`bootApp(b => b.overrideProvider(EmailService)...)`)
+  and read the token from the recorded message. The email links to
+  `<FRONTEND_URL>/register?invite=<token>`; the web register page does not
+  read that parameter yet (the invitee pastes the code).
+- Google sign-in: the web sends only `{ idToken: account.id_token }` to
+  `POST /auth/google`, and registers the provider only with real credentials
+  (`hasGoogleCredentials`, placeholder-aware). The API never links a Google
+  identity to an existing account that was not created through Google (409,
+  surfaced as `AccessDenied` on the login page): anyone can register a
+  password account under someone else's address.
 
 ## Auth bypass flag
 

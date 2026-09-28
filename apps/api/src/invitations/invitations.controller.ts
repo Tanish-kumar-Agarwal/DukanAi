@@ -3,8 +3,10 @@ import { InvitationsService } from './invitations.service';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
 import { AcceptInvitationDto } from './dto/accept-invitation.dto';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
+import { CurrentUser } from '../iam/decorators/current-user.decorator';
+import { SafeUserDto } from '../users/dto/safe-user.dto';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
-import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -20,13 +22,14 @@ export class InvitationsController {
   @Post('generate')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
-  @Roles(Role.OWNER, Role.SUPER_ADMIN, Role.ADMIN, Role.MANAGER)
-  @ApiOperation({ summary: 'Generate an invitation for a new staff member' })
+  @Roles(...MANAGEMENT_ROLES)
+  @ApiOperation({ summary: 'Invite a new staff member (role below your own); the token is emailed to the invitee' })
   generate(
     @CurrentShop() shopId: string,
+    @CurrentUser() actor: SafeUserDto,
     @Body() createInvitationDto: CreateInvitationDto,
   ) {
-    return this.invitationsService.generate(shopId, createInvitationDto);
+    return this.invitationsService.generate(shopId, { id: actor.id, role: actor.role }, createInvitationDto);
   }
 
   @Public()
@@ -41,12 +44,13 @@ export class InvitationsController {
   @Delete(':id/revoke')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
-  @Roles(Role.OWNER, Role.SUPER_ADMIN, Role.ADMIN)
-  @ApiOperation({ summary: 'Revoke a pending invitation' })
+  @Roles(...MANAGEMENT_ROLES)
+  @ApiOperation({ summary: 'Revoke a pending invitation (a MANAGER may revoke only their own)' })
   revoke(
     @CurrentShop() shopId: string,
+    @CurrentUser() actor: SafeUserDto,
     @Param('id') id: string,
   ) {
-    return this.invitationsService.revoke(shopId, id);
+    return this.invitationsService.revoke(shopId, { id: actor.id, role: actor.role }, id);
   }
 }

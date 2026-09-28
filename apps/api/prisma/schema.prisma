@@ -700,11 +700,14 @@ model RefreshToken {
   @@index([familyId])
 }
 
+/// `inviterId` is the user who issued the invitation (null on rows from
+/// before roadmap 2.8); a MANAGER may revoke only their own invitations.
 model Invitation {
   id        String   @id @default(cuid())
   email     String
   role      Role
   shopId    String
+  inviterId String?
   token     String   @unique
   expiresAt DateTime
   isUsed    Boolean  @default(false)
@@ -714,6 +717,7 @@ model Invitation {
 
   @@index([shopId])
   @@index([email])
+  @@index([inviterId])
 }
 
 model LoginAttempt {

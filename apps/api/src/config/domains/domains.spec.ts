@@ -1,5 +1,4 @@
 import 'reflect-metadata';
-import { plainToInstance } from 'class-transformer';
 import { hydrateFromEnv } from '../hydrate-from-env';
 import { CronConfig } from './cron.config';
 import { validateSync } from 'class-validator';
@@ -7,6 +6,8 @@ import { SecurityConfig } from './security.config';
 import { BullConfig } from './bull.config';
 import { SalesFeatureConfig } from './features/sales-feature.config';
 import { CacheConfig } from './cache.config';
+import { BillingFeatureConfig } from './features/billing-feature.config';
+import { OcrFeatureConfig } from './features/ocr-feature.config';
 
 describe('Configuration Domains', () => {
   describe('SecurityConfig', () => {
@@ -53,56 +54,60 @@ describe('Configuration Domains', () => {
   });
 
   describe('BullConfig', () => {
-    it('should hydrate defaults correctly', () => {
-      const config = plainToInstance(BullConfig, {}, { enableImplicitConversion: true });
-      expect(config.defaultAttempts).toBe(3);
-      expect(config.backoffType).toBe('exponential');
-      expect(config.backoffDelay).toBe(1000);
-      expect(config.removeOnComplete).toBe(true);
-      expect(config.removeOnFail).toBe(false);
+    it('keeps the defaults when nothing is set', () => {
+      const config = hydrateFromEnv(BullConfig, {});
+      expect(config).toMatchObject({ defaultAttempts: 3, backoffType: 'exponential', backoffDelay: 1000, removeOnComplete: true, removeOnFail: false });
+      expect(validateSync(config)).toEqual([]);
     });
 
-    it('should hydrate custom boolean strings correctly', () => {
-      const env = {
-        BULL_REMOVE_ON_COMPLETE: 'false',
-        BULL_REMOVE_ON_FAIL: 'true',
-      };
-      const config = plainToInstance(BullConfig, env, { enableImplicitConversion: false });
-      expect(config.removeOnComplete).toBe(false);
-      expect(config.removeOnFail).toBe(true);
+    it('reads boolean strings literally: "false" is false and "true" is true (the old implicit conversion inverted them)', () => {
+      const config = hydrateFromEnv(BullConfig, { BULL_REMOVE_ON_COMPLETE: 'false', BULL_REMOVE_ON_FAIL: 'true', BULL_BACKOFF_TYPE: 'fixed', BULL_BACKOFF_DELAY: '0' });
+      expect(config).toMatchObject({ removeOnComplete: false, removeOnFail: true, backoffType: 'fixed', backoffDelay: 0 });
+      expect(validateSync(config)).toEqual([]);
+    });
+
+    it.each([
+      ['a non-boolean flag', { BULL_REMOVE_ON_FAIL: 'maybe' }, 'removeOnFail'],
+      ['an unknown backoff type', { BULL_BACKOFF_TYPE: 'linear' }, 'backoffType'],
+      ['zero attempts', { BULL_ATTEMPTS: '0' }, 'defaultAttempts'],
+      ['a non-integer delay', { BULL_BACKOFF_DELAY: 'soon' }, 'backoffDelay'],
+    ])('rejects %s', (_label, env, property) => {
+      expect(validateSync(hydrateFromEnv(BullConfig, env)).map((e) => e.property)).toEqual([property]);
     });
   });
 
   describe('SalesFeatureConfig', () => {
-    it('should hydrate default feature flags and settings', () => {
-      const config = plainToInstance(SalesFeatureConfig, {}, { enableImplicitConversion: true });
-      expect(config.defaultPaginationLimit).toBe(50);
-      expect(config.recentEventsLimit).toBe(100);
-      expect(config.creditHoldThreshold).toBe(10000);
-      expect(config.defaultCreditLimit).toBe(5000);
+    it('keeps the defaults when nothing is set', () => {
+      const config = hydrateFromEnv(SalesFeatureConfig, {});
+      expect(config).toMatchObject({ defaultPaginationLimit: 50, recentEventsLimit: 100, creditHoldThreshold: 10000, defaultCreditLimit: 5000 });
+      expect(validateSync(config)).toEqual([]);
     });
 
-    it('should override features from env', () => {
-      const env = {
-        SALES_DEFAULT_PAGINATION_LIMIT: '100',
-        SALES_DEFAULT_CREDIT_LIMIT: '10000',
-        SALES_CREDIT_HOLD_THRESHOLD: '15000',
-      };
-      const config = plainToInstance(SalesFeatureConfig, env, { enableImplicitConversion: true });
-      expect(config.defaultPaginationLimit).toBe(100);
-      expect(config.defaultCreditLimit).toBe(10000);
-      expect(config.creditHoldThreshold).toBe(15000);
+    it('overrides from the environment and allows 0 where the bound does', () => {
+      const config = hydrateFromEnv(SalesFeatureConfig, { SALES_DEFAULT_PAGINATION_LIMIT: '100', SALES_DEFAULT_CREDIT_LIMIT: '0', SALES_CREDIT_HOLD_THRESHOLD: '15000' });
+      expect(config).toMatchObject({ defaultPaginationLimit: 100, defaultCreditLimit: 0, creditHoldThreshold: 15000 });
+      expect(validateSync(config)).toEqual([]);
     });
 
-    it('should flag validation error on negative credit limits', () => {
-      const env = {
-        SALES_DEFAULT_CREDIT_LIMIT: '-100', // invalid because of @Min(0)
-      };
-      const config = plainToInstance(SalesFeatureConfig, env, { enableImplicitConversion: true });
-      const errors = validateSync(config);
-      expect(errors.length).toBeGreaterThan(0);
-      const creditLimitError = errors.find(e => e.property === 'defaultCreditLimit');
-      expect(creditLimitError).toBeDefined();
+    it.each([
+      ['a negative credit limit', { SALES_DEFAULT_CREDIT_LIMIT: '-100' }, 'defaultCreditLimit'],
+      ['garbage', { SALES_RECENT_EVENTS_LIMIT: 'lots' }, 'recentEventsLimit'],
+      ['a zero page size', { SALES_DEFAULT_PAGINATION_LIMIT: '0' }, 'defaultPaginationLimit'],
+    ])('rejects %s', (_label, env, property) => {
+      expect(validateSync(hydrateFromEnv(SalesFeatureConfig, env)).map((e) => e.property)).toEqual([property]);
+    });
+  });
+
+  describe('BillingFeatureConfig and OcrFeatureConfig (decimal bounds)', () => {
+    it('bounds the cashier discount to 0..100 and the OCR threshold to 0..1, reading decimals', () => {
+      expect(validateSync(hydrateFromEnv(BillingFeatureConfig, { BILLING_CASHIER_MAX_DISCOUNT_PERCENT: '12.5' }))).toEqual([]);
+      expect(hydrateFromEnv(BillingFeatureConfig, { BILLING_CASHIER_MAX_DISCOUNT_PERCENT: '12.5' }).cashierMaxDiscountPercent).toBe(12.5);
+      expect(hydrateFromEnv(BillingFeatureConfig, { BILLING_CASHIER_MAX_DISCOUNT_PERCENT: '0' }).cashierMaxDiscountPercent).toBe(0);
+      for (const bad of ['101', '-1', 'ten', '1e400']) {
+        expect(validateSync(hydrateFromEnv(BillingFeatureConfig, { BILLING_CASHIER_MAX_DISCOUNT_PERCENT: bad })).map((e) => e.property)).toEqual(['cashierMaxDiscountPercent']);
+      }
+      expect(validateSync(hydrateFromEnv(OcrFeatureConfig, { OCR_FUZZY_MATCH_THRESHOLD: '0.85' }))).toEqual([]);
+      expect(validateSync(hydrateFromEnv(OcrFeatureConfig, { OCR_FUZZY_MATCH_THRESHOLD: '1.5' })).map((e) => e.property)).toEqual(['fuzzyMatchThreshold']);
     });
   });
 

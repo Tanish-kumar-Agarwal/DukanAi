@@ -117,26 +117,21 @@ export class UsersService {
   ): Promise<SafeUserDto> {
     // 1. Match by Google ID — returning user
     const byGoogle = await this.prisma.user.findFirst({
-      // @ts-ignore
       where: { googleId },
       select: safeUserSelect,
     });
     if (byGoogle) return UserMapper.toSafeUserDto(byGoogle);
 
-    // 2. Match by email — account linking for existing password users
-    const byEmail = await this.prisma.user.findUnique({
-      where: { email },
-      select: safeUserSelect,
-    });
+    // 2. An account with this email that was not created through Google is
+    //    never linked automatically: anyone can register a password account
+    //    under someone else's address, and linking would hand that account to
+    //    whoever later signs in with the real Google identity (P2-19). The
+    //    owner signs in with their password; linking needs an explicit,
+    //    authenticated step.
+    const byEmail = await this.prisma.user.findUnique({ where: { email }, select: { id: true } });
     if (byEmail) {
-      const updated = await this.prisma.user.update({
-        where: { id: byEmail.id },
-        // @ts-ignore
-        data: { googleId },
-        select: safeUserSelect,
-      });
-      this.logger.log(`Linked Google account to existing user ${byEmail.id}`);
-      return UserMapper.toSafeUserDto(updated);
+      this.logger.warn(`Google sign-in refused for ${email}: an account with this email exists and is not linked to Google`);
+      throw new ConflictException('An account with this email already exists. Sign in with your password.');
     }
 
     // 3. New user — create user + shop atomically
@@ -157,7 +152,6 @@ export class UsersService {
             id: userId,
             email,
             name,
-            // @ts-ignore
             googleId,
             role: Role.OWNER,
             shopId,

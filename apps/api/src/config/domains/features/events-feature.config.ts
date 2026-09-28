@@ -1,30 +1,37 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigDomain, EnvVariable } from '../../registry/registry.decorators';
-import { IsNumber, IsOptional } from 'class-validator';
-import { Transform } from 'class-transformer';
+import { IsInt, Min } from 'class-validator';
+import { IntegerFromEnv } from '../../hydrate-from-env';
 
+/**
+ * Event listing, outbox batch and webhook delivery settings. Hydrated with `hydrateFromEnv`: an unset or blank variable keeps the
+ * default, `0` is a value where the bound allows it, and anything that is not
+ * a number (or is out of bounds) fails boot.
+ */
 @Injectable()
-@ConfigDomain({ owner: 'Events', feature: 'Events Domain', version: '1.0.0', description: 'Configuration for Universal Events Features' })
+@ConfigDomain({ owner: 'Events', feature: 'Events Domain', version: '1.1.0', description: 'Configuration for Universal Events Features' })
 export class EventsFeatureConfig {
-  @IsNumber()
-  @Transform(({ value }) => (value ? parseInt(value, 10) : 100))
+  @IsInt()
+  @Min(1)
+  @IntegerFromEnv()
   @EnvVariable('EVENTS_RECENT_LIMIT')
-  readonly recentEventsLimit: number = 100;
+  recentEventsLimit: number = 100;
 
-  @IsNumber()
-  @Transform(({ value }) => (value ? parseInt(value, 10) : 50))
+  @IsInt()
+  @Min(1)
+  @IntegerFromEnv()
   @EnvVariable('EVENTS_WEBHOOK_DELIVERY_LIMIT')
-  readonly webhookDeliveryLimit: number = 50;
+  webhookDeliveryLimit: number = 50;
 
-  @IsOptional()
-  @IsNumber()
-  @Transform(({ value }) => (value ? parseInt(value, 10) : 100))
+  @IsInt()
+  @Min(1)
+  @IntegerFromEnv()
   @EnvVariable('EVENTS_OUTBOX_PROCESSOR_BATCH_SIZE')
   outboxProcessorBatchSize: number = 100;
 
-  @IsOptional()
-  @IsNumber()
-  @Transform(({ value }) => (value ? parseInt(value, 10) : 10000))
+  @IsInt()
+  @Min(1000)
+  @IntegerFromEnv()
   @EnvVariable('EVENTS_WEBHOOK_TIMEOUT_MS')
   webhookTimeoutMs: number = 10000;
 }

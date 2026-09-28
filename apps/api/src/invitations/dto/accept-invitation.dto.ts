@@ -1,9 +1,11 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, MinLength, MaxLength } from 'class-validator';
+import { IsString, Length, Matches, MaxLength, MinLength } from 'class-validator';
 
 export class AcceptInvitationDto {
-  @ApiProperty()
+  @ApiProperty({ description: 'The invitation code from the email (64 hex characters)' })
   @IsString()
+  @Length(64, 64)
+  @Matches(/^[0-9a-f]+$/, { message: 'token must be a hex string' })
   token: string;
 
   @ApiProperty()
