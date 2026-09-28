@@ -3,7 +3,7 @@ import { INestApplicationContext, Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { AppConfig } from '../../config/domains/app.config';
-import { JwtConfig } from '../../config/domains/jwt.config';
+import { JWT_ALGORITHM, JwtConfig } from '../../config/domains/jwt.config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SocketSessionService } from './socket-session.service';
 
@@ -52,6 +52,7 @@ export class AuthenticatedIoAdapter extends IoAdapter {
         // Verify JWT Signature
         const payload = this.jwtService.verify(token, {
           secret: this.jwtConfig.jwtSecret,
+          algorithms: [JWT_ALGORITHM],
         });
 
         if (!payload || !payload.sub || !payload.shopId) {
@@ -66,13 +67,14 @@ export class AuthenticatedIoAdapter extends IoAdapter {
         // Perform Zero Trust check against Database
         const user = await this.prisma.user.findUnique({
           where: { id: userId, isDeleted: false },
-          select: { isActive: true, isLocked: true, tokenVersion: true, role: true },
+          select: { isActive: true, tokenVersion: true, role: true },
         });
 
         if (!user) {
           return next(new Error('Authentication Error: User not found or deleted'));
         }
-        if (!user.isActive || user.isLocked) {
+        // A brute-force lock blocks new logins only; it does not drop live sockets (P1-4).
+        if (!user.isActive) {
           return next(new Error('Authentication Error: Account suspended or locked'));
         }
         if (user.tokenVersion !== tokenVersion) {

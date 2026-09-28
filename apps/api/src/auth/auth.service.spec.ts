@@ -15,6 +15,7 @@ describe('AuthService refresh-token rotation', () => {
     findByEmailWithPassword: jest.fn(),
     incrementFailedAttempts: jest.fn(),
     resetFailedAttempts: jest.fn(),
+    isLockedNow: jest.fn(),
   };
   const jwtService = { sign: jest.fn().mockReturnValue('access-token') };
   const prisma = {
@@ -67,5 +68,36 @@ describe('AuthService refresh-token rotation', () => {
 
     await expect(service.refresh('a'.repeat(80))).rejects.toBeInstanceOf(UnauthorizedException);
     expect(prisma.refreshToken.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthService.validateUser lockout', () => {
+  const usersService = {
+    findSafeById: jest.fn(),
+    findByEmailWithPassword: jest.fn(),
+    incrementFailedAttempts: jest.fn(),
+    resetFailedAttempts: jest.fn(),
+    isLockedNow: jest.fn(),
+  };
+  const service = new AuthService(usersService as any, {} as any, {} as any, {} as any, {} as any);
+  const record = { id: 'user-1', password: '$2b$04$invalidhashinvalidhashinvalidhashinvalidhashinvalidha', isDeleted: false, isActive: true, isLocked: true, lockedUntil: new Date() };
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it('refuses a new login while the lock is in force, without counting another failure', async () => {
+    usersService.findByEmailWithPassword.mockResolvedValue(record);
+    usersService.isLockedNow.mockResolvedValue(true);
+
+    await expect(service.validateUser('owner@example.com', 'whatever')).resolves.toBeNull();
+    expect(usersService.incrementFailedAttempts).not.toHaveBeenCalled();
+  });
+
+  it('checks the password again once the lock has expired (the service clears it)', async () => {
+    usersService.findByEmailWithPassword.mockResolvedValue(record);
+    usersService.isLockedNow.mockResolvedValue(false);
+
+    await expect(service.validateUser('owner@example.com', 'wrong')).resolves.toBeNull();
+    expect(usersService.isLockedNow).toHaveBeenCalledWith(record);
+    expect(usersService.incrementFailedAttempts).toHaveBeenCalledWith('user-1');
   });
 });

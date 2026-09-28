@@ -39,7 +39,7 @@ export class AuthService {
       return null;
     }
 
-    if (user.isLocked && user.lockedUntil && new Date() < user.lockedUntil) {
+    if (await this.usersService.isLockedNow(user)) {
       return null;
     }
 

@@ -4,10 +4,10 @@ import { validateSync } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { hydrateFromEnv } from './hydrate-from-env';
 
-import { AppConfig, Environment } from './domains/app.config';
+import { AppConfig } from './domains/app.config';
 import { DatabaseConfig } from './domains/database.config';
 import { JwtConfig } from './domains/jwt.config';
-import { AuthConfig, parseAuthDisabled } from './domains/auth.config';
+import { AuthConfig, assertAuthBypassPermitted, parseAuthDisabled } from './domains/auth.config';
 import { RedisConfig } from './domains/redis.config';
 import { StorageConfig } from './domains/storage.config';
 import { AiConfig } from './domains/ai.config';
@@ -62,22 +62,16 @@ function validateConfig<T extends object>(configClass: T): T {
   imports: [
     NestConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['.env.local', `.env.${process.env.NODE_ENV || 'development'}`, '.env'],
+      // .env.<NODE_ENV> is a committed template and is read only for an explicit
+      // NODE_ENV; a process that does not say which environment it is must not
+      // pick up the development template (AppConfig then refuses to boot).
+      envFilePath: ['.env.local', ...(process.env.NODE_ENV ? [`.env.${process.env.NODE_ENV}`] : []), '.env'],
     }),
   ],
   providers: [
     {
       provide: AppConfig,
-      useFactory: () => {
-        const config = new AppConfig();
-        Object.assign(config, {
-          nodeEnv: (process.env.NODE_ENV as Environment) || Environment.Development,
-          port: parseInt(process.env.PORT || '3002', 10),
-          frontendUrl: process.env.FRONTEND_URL,
-          trustProxy: process.env.TRUST_PROXY?.trim() || 'false',
-        });
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(AppConfig)),
     },
     {
       provide: DatabaseConfig,
@@ -91,16 +85,7 @@ function validateConfig<T extends object>(configClass: T): T {
     },
     {
       provide: JwtConfig,
-      useFactory: () => {
-        const config = new JwtConfig();
-        Object.assign(config, {
-          jwtSecret: process.env.JWT_SECRET,
-          jwtExpiresIn: process.env.JWT_EXPIRES_IN,
-          jwtRefreshSecret: process.env.JWT_REFRESH_SECRET,
-          jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN,
-        });
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(JwtConfig)),
     },
     {
       provide: AuthConfig,
@@ -111,7 +96,10 @@ function validateConfig<T extends object>(configClass: T): T {
         Object.assign(config, {
           authDisabled: parseAuthDisabled(process.env.AUTH_DISABLED),
         });
-        return validateConfig(config);
+        validateConfig(config);
+        // The bypass is refused outright outside development/test (P1-6).
+        assertAuthBypassPermitted(config.authDisabled, process.env.NODE_ENV);
+        return config;
       },
     },
     {

@@ -27,9 +27,9 @@ Never delete or skip a failing test to get green. Fix the behaviour and flip it.
 | `authorization.security-spec.ts` | P0-3 cross-shop batch stock, vendor bill supplier, revision compare | 1 |
 | `money.security-spec.ts` | P1-1 partial returns refund more than the sale | 3 |
 | `money.security-spec.ts` | P1-2 ledger running balance overflows at 10 crore | 3 |
-| `authentication.security-spec.ts` | P1-4 lockout revokes sessions already open | 2 |
-| `authentication.security-spec.ts` | P1-5 placeholder JWT secret accepted | 2 |
-| `authentication.security-spec.ts` | P1-6 auth bypass reachable without `NODE_ENV` | 2 |
+| `authentication.security-spec.ts` | P1-4 lockout revokes sessions already open | 2.2 (fixed) |
+| `authentication.security-spec.ts` | P1-5 placeholder JWT secret accepted | 2.3 (fixed) |
+| `authentication.security-spec.ts` | P1-6 auth bypass reachable without `NODE_ENV` | 2.4 (fixed) |
 | `authentication.security-spec.ts` | P2-10 long User-Agent breaks login | 2 |
 | `authentication.security-spec.ts` | P1-9 uploads buffered without a size limit | 5 |
 | `../integration/rate-limit.integration-spec.ts` | P1-3 rate limiting off (second/millisecond mix-up, no auth limits), P2-16 trust proxy | 2.1 (fixed) |

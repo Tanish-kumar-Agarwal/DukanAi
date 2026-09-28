@@ -192,23 +192,38 @@ export class UsersService {
     }
   }
 
+  /**
+   * Counts a failed password in one atomic statement (two concurrent failures
+   * can no longer read the same value and both write +1), then locks the
+   * account once the counter reaches the limit. The lock only blocks new
+   * logins for `lockoutDurationMs`; it never touches open sessions.
+   */
   async incrementFailedAttempts(userId: string): Promise<void> {
-    const user = await this.prisma.user.findUnique({
+    const { failedAttempts } = await this.prisma.user.update({
       where: { id: userId },
+      data: { failedAttempts: { increment: 1 } },
       select: { failedAttempts: true },
     });
-    
-    if (!user) return;
-    const newAttempts = user.failedAttempts + 1;
-    
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        failedAttempts: newAttempts,
-        isLocked: newAttempts >= this.securityConfig.maxLoginAttempts,
-        lockedUntil: newAttempts >= this.securityConfig.maxLoginAttempts ? new Date(Date.now() + this.securityConfig.lockoutDurationMs) : null,
-      },
-    });
+    if (failedAttempts >= this.securityConfig.maxLoginAttempts) {
+      await this.prisma.user.updateMany({
+        where: { id: userId, isLocked: false },
+        data: { isLocked: true, lockedUntil: new Date(Date.now() + this.securityConfig.lockoutDurationMs) },
+      });
+    }
+  }
+
+  /**
+   * A lock whose `lockedUntil` has passed is over: clear it and the counter so
+   * the next failures start a fresh window instead of re-locking on the first
+   * one. Returns true when the account is (still) locked.
+   */
+  async isLockedNow(user: { id: string; isLocked: boolean; lockedUntil: Date | null }, now = new Date()): Promise<boolean> {
+    if (!user.isLocked) return false;
+    if (user.lockedUntil && user.lockedUntil <= now) {
+      await this.resetFailedAttempts(user.id);
+      return false;
+    }
+    return true;
   }
 
   async resetFailedAttempts(userId: string): Promise<void> {

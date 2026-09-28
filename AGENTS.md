@@ -25,10 +25,14 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   endpoints are placeholders. The web `.env.production` must likewise hold
   valid URLs and a 32+ character `NEXTAUTH_SECRET` placeholder or `next build`
   fails while collecting page data.
-- Nest's `ConfigModule` loads `.env.local`, `.env.<NODE_ENV>`, then `.env` (see
-  `EnterpriseConfigModule`). Committed `.env.production`/`.env.development`/
-  `.env.test` are templates the owner deliberately tracks; the root
-  `.gitignore` documents this ("ALWAYS COMMITTED") and is marked do-not-modify.
+- Nest's `ConfigModule` loads `.env.local`, `.env.<NODE_ENV>` (only when
+  `NODE_ENV` is set), then `.env` (see `EnterpriseConfigModule`). `NODE_ENV` is
+  required (`AppConfig` has no default; the `start*` scripts pin it, `start:prod`
+  to production), so a bare process never runs as development. Committed
+  `.env.production`/`.env.development`/`.env.test` are templates the owner
+  deliberately tracks; the root `.gitignore` documents this ("ALWAYS COMMITTED")
+  and is marked do-not-modify. A production boot that still carries a template
+  placeholder (`JWT_SECRET`, `FRONTEND_URL`) refuses to start.
 - `@dukaanai/invoice-math` resolves to `packages/invoice-math/dist` (gitignored).
   Build it first (`npm run build` at the root runs turbo in dependency order;
   in isolation run `cd packages/invoice-math && npx tsc -p tsconfig.json`), or
@@ -137,9 +141,19 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   race (roadmap 7.3).
 - Config domains read env through `hydrateFromEnv` (`src/config/hydrate-from-env.ts`):
   only `@EnvVariable` properties are copied, blank keeps the default, `0` is a
-  value, garbage fails boot (`IntegerFromEnv`, `IsCronExpression`). `CronConfig`
-  and `CacheConfig` use it; the older `plainToInstance(X, process.env)` domains
-  still silently default bad values (roadmap 2.10).
+  value, garbage fails boot (`IntegerFromEnv`, `IsCronExpression`). `AppConfig`,
+  `JwtConfig`, `SecurityConfig`, `CronConfig` and `CacheConfig` use it; the
+  older `plainToInstance(X, process.env)` domains still silently default bad
+  values (roadmap 2.10). Shared rules live in `src/config/validation/env-rules.ts`:
+  `IsProductionSecret` (under `NODE_ENV=production` a secret must be 32+ chars
+  and no template placeholder such as `___REPLACE_ME___`/`your_`/`CHANGE_ME`),
+  `IsUrlList` (`FRONTEND_URL`: comma-separated absolute http(s) origins).
+- Boot refusals throw: `StartupValidatorService` and
+  `ConfigurationRegistryService` raise an Error (never `process.exit`), so the
+  reason reaches `bootstrap().catch` and stderr. `test/boot-regression.e2e-spec.ts`
+  spawns `node dist/main` for the matrix (no `NODE_ENV`, blank / placeholder /
+  short `JWT_SECRET`, placeholder `FRONTEND_URL`, `AUTH_DISABLED` in
+  production) and asserts each message.
 
 ## Toolchain
 
@@ -229,16 +243,32 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `main.ts`) decides whether `X-Forwarded-For` counts. Every sign-in and
   refresh call reaches the API from the web server, which forwards the
   browser's address (`apps/web/src/lib/auth.ts`); count it as a hop.
+- Login lockout (`UsersService.incrementFailedAttempts`, atomic
+  `{ increment: 1 }`): `SECURITY_MAX_LOGIN_ATTEMPTS` failures lock NEW logins
+  for `SECURITY_LOCKOUT_DURATION_MS`; an expired lock is cleared on the next
+  attempt (`isLockedNow`). A lock never revokes open sessions or sockets
+  (`JwtStrategy`, `AuthenticatedIoAdapter` ignore `isLocked`): suspension is
+  `isActive`, revocation is `tokenVersion`. The `auth-account` throttler
+  (`AUTH_RATE_LIMIT_ACCOUNT_LIMIT` per medium window, keyed by the submitted
+  email) caps attempts spread over many addresses.
 
 ## Auth bypass flag
 
 - `AUTH_DISABLED` (API) + `NEXT_PUBLIC_AUTH_DISABLED` (web, build-time) disable
-  authentication for demos/dev. OFF by default; see `AuthBypassService`
+  authentication for demos/dev. OFF by default and accepted only under
+  `NODE_ENV=development` or `test` (`assertAuthBypassPermitted` refuses boot
+  otherwise, and `AuthBypassService.isEnabled` stays false); no committed
+  template sets it, put it in an untracked `.env.local`. See `AuthBypassService`
   (`apps/api/src/auth/auth-bypass.service.ts`), `AuthConfig`
   (`apps/api/src/config/domains/auth.config.ts`), and `apps/web/src/lib/auth-bypass.ts`.
   When on, every request runs as a provisioned system user
   (`system@dukaanai.local`, OWNER, own shop). Real auth code stays intact - the
   flag gates access, it never accepts unverified identity from a request.
+- Tokens are HS256 only (`JWT_ALGORITHM`, pinned in `JwtModule`, `JwtStrategy`
+  and the socket adapter). Refresh tokens are opaque and stored hashed; there
+  is no `JWT_REFRESH_SECRET`. The web enforces a real `NEXTAUTH_SECRET` on a
+  running production server (`apps/web/src/config/env.ts`, skipped during
+  `next build`, which cannot know the runtime secret).
 
 ## Git attribution rule
 

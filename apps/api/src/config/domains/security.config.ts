@@ -17,7 +17,9 @@ import { IntegerFromEnv } from '../hydrate-from-env';
  * The three general throttlers apply per client IP to every route; the
  * `AUTH_RATE_LIMIT_*` limits replace them on the routes marked with
  * `@AuthThrottle()` (login, register, refresh, Google sign-in, invitation
- * accept) over the same windows. See `src/common/throttling`.
+ * accept) over the same windows, plus a per-account limit keyed by the
+ * submitted email so a distributed brute force is capped too. See
+ * `src/common/throttling`.
  */
 @Injectable()
 @ConfigDomain({ owner: 'Security', feature: 'Configuration', version: '2.0.0', description: 'SecurityConfig Domain' })
@@ -83,6 +85,13 @@ export class SecurityConfig {
   @IntegerFromEnv()
   @EnvVariable('AUTH_RATE_LIMIT_LONG_LIMIT')
   authRateLimitLongLimit: number = 100;
+
+  /** Login attempts per account (any address) over the medium window before 429. */
+  @IsInt()
+  @Min(1)
+  @IntegerFromEnv()
+  @EnvVariable('AUTH_RATE_LIMIT_ACCOUNT_LIMIT')
+  authRateLimitAccountLimit: number = 10;
 
   @IsInt()
   @Min(1)

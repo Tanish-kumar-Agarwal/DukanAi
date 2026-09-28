@@ -1,6 +1,7 @@
 /**
  * Authentication hardening and resource limits (audit P1-4, P1-5, P1-6,
  * P2-10, P1-9). Findings that are still open use `it.failing`; see README.md.
+ * P1-4, P1-5 and P1-6 were fixed in roadmap phase 2 and run as plain `it`.
  */
 import { INestApplication } from '@nestjs/common';
 import { Role } from '@prisma/client';
@@ -44,7 +45,7 @@ describe('security: authentication and limits', () => {
     expect((await login(user.email, 'wrong')).status).toBe(401);
   });
 
-  it.failing('P1-4: five wrong passwords do not revoke a session that was already open', async () => {
+  it('P1-4: five wrong passwords do not revoke a session that was already open', async () => {
     const user = await createUser(app, shop, Role.MANAGER, PASSWORD);
     const session = await login(user.email, PASSWORD);
     expect(session.status).toBe(201);
@@ -62,24 +63,23 @@ describe('security: authentication and limits', () => {
     expect(res.status).toBe(201);
   });
 
-  it.failing('P1-5: the committed placeholder JWT secret fails configuration validation in production', () => {
+  it('P1-5: the committed placeholder JWT secret fails configuration validation in production', () => {
     const nodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
     try {
-      const config = hydrateFromEnv(JwtConfig, {
-        JWT_SECRET: '___REPLACE_ME_IN_PRODUCTION___',
-        JWT_EXPIRES_IN: '1d',
-        JWT_REFRESH_SECRET: '___REPLACE_ME_IN_PRODUCTION___',
-        JWT_REFRESH_EXPIRES_IN: '7d',
-      });
-      expect(validateSync(config).length).toBeGreaterThan(0);
+      const placeholder = hydrateFromEnv(JwtConfig, { JWT_SECRET: '___REPLACE_ME_IN_PRODUCTION___', JWT_EXPIRES_IN: '1d', JWT_REFRESH_EXPIRES_IN: '7d' });
+      expect(validateSync(placeholder).map((e) => e.property)).toEqual(['jwtSecret']);
+      const short = hydrateFromEnv(JwtConfig, { JWT_SECRET: 'tooshort', JWT_EXPIRES_IN: '1d', JWT_REFRESH_EXPIRES_IN: '7d' });
+      expect(validateSync(short).map((e) => e.property)).toEqual(['jwtSecret']);
+      const real = hydrateFromEnv(JwtConfig, { JWT_SECRET: 'k9vP2xR7mQ4tW8zB1nL6cH3jF5dS0aY2eU4iO7pA9sD1fG3h', JWT_EXPIRES_IN: '1d', JWT_REFRESH_EXPIRES_IN: '7d' });
+      expect(validateSync(real)).toEqual([]);
     } finally {
       process.env.NODE_ENV = nodeEnv;
     }
   });
 
   describe('P1-6: the auth bypass cannot be reached by starting without NODE_ENV', () => {
-    it.failing('AUTH_DISABLED is ignored when NODE_ENV is production', () => {
+    it('AUTH_DISABLED is ignored when NODE_ENV is production', () => {
       const nodeEnv = process.env.NODE_ENV;
       process.env.NODE_ENV = 'production';
       try {
@@ -91,12 +91,12 @@ describe('security: authentication and limits', () => {
       }
     });
 
-    it.failing('the committed development template does not switch authentication off', () => {
+    it('the committed development template does not switch authentication off', () => {
       const template = parse(readFileSync(path.join(API_ROOT, '.env.development')));
       expect(template.AUTH_DISABLED ?? 'false').not.toBe('true');
     });
 
-    it.failing('start:prod pins NODE_ENV=production so the development template is never loaded', () => {
+    it('start:prod pins NODE_ENV=production so the development template is never loaded', () => {
       const pkg = JSON.parse(readFileSync(path.join(API_ROOT, 'package.json'), 'utf8')) as { scripts: Record<string, string> };
       expect(pkg.scripts['start:prod']).toMatch(/NODE_ENV=production/);
     });

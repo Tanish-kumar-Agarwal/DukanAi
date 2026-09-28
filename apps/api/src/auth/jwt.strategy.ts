@@ -1,7 +1,7 @@
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PassportStrategy } from '@nestjs/passport';
 import { Injectable, UnauthorizedException } from '@nestjs/common';
-import { JwtConfig } from '../config/domains/jwt.config';
+import { JWT_ALGORITHM, JwtConfig } from '../config/domains/jwt.config';
 import { UsersService } from '../users/users.service';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
 import { UserMapper } from '../users/user.mapper';
@@ -24,6 +24,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
       secretOrKey: jwtConfig.jwtSecret,
+      algorithms: [JWT_ALGORITHM],
     });
   }
 
@@ -45,9 +46,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('Account has been deactivated');
     }
 
-    if (user.isLocked && user.lockedUntil && new Date() < user.lockedUntil) {
-      throw new UnauthorizedException('Account is locked');
-    }
+    // A brute-force lock blocks new logins only (AuthService.validateUser);
+    // sessions that were open before it stay valid, otherwise anyone who
+    // knows an email address could log every device of that user out (P1-4).
+    // Suspension (isActive) and revocation (tokenVersion) are checked above.
 
     return UserMapper.toSafeUserDto(user as any);
   }
