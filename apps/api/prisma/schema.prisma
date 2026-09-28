@@ -3231,12 +3231,15 @@ model VariantIdentity {
   id        String   @id @default(cuid())
   shopId    String
   variantId String   @unique
-  sku       String   @unique
+  /// Unique per shop (roadmap 4.1): two shops may sell the same SKU.
+  sku       String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   shop    Shop           @relation(fields: [shopId], references: [id])
   variant ProductVariant @relation(fields: [variantId], references: [id])
+
+  @@unique([shopId, sku])
 }
 
 model PackageIdentity {

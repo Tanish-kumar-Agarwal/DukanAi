@@ -3,6 +3,8 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AnalyticsRepository } from '../repositories/analytics.repository';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
+import { jobContext, requireJobShop } from '../../iam/tenant-context/job-context';
 
 @Processor('purchase-analytics')
 export class AnalyticsProcessorService extends WorkerHost {
@@ -10,26 +12,31 @@ export class AnalyticsProcessorService extends WorkerHost {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly repository: AnalyticsRepository
+    private readonly repository: AnalyticsRepository,
+    private readonly tenantContext: TenantContextService,
   ) {
     super();
   }
 
+  /** Every aggregation runs in the shop's tenant context (roadmap 4.1, audit P2-5). */
   async process(job: Job<any, any, string>): Promise<any> {
     this.logger.debug(`Processing Analytics job ${job.id} of type ${job.name}`);
-    
-    switch (job.name) {
-      case 'aggregate-daily-dashboard':
-        return this.aggregateDailyDashboard(job.data.shopId);
-      case 'aggregate-vendor-performance':
-        return this.aggregateVendorPerformance(job.data.shopId);
-      case 'aggregate-category-spend':
-        return this.aggregateCategorySpend(job.data.shopId);
-      case 'aggregate-trends':
-        return this.aggregateTrends(job.data.shopId);
-      default:
-        this.logger.warn(`Unknown job type: ${job.name}`);
-    }
+    const shopId = requireJobShop(job.data, job.name);
+    return this.tenantContext.runWithContext(jobContext(shopId, job.id), () => {
+      switch (job.name) {
+        case 'aggregate-daily-dashboard':
+          return this.aggregateDailyDashboard(shopId);
+        case 'aggregate-vendor-performance':
+          return this.aggregateVendorPerformance(shopId);
+        case 'aggregate-category-spend':
+          return this.aggregateCategorySpend(shopId);
+        case 'aggregate-trends':
+          return this.aggregateTrends(shopId);
+        default:
+          this.logger.warn(`Unknown job type: ${job.name}`);
+          return undefined;
+      }
+    });
   }
 
   private async aggregateDailyDashboard(shopId: string) {

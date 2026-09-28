@@ -3,6 +3,8 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { SalesOrderService } from '../services/sales-order.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
+import { jobContext, requireJobShop } from '../../iam/tenant-context/job-context';
 
 @Injectable()
 @Processor('sales-order-bulk-queue')
@@ -11,22 +13,23 @@ export class SalesOrderBulkWorker extends WorkerHost {
 
   constructor(
     private readonly salesOrderService: SalesOrderService,
-    private readonly prisma: PrismaService
+    private readonly prisma: PrismaService,
+    private readonly tenantContext: TenantContextService,
   ) {
     super();
   }
 
+  /** Runs in the job's shop context (roadmap 4.1, audit P2-5). */
   async process(job: Job<any, any, string>): Promise<any> {
     this.logger.log(`Processing bulk job ${job.id} of type ${job.name}`);
-
-    switch (job.name) {
-      case 'BULK_CANCEL':
-        return this.handleBulkCancel(job.data);
-      case 'BULK_ARCHIVE':
-        return this.handleBulkArchive(job.data);
-      default:
-        this.logger.warn(`Unknown bulk job type: ${job.name}`);
+    if (job.name !== 'BULK_CANCEL' && job.name !== 'BULK_ARCHIVE') {
+      this.logger.warn(`Unknown bulk job type: ${job.name}`);
+      return undefined;
     }
+    const shopId = requireJobShop(job.data, job.name);
+    return this.tenantContext.runWithContext(jobContext(shopId, job.id), () =>
+      job.name === 'BULK_CANCEL' ? this.handleBulkCancel(job.data) : this.handleBulkArchive(job.data),
+    );
   }
 
   private async handleBulkCancel(data: { shopId: string, orderIds: string[], actorId: string }) {

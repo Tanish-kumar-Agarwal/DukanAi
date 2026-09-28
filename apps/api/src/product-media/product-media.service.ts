@@ -1,4 +1,5 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { assertOwned } from '../prisma/tenant-ownership';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadEngineService, UploadedFile } from './upload-engine.service';
 import { DeduplicationService } from './deduplication.service';
@@ -29,6 +30,12 @@ export class ProductMediaService {
     variantId?: string,
     isPrimary: boolean = false
   ) {
+    // 0. The product / variant the media is attached to must belong to the shop
+    //    (roadmap 4.1): a foreign key in the URL is never checked by the tenant extension.
+    if (!productId && !variantId) throw new BadRequestException('Media must be attached to a product or a variant.');
+    await assertOwned(this.prisma, 'product', productId, shopId, { isDeleted: false });
+    await assertOwned(this.prisma, 'productVariant', variantId, shopId, { isDeleted: false });
+
     // 1. Validate constraints
     this.uploadEngine.validateFile(file);
 
@@ -137,5 +144,32 @@ export class ProductMediaService {
       },
       orderBy: { sortOrder: 'asc' },
     });
+  }
+
+  /** Attaches a named tag (created on first use, unique per shop) to one of the shop's assets. */
+  async tagAsset(shopId: string, assetId: string, name: string) {
+    const tag = name.trim();
+    if (!tag) throw new BadRequestException('Tag name is required.');
+    await assertOwned(this.prisma, 'mediaAsset', assetId, shopId, { isDeleted: false });
+    const mediaTag = await this.prisma.mediaTag.upsert({
+      where: { shopId_name: { shopId, name: tag } },
+      update: {},
+      create: { shopId, name: tag },
+      select: { id: true, name: true },
+    });
+    await this.prisma.mediaAsset.update({ where: { id: assetId }, data: { tags: { connect: { id: mediaTag.id } } }, select: { id: true } });
+    return { assetId, tag: mediaTag };
+  }
+
+  /** Rewrites `sortOrder` for the references of one product or variant, in the order given. */
+  async reorderReferences(shopId: string, dto: { productId?: string; variantId?: string; referenceIds: string[] }) {
+    if (!dto.productId === !dto.variantId) throw new BadRequestException('Give exactly one of productId or variantId.');
+    const owner = dto.productId ? { productId: dto.productId } : { variantId: dto.variantId };
+    const references = await this.prisma.mediaReference.findMany({ where: { shopId, ...owner }, select: { id: true } });
+    const known = new Set(references.map((r) => r.id));
+    const unknown = dto.referenceIds.filter((id) => !known.has(id));
+    if (unknown.length) throw new NotFoundException(`Media reference ${unknown.join(', ')} not found`);
+    await this.prisma.$transaction(dto.referenceIds.map((id, index) => this.prisma.mediaReference.update({ where: { id }, data: { sortOrder: index }, select: { id: true } })));
+    return this.getGallery(shopId, dto.productId, dto.variantId);
   }
 }

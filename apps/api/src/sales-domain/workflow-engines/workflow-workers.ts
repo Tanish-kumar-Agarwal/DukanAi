@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { WorkflowOrchestrator } from './workflow-orchestrator';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
+import { jobContext, requireJobShop } from '../../iam/tenant-context/job-context';
 
 @Injectable()
 @Processor('sales-workflow-queue')
@@ -9,15 +11,21 @@ export class SalesWorkflowWorker extends WorkerHost {
   private readonly logger = new Logger(SalesWorkflowWorker.name);
 
   constructor(
-    private readonly orchestrator: WorkflowOrchestrator
+    private readonly orchestrator: WorkflowOrchestrator,
+    private readonly tenantContext: TenantContextService,
   ) {
     super();
   }
 
+  /** Runs in the order's shop context (roadmap 4.1, audit P2-5). */
   async process(job: Job<any, any, string>): Promise<any> {
     this.logger.log(`Processing workflow job ${job.id} of type ${job.name}`);
+    const shopId = requireJobShop(job.data, job.name);
+    return this.tenantContext.runWithContext(jobContext(shopId, job.id), () => this.transition(job, shopId));
+  }
 
-    const { shopId, orderId } = job.data;
+  private async transition(job: Job<any, any, string>, shopId: string): Promise<void> {
+    const { orderId } = job.data as { orderId: string };
 
     switch (job.name) {
       case 'PROCESS_RESERVATION':

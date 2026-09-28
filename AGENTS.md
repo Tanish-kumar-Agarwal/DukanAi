@@ -242,6 +242,32 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   migrations on a seeded scratch database (needs CREATE DATABASE rights on
   the test server).
 
+## Scaffolding modules (roadmap phase 4)
+
+- 4.1: the media, product-validation, product-identity, import-export,
+  webhook and product-events controllers take the shop from `@CurrentShop()`
+  and the user from `@CurrentUser('id')` (`src/iam/decorators`); `req.shop`
+  was never set and every call answered 500. Every body is a DTO; webhooks
+  are MANAGER+ for reads and writes and the HMAC secret is returned once, in
+  the create response, only when the server generated it. Foreign keys in
+  those routes go through `assertOwned` (media attach, barcode targets, bulk
+  validation); validation state rows are read and written by shop;
+  `VariantIdentity.sku` is unique per shop (`(shopId, sku)`, migration
+  `20260929120000`). The former media `bulk`/`search` stubs are gone; `tag`
+  and `order` are real. `test/integration/scaffolding-routes.integration-spec.ts`
+  walks every route as OWNER, VIEWER and a foreign owner (no 500s, role
+  gates, 404 on foreign ids) and follows an import to the worker.
+- Every BullMQ processor runs its job under a tenant context
+  (`src/iam/tenant-context/job-context.ts`): `jobContext(shopId, jobId)` when
+  the job names its shop (`requireJobShop` refuses one that does not),
+  `runInShopOf(tenant, prisma, model, id, jobId, fn)` when it names only a
+  document (the owner is read as the system tenant; a missing row is a
+  logged no-op, not a crash loop), `runAsSuperAdmin` for relays.
+  `src/iam/tenant-context/processor-context.spec.ts` scans every
+  `@Processor` source and fails a worker that touches a collaborator
+  without one (a pure Redis/queue worker is allowlisted there with its reason).
+  Producers put `shopId` on the job (`import-job`, `webhook-delivery`).
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and

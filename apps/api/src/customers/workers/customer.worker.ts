@@ -5,6 +5,7 @@ import { InvoiceStatus, InvoiceType, Prisma, UdharTransactionType } from '@prism
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
+import { runInShopOf } from '../../iam/tenant-context/job-context';
 
 /** Job data for `refresh-analytics`. Customer and UdharTransaction are tenant-scoped, so shopId is mandatory. */
 export interface RefreshCustomerAnalyticsJobData {
@@ -122,10 +123,14 @@ export class CustomerWorker extends WorkerHost {
 
   private async handleAddressValidation(job: Job<ValidateAddressJobData, any, string>) {
     this.logger.log(`Validating address ${job.data.addressId}`);
-    await this.prisma.customerAddress.update({
-      where: { id: job.data.addressId },
-      data: { geoVerified: true }
+    // The job names only the address: run in the shop that owns it (roadmap 4.1).
+    const result = await runInShopOf(this.tenantContext, this.prisma as unknown as Record<string, unknown>, 'customerAddress', job.data.addressId, job.id, async () => {
+      await this.prisma.customerAddress.update({
+        where: { id: job.data.addressId },
+        data: { geoVerified: true }
+      });
+      return { status: 'Address Validated' };
     });
-    return { status: 'Address Validated' };
+    return result ?? { status: 'Address not found' };
   }
 }

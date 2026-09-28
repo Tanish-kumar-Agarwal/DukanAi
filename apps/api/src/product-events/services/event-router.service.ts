@@ -39,7 +39,8 @@ export class EventRouterService {
           await this.webhookQueue.add('deliver-webhook', {
             endpointId: endpoint.id,
             eventId: event.id,
-            payload: event.payload
+            payload: event.payload,
+            shopId: event.shopId
           }, {
             jobId: `webhook-${endpoint.id}-${event.id}`
           });
