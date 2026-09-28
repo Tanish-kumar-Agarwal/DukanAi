@@ -105,9 +105,114 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   checkpoint × sale/return/cancel/repayment), `pos-concurrency` (the
   concurrency × stock × quantity matrix up to 200 parallel checkouts, edge
   cases, multi-location, bootstrap race) and `pos-resilience` (Redis outage,
-  outbox, accounting incl. purchase side, custom items, authority rules).
-  `apps/web` has `npm run test:e2e` (Playwright, browser-level checkout).
-  `npm run test:e2e` in apps/api is the boot regression.
+  outbox, accounting incl. purchase side, custom items, authority rules) and
+  `dashboard` (EXEC-005: every dashboard figure against SQL, boundaries,
+  stock alerts, insights, partial failure, tenant isolation).
+  `apps/web` has `npm run test:e2e` (Playwright: checkout and dashboard
+  states/polling). `npm run test:e2e` in apps/api is the boot regression.
+  `test/security/*.security-spec.ts` (also matched by `test:integration`;
+  alone: `npm run test:security`) asserts the secure behaviour the audit
+  found missing: an open finding is `it.failing`, so it runs, is expected to
+  fail, and breaks the build the moment a fix lands until it is flipped to
+  `it` (see `test/security/README.md`). Never skip or delete one.
+  Point either at another database with `TEST_DATABASE_URL` (integration) or
+  `DATABASE_URL` + `E2E_DATABASE_URL` (Playwright); no env file edits needed.
+- BullMQ takes host/port/credentials/db from `REDIS_URL` (`app.module.ts`).
+  The db index matters: dev (db 0) and tests (db 1) share one Redis server,
+  and before the db was honoured a running dev API consumed the tests' jobs.
+- Integration runs are hermetic: `test/jest-integration.global-setup.ts`
+  flushes the test Redis db first (index >= 1 only), and the setup file sets
+  `CRON_ENABLED=false` so no scheduler registers (the two
+  `scheduler-*.integration-spec.ts` suites assert both switch positions). A
+  "never fires" cron string is not an option: `CronJob.start()` throws when an
+  expression has no run in the next 8 years, and `IsCronExpression` rejects
+  such values at boot for the same reason. `npm run test:e2e` in apps/api is
+  the boot regression only; `src/config/config-platform.spec.ts` proves
+  env -> injected config through the real module.
+- `app.init()` returns before BullMQ has opened its Redis connections; closing
+  the app inside that window surfaces as unhandled `Connection is closed`
+  errors (bullmq emits them after removing its own listeners). The shared
+  `bootApp()` fixture waits for every queue/worker with `waitUntilReady()`, so
+  boot-assert-close suites are deterministic; production shutdown has the same
+  race (roadmap 7.3).
+- Config domains read env through `hydrateFromEnv` (`src/config/hydrate-from-env.ts`):
+  only `@EnvVariable` properties are copied, blank keeps the default, `0` is a
+  value, garbage fails boot (`IntegerFromEnv`, `IsCronExpression`). `CronConfig`
+  and `CacheConfig` use it; the older `plainToInstance(X, process.env)` domains
+  still silently default bad values (roadmap 2.10).
+
+## Toolchain
+
+- Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and
+  `engines` in every package.json. `npm run lint|type-check|test|build` at the
+  root go through turbo; `apps/api` lint is clean at zero errors and must stay
+  so: unused parameters that a signature must keep are `_`-prefixed, and a
+  deliberately un-awaited promise is written `void fn()` only when the callee
+  catches its own errors (`no-floating-promises` is on; `no-unsafe-argument`
+  stays off until the `any` request bodies become DTOs).
+
+## Dashboard (EXEC-005)
+
+- Contract §6. `GET /dashboard/summary` loads 11 sections independently: a
+  failed one is listed in `failedSections` with `null` figures (503 only when
+  all fail); the web marks exactly those tiles/cards unavailable. Keep new
+  summary figures inside a section.
+- Stock alerts count active, non-deleted, stock-tracked products only
+  (`stockAlertProductFilter`: not SERVICE/DIGITAL, which the inventory engine
+  bypasses). The inventory page's `?tab=low-stock` lists them all.
+- KPIs are cached 60 s; `BillingHelpers.afterStockChange` drops the cache
+  right after every committed sale/return/cancel, and the outbox processor
+  drops it again, so tiles and KPI strip agree on the next read.
+- Web resources go through `useDashboardResource` (newest response wins, polls
+  skip a request in flight), dashboard GETs time out after 15 s and payloads
+  are shape-checked (`DashboardPayloadError`): never render a failure as zeros.
+
+## Authorization policy (roadmap phase 1)
+
+- `RolesGuard` is deny-by-default: every POST/PUT/PATCH/DELETE handler must
+  carry `@Roles(...)`, `@AnyAuthenticated()` (own-data self-service) or
+  `@Public()`; GET stays open to any signed-in user unless narrowed.
+  `RouteAuthorizationAssertion` (AppModule) refuses to boot otherwise, and
+  `src/auth/route-authorization.spec.ts` scans every controller source without
+  booting. Write roles with the sets in `src/auth/role-sets.ts`
+  (`ADMIN_ROLES`, `MANAGEMENT_ROLES`, `POS_ROLES`); `SUPER_ADMIN` is never
+  implicit, list it.
+- Every `@Body()` is a class-validator DTO (the scan spec rejects `any`,
+  `unknown`, `object` and inline object types). A body that is a free-form
+  JSON document goes through `@Body(JsonObjectPipe)`. Never spread a request
+  body into Prisma `data`: pick the columns you mean to write (see
+  `ShopsService.updateShopProfile`, `PurchaseDraftService.pickDraftFields`).
+- Separation of duties: the creator/submitter of a purchase order, the
+  creator of a goods receipt and the requester of a stock-count adjustment
+  cannot approve it (`ForbiddenException` in the approval services).
+- Shop isolation is derived from the schema (`src/prisma/tenant-scope.ts`):
+  every model with a `shopId` column is tenant-owned except `GLOBAL_MODELS`
+  (`User`, `Invitation`: read before the tenant is known). Under a tenant
+  context the Prisma extension narrows every filter to the shop, binds creates,
+  refuses `data.shopId` changes and scopes nested writes (`connect` etc. get
+  `shopId`, so a foreign target answers P2025). Code that runs outside a
+  request must pick a context: `runAsSuperAdmin` for work that spans shops
+  (outbox relays), `runWithContext(jobContext(shopId, jobId))` for a job that
+  names its shop (`src/iam/tenant-context/job-context.ts`); a tenant-model
+  query with neither throws "Missing tenant context".
+- A foreign key supplied in a request body is never read by the extension, so
+  every write that stores one calls `assertOwned` / `assertOwnedMany`
+  (`src/prisma/tenant-ownership.ts`) first, inside the same transaction
+  (404 for a foreign row). `test/integration/tenant-isolation.integration-spec.ts`
+  sends shop B's IDs to every such route as shop A.
+- Sweeps are per shop: `POST /batches/sweep-expiry` and `POST /reservations/sweep`
+  act on the caller's shop; the global sweeps are the locked crons
+  `BatchExpirySweep` / `ReservationExpirySweep` (`CRON_BATCH_EXPIRY_SWEEP`,
+  `CRON_RESERVATION_EXPIRY_SWEEP`), which use `sweepEveryShop`
+  (`src/common/sweeps/per-shop-sweep.ts`): shop list as system tenant, each
+  shop in its own context, per-shop and per-row failures logged and skipped.
+  `TenantGuard` lets only `ACTIVE` shops through (SUSPENDED/LOCKED/ARCHIVED/
+  DELETED and an unknown status are 403).
+- Procurement line tables (`PurchaseOrderItem`, `GoodsReceiptLine`,
+  `VendorBillLine`, `PurchaseReturnLine`, `SupplierCreditLine`) carry
+  `shopId` (migration `20260927180000_scope_line_tables_by_shop`, backfilled
+  from the parent); nested creates must set it, and `BatchStock`'s unique key
+  is `(shopId, batchId, inventoryItemId)`.
 
 ## Auth bypass flag
 

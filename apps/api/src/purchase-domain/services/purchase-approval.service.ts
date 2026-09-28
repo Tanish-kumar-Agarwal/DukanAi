@@ -1,4 +1,4 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PurchaseAuditService } from './purchase-audit.service';
 import { PurchaseLifecycleService } from './purchase-lifecycle.service';
@@ -54,6 +54,15 @@ export class PurchaseApprovalService {
   ) {
     const po = await tx.purchaseOrder.findUnique({ where: { id: purchaseOrderId } });
     if (!po) throw new BadRequestException('PO not found');
+
+    if (action === 'APPROVE') {
+      // Separation of duties: whoever created or submitted the order cannot approve it.
+      const requested = await tx.purchaseOrderAudit.findFirst({
+        where: { purchaseOrderId, shopId, actorId, action: { in: ['CREATED', 'SUBMITTED'] } },
+        select: { id: true },
+      });
+      if (requested) throw new ForbiddenException('The person who created or submitted a purchase order cannot approve it.');
+    }
 
     const pendingApproval = await tx.purchaseOrderApproval.findFirst({
       where: { purchaseOrderId, shopId, status: 'PENDING' },

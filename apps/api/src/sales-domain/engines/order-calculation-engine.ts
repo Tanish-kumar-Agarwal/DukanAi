@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { CreateSalesOrderDto } from '../dto/create-sales-order.dto';
-import { Prisma } from '@prisma/client';
 import Decimal from 'decimal.js';
 
 export interface OrderFinancials {
@@ -36,8 +35,8 @@ export class OrderCalculationEngine {
     let taxTotal = new Decimal(0);
     let cgstTotal = new Decimal(0);
     let sgstTotal = new Decimal(0);
-    let igstTotal = new Decimal(0);
-    let cessTotal = new Decimal(0);
+    const igstTotal = new Decimal(0);
+    const cessTotal = new Decimal(0);
 
     const processedLines = dto.lines.map(line => {
       const quantity = new Decimal(line.quantity);

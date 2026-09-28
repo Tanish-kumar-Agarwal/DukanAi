@@ -17,7 +17,7 @@ export class ProductWebhookDispatcherService {
    * Dispatches the webhook and returns true if successful.
    * Throws an error on failure to trigger BullMQ retries.
    */
-  async dispatch(endpointId: string, eventId: string, payload: any): Promise<void> {
+  async dispatch(endpointId: string, eventId: string, _payload: any): Promise<void> {
     const endpoint = await this.prisma.webhookEndpoint.findUnique({ where: { id: endpointId } });
     if (!endpoint) return; // Endpoint was deleted
 

@@ -15,6 +15,7 @@ import { SafeUserDto } from '../users/dto/safe-user.dto';
 import type { Request as ExpressRequest } from 'express';
 import { GoogleAuthDto } from './dto/google-auth.dto';
 import { GoogleIdentityService } from './google-identity.service';
+import { AnyAuthenticated } from './/any-authenticated.decorator';
 
 interface AuthenticatedRequest extends ExpressRequest {
   user: SafeUserDto;
@@ -90,6 +91,7 @@ export class AuthController {
     return this.authService.getSessions(req.user.id);
   }
 
+  @AnyAuthenticated()
   @Delete('sessions/:id')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Revoke a specific session' })

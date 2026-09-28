@@ -8,6 +8,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { UpdateShopProfileDto } from './dto/update-shop-profile.dto';
 
 @ApiTags('shops')
 @ApiBearerAuth()
@@ -27,9 +28,9 @@ export class ShopsController {
   @ApiOperation({ summary: 'Update the current shop profile' })
   updateMyShop(
     @CurrentShop() shopId: string,
-    @Body() body: { name?: string; address?: string; city?: string; state?: string; pincode?: string; phone?: string; email?: string; gstin?: string },
+    @Body() dto: UpdateShopProfileDto,
   ) {
-    return this.shopsService.updateShopProfile(shopId, body);
+    return this.shopsService.updateShopProfile(shopId, dto);
   }
 
   @Post('transfer-ownership')

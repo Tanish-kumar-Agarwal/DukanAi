@@ -7,6 +7,9 @@ import { CreateSalesOrderDto } from './dto/create-sales-order.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
+import { BulkSalesOperationDto, ModifyOrderLinesDto } from './dto/modify-order-lines.dto';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('sales/orders')
@@ -18,6 +21,7 @@ export class SalesOrderController {
     private readonly cache: SalesOrderCacheService
   ) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post()
   async createOrder(
     @CurrentShop() shopId: string,
@@ -47,20 +51,21 @@ export class SalesOrderController {
     return order;
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Patch(':id/lines')
   async modifyLines(
     @CurrentShop() shopId: string,
     @Param('id') orderId: string,
-    @Body('version') expectedVersion: number,
-    @Body('lines') newLines: any[]
+    @Body() dto: ModifyOrderLinesDto,
   ) {
-    const result = await this.modificationEngine.modifyOrderLines(shopId, orderId, expectedVersion, newLines);
+    const result = await this.modificationEngine.modifyOrderLines(shopId, orderId, dto.version, dto.lines);
     await this.cache.invalidateOrder(shopId, orderId);
     return result;
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('bulk')
-  async bulkOperation(@CurrentShop() shopId: string, @Body() payload: any) {
+  async bulkOperation(@CurrentShop() shopId: string, @Body() payload: BulkSalesOperationDto) {
     // Queue job to BullMQ
     return { queued: true, type: payload.type };
   }

@@ -5,6 +5,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import * as crypto from 'crypto';
 import { QueueConfig } from '../../config/domains/queue.config';
 import { SalesEventJobData } from './sales-event-router.worker';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
+import { jobContext } from '../../iam/tenant-context/job-context';
 
 @Injectable()
 @Processor('sales-webhooks')
@@ -14,11 +16,18 @@ export class SalesWebhookWorker extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly queueConfig: QueueConfig,
+    private readonly tenantContext: TenantContextService,
   ) {
     super();
   }
 
-  async process(job: Job<SalesEventJobData, unknown, string>): Promise<{ status: string }> {
+  process(job: Job<SalesEventJobData, unknown, string>): Promise<{ status: string }> {
+    const shopId = job.data?.shopId;
+    if (!shopId) return this.processForShop(job); // refused inside with the diagnostic message
+    return this.tenantContext.runWithContext(jobContext(shopId, String(job.id), job.data?.correlationId), () => this.processForShop(job));
+  }
+
+  private async processForShop(job: Job<SalesEventJobData, unknown, string>): Promise<{ status: string }> {
     const { shopId, payload, eventId, tenantId, correlationId } = job.data ?? {};
     const type = job.data?.type ?? job.name;
 

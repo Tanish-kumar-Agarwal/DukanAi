@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, Inject, BadRequestException, Param } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
@@ -7,6 +7,10 @@ import { ReverseInventoryEngine } from './engines/reverse-inventory-engine';
 import { ReverseFinancialEngine } from './engines/reverse-financial-engine';
 import { InspectionEngine } from './engines/inspection-engine';
 import { PrismaService } from '../prisma/prisma.service';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
+import { InitiateReturnDto } from './dto/initiate-return.dto';
+import { assertOwned, assertOwnedMany } from '../prisma/tenant-ownership';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('returns')
@@ -19,10 +23,11 @@ export class ReturnsController {
     private readonly inspectionEngine: InspectionEngine
   ) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('initiate')
   async initiateReturn(
     @CurrentShop() shopId: string,
-    @Body() payload: any // Abstracted DTO
+    @Body() payload: InitiateReturnDto,
   ) {
     const { invoiceId, orderId, type, returnLines, reason } = payload;
 
@@ -30,6 +35,10 @@ export class ReturnsController {
     if (invoiceId) {
       await this.validationEngine.validateReturnLines(shopId, invoiceId, returnLines);
     }
+    await assertOwned(this.prisma, 'salesOrder', orderId, shopId);
+    await assertOwnedMany(this.prisma, 'product', returnLines.map((l) => l.productId), shopId);
+    await assertOwnedMany(this.prisma, 'salesOrderLine', returnLines.map((l) => l.orderLineId), shopId);
+    await assertOwnedMany(this.prisma, 'enterpriseInvoiceLine', returnLines.map((l) => l.invoiceLineId), shopId);
 
     // 2. Create Aggregate
     const returnOrder = await this.prisma.returnOrder.create({
@@ -41,13 +50,13 @@ export class ReturnsController {
         type: type || 'PARTIAL_RETURN',
         reason,
         lines: {
-          create: returnLines.map((line: any) => ({
+          create: returnLines.map((line) => ({
             shopId,
             invoiceLineId: line.invoiceLineId,
             orderLineId: line.orderLineId,
             productId: line.productId,
             quantity: line.quantity,
-            returnReason: line.returnReason || reason
+            returnReason: line.returnReason ?? reason ?? 'UNSPECIFIED'
           }))
         },
         timelines: {

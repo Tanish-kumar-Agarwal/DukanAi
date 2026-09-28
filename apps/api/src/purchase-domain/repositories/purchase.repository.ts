@@ -9,10 +9,12 @@ import { PurchaseDraftService } from '../services/purchase-draft.service';
 import { PurchaseApprovalService } from '../services/purchase-approval.service';
 import { PurchasePricingService } from '../services/purchase-pricing.service';
 import { PurchaseTaxService } from '../services/purchase-tax.service';
-import { Prisma, PurchaseOrderStatus } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { CacheConfig } from '../../config/domains/cache.config';
+import { CreatePurchaseOrderDto, UpdatePurchaseDraftDto } from '../dto/purchase-order.dto';
+import { assertOwnedMany } from '../../prisma/tenant-ownership';
 
 @Injectable()
 export class PurchaseRepository {
@@ -30,11 +32,14 @@ export class PurchaseRepository {
     private readonly cacheConfig: CacheConfig
   ) {}
 
-  async createPurchaseOrder(shopId: string, payload: any, actorId: string, ipAddress?: string) {
+  async createPurchaseOrder(shopId: string, payload: CreatePurchaseOrderDto, actorId: string, ipAddress?: string) {
     const { supplierId, items, ...metadata } = payload;
     
     await this.validation.validateSupplier(shopId, supplierId);
     await this.validation.validateItems(shopId, items);
+    await this.assertItemReferencesOwned(shopId, items);
+    await this.assertItemReferencesOwned(shopId, items);
+    await this.assertItemReferencesOwned(shopId, items);
 
     // Perform tax calculation if required
     const taxedItems = this.tax.calculateTaxes(items, metadata.taxMode || 'EXCLUSIVE', metadata.currency || 'USD', metadata.exchangeRate || 1);
@@ -63,6 +68,7 @@ export class PurchaseRepository {
           shippingInstructions: metadata.shippingInstructions,
           items: {
             create: taxedItems.map((item: any) => ({
+              shopId,
               productId: item.productId,
               variantId: item.variantId,
               quantity: item.quantity,
@@ -141,7 +147,8 @@ export class PurchaseRepository {
   async submitPurchaseOrder(shopId: string, id: string, actorId: string, comments?: string) {
     return this.prisma.$transaction(async (tx) => {
       const po = await this.approval.submitForApproval(tx, shopId, id, actorId, comments);
-      
+      await this.audit.recordAudit(tx, id, shopId, 'SUBMITTED', actorId, null, { comments: comments ?? null }, undefined);
+
       await this.eventPublisher.publish(tx, shopId, {
         eventType: 'PurchaseOrderSubmitted',
         aggregateId: id,
@@ -192,7 +199,11 @@ export class PurchaseRepository {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
-  async updateDraft(shopId: string, id: string, payload: any, actorId: string) {
+  async updateDraft(shopId: string, id: string, payload: UpdatePurchaseDraftDto, actorId: string) {
+    if (payload.items) {
+      await this.validation.validateItems(shopId, payload.items);
+      await this.assertItemReferencesOwned(shopId, payload.items);
+    }
     return this.prisma.$transaction(async (tx) => {
       const updatedPo = await this.draft.saveDraft(tx, shopId, id, payload, actorId);
       
@@ -207,5 +218,12 @@ export class PurchaseRepository {
       await this.cacheManager.del(`po:${shopId}:${id}`);
       return updatedPo;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  }
+
+  /** Every ID an order line names must belong to this shop (roadmap 1.5). */
+  private async assertItemReferencesOwned(shopId: string, items: Array<{ variantId?: string; warehouseId?: string; binId?: string }>): Promise<void> {
+    await assertOwnedMany(this.prisma, 'productVariant', items.map((i) => i.variantId), shopId);
+    await assertOwnedMany(this.prisma, 'warehouse', items.map((i) => i.warehouseId), shopId);
+    await assertOwnedMany(this.prisma, 'location', items.map((i) => i.binId), shopId);
   }
 }

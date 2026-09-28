@@ -1480,6 +1480,7 @@ model PurchaseOrder {
 
 model PurchaseOrderItem {
   id              String    @id @default(cuid())
+  shopId          String // owning shop, copied from the parent document (roadmap 1.6)
   purchaseOrderId String
   productId       String
   quantity        Decimal   @db.Decimal(10, 3)
@@ -1513,6 +1514,7 @@ model PurchaseOrderItem {
   expectedDate DateTime?
   remarks      String?   @db.Text
 
+  @@index([shopId])
   @@index([purchaseOrderId])
   @@index([productId])
 }
@@ -1691,6 +1693,7 @@ model GoodsReceipt {
 
 model GoodsReceiptLine {
   id               String  @id @default(cuid())
+  shopId           String // owning shop, copied from the parent document (roadmap 1.6)
   goodsReceiptId   String
   productId        String
   variantId        String?
@@ -1710,6 +1713,7 @@ model GoodsReceiptLine {
 
   goodsReceipt GoodsReceipt @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
 
+  @@index([shopId])
   @@index([goodsReceiptId])
   @@index([productId])
 }
@@ -1896,6 +1900,7 @@ model VendorBill {
 
 model VendorBillLine {
   id                  String  @id @default(cuid())
+  shopId              String // owning shop, copied from the parent document (roadmap 1.6)
   vendorBillId        String
   purchaseOrderLineId String?
   grnLineId           String?
@@ -1912,6 +1917,7 @@ model VendorBillLine {
 
   vendorBill VendorBill @relation(fields: [vendorBillId], references: [id], onDelete: Cascade)
 
+  @@index([shopId])
   @@index([vendorBillId])
   @@index([productId])
 }
@@ -2092,6 +2098,7 @@ model PurchaseReturn {
 
 model PurchaseReturnLine {
   id                  String  @id @default(cuid())
+  shopId              String // owning shop, copied from the parent document (roadmap 1.6)
   purchaseReturnId    String
   purchaseOrderLineId String?
   grnLineId           String?
@@ -2117,6 +2124,7 @@ model PurchaseReturnLine {
 
   purchaseReturn PurchaseReturn @relation(fields: [purchaseReturnId], references: [id], onDelete: Cascade)
 
+  @@index([shopId])
   @@index([purchaseReturnId])
   @@index([productId])
 }
@@ -2300,6 +2308,7 @@ model SupplierCreditNote {
 
 model SupplierCreditLine {
   id               String  @id @default(cuid())
+  shopId           String // owning shop, copied from the parent document (roadmap 1.6)
   supplierCreditId String
   productId        String?
   description      String?
@@ -2315,6 +2324,7 @@ model SupplierCreditLine {
 
   supplierCredit SupplierCreditNote @relation(fields: [supplierCreditId], references: [id], onDelete: Cascade)
 
+  @@index([shopId])
   @@index([supplierCreditId])
 }
 
@@ -4291,7 +4301,8 @@ model BatchStock {
   batch         Batch         @relation(fields: [batchId], references: [id], onDelete: Restrict)
   inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
 
-  @@unique([batchId, inventoryItemId])
+  @@unique([shopId, batchId, inventoryItemId])
+  @@index([batchId])
   @@index([inventoryItemId])
 }
 

@@ -12,11 +12,9 @@ import {
 } from '@nestjs/common';
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { Role } from '@prisma/client';
-import type { Request as ExpressRequest } from 'express';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
-import { SafeUserDto } from '../users/dto/safe-user.dto';
 import {
   MAX_CLOUD_UPLOAD_BYTES,
   MAX_BILLING_DOCUMENT_BYTES,
@@ -42,10 +40,6 @@ import {
 } from './dto/storage.dto';
 
 import { StorageService } from './storage.service';
-
-interface AuthenticatedRequest extends ExpressRequest {
-  user: SafeUserDto;
-}
 
 const billingUploadInterceptor = AnyFilesInterceptor({
   fileFilter: secureFileFilter,
@@ -101,7 +95,6 @@ export class StorageController {
   @Roles(Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER)
   async createCustomerFolder(
     @Body() body: CreateCustomerFolderDto,
-    @Request() req: any,
   ) {
     const folderPath = await this.storageService.createCustomerFolder(
       body.customerId,
@@ -122,7 +115,6 @@ export class StorageController {
     @Param('invoiceId') invoiceId: string,
     @UploadedFiles() files: Express.Multer.File[] | undefined,
     @Body() body: StoreInvoiceBodyDto,
-    @Request() req: any,
   ) {
     const pdfFile = assertPdfFile(findFile(files, 'pdf'));
     const thumbnailFile = assertOptionalImageFile(findFile(files, 'thumbnail'));
@@ -147,7 +139,6 @@ export class StorageController {
     @Param('billId') billId: string,
     @UploadedFiles() files: Express.Multer.File[] | undefined,
     @Body() body: StoreCapturedBillBodyDto,
-    @Request() req: any,
   ) {
     const imageFile = assertImageFile(findFile(files, 'image'));
     const pdfFile = assertOptionalPdfFile(findFile(files, 'pdf'));
@@ -170,7 +161,6 @@ export class StorageController {
   async storePayment(
     @Param('customerId') customerId: string,
     @Body() body: StorePaymentDto,
-    @Request() req: any,
   ) {
     await this.storageService.storePayment(customerId, body.paymentData);
     return { success: true };
@@ -182,7 +172,6 @@ export class StorageController {
   async storeStatement(
     @Param('customerId') customerId: string,
     @UploadedFiles() files: Express.Multer.File[] | undefined,
-    @Request() req: any,
   ) {
     const pdfFile = assertPdfFile(findFile(files, 'pdf'));
     await this.storageService.storeStatement(customerId, pdfFile);
@@ -194,7 +183,6 @@ export class StorageController {
   async deleteFile(
     @Param('customerId') customerId: string,
     @Body() body: DeleteStorageFileDto,
-    @Request() req: any,
   ) {
     return this.storageService.softDeleteFile(customerId, body);
   }
@@ -203,7 +191,6 @@ export class StorageController {
   @Roles(Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN)
   async triggerBackup(
     @Body() body: BackupStorageDto,
-    @Request() req: any,
   ) {
     return this.storageService.createBackup(body.type);
   }
@@ -214,7 +201,6 @@ export class StorageController {
   async uploadToCloud(
     @UploadedFiles() files: Express.Multer.File[] | undefined,
     @Body() body: CloudUploadDto,
-    @Request() req: any,
   ) {
     const file = validateUploadedFile(files?.[0], cloudUploadPolicy);
 

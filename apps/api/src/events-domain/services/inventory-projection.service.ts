@@ -13,7 +13,7 @@ export class InventoryProjectionService {
   /**
    * CQRS Projection: Materializes events into fast-read models in Redis.
    */
-  async updateProjection(shopId: string, productId: string, payload: any) {
+  async updateProjection(shopId: string, productId: string, _payload: any) {
     this.logger.log(`[CQRS Projection] Updating read-model for product ${productId}`);
     
     const redisKey = `projection:inventory:${shopId}:${productId}`;

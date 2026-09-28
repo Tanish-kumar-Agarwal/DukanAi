@@ -11,6 +11,7 @@ import { Roles } from '../auth/roles.decorator';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
+import { AddSynonymDto } from './dto/add-synonym.dto';
 
 const READ_ROLES: Role[] = [Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER, Role.CASHIER, Role.VIEWER];
 const MANAGE_ROLES: Role[] = [Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER];
@@ -83,8 +84,7 @@ export class ProductSearchController {
 
   @Post('synonyms')
   @Roles(...MANAGE_ROLES)
-  async addSynonym(@Body() body: { term?: string; synonyms?: string }, @CurrentShop() shopId: string) {
-    if (!body?.term || !body?.synonyms) throw new BadRequestException('Invalid payload');
+  async addSynonym(@Body() body: AddSynonymDto, @CurrentShop() shopId: string) {
     return this.synonymEngine.addSynonym(shopId, body.term, body.synonyms);
   }
 

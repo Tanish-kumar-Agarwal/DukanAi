@@ -2,6 +2,7 @@ import { Injectable, BadRequestException, NotFoundException } from '@nestjs/comm
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 import { CreateLocationDto } from '../dto/warehouse.dto';
+import { assertOwned } from '../../prisma/tenant-ownership';
 
 @Injectable()
 export class LocationHierarchyService {
@@ -15,6 +16,7 @@ export class LocationHierarchyService {
    */
   async createLocation(dto: CreateLocationDto) {
     const shopId = this.tenantContext.getShopId();
+    await assertOwned(this.prisma, 'warehouse', dto.warehouseId, shopId, { isDeleted: false });
 
     // Prevent duplicate codes within same warehouse
     const existing = await this.prisma.location.findUnique({

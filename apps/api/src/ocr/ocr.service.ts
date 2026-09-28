@@ -126,7 +126,7 @@ Example: [{"rawName": "Maggi Noodles", "qty": 2, "price": 14.50}]`;
     const matched = await Promise.all(extractedItems.map(async (item) => {
       const keywords = item.rawName.split(' ').filter((k: string) => k.length > 2);
       
-      let whereClause: any = { shopId, isDeleted: false, isActive: true };
+      const whereClause: any = { shopId, isDeleted: false, isActive: true };
       if (keywords.length > 0) {
         whereClause.AND = keywords.map((kw: string) => ({
           name: { contains: kw, mode: 'insensitive' }

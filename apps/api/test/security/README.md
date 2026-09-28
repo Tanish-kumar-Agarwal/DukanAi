@@ -1,0 +1,34 @@
+# Security regression suite
+
+Every spec here asserts the **secure** behaviour the repository audit found
+missing, against the real application (MySQL + Redis, same harness as the
+integration suites). The suite runs with `npm run test:integration` (so CI
+never skips it) or on its own with `npm run test:security`.
+
+## The `it.failing` convention
+
+A finding that is still open is written with `it.failing(...)`: jest runs the
+test and passes only while the assertion **fails**. The moment a later roadmap
+phase fixes the behaviour the test starts to pass, jest reports
+"Failing test passed even though it was supposed to fail", and the developer
+flips `it.failing` to `it` in the same change. Nothing is skipped, CI stays
+meaningful, and the list of `it.failing` calls is the live count of open
+findings. A test written with plain `it` is a control that proves the harness
+exercises the real guard (for example a VIEWER is refused on `POST /products`).
+
+Never delete or skip a failing test to get green. Fix the behaviour and flip it.
+
+## Coverage
+
+| Spec | Audit finding | Roadmap phase |
+|---|---|---|
+| `authorization.security-spec.ts` | P0-1 shop profile mass assignment (role escalation, cross-shop `connect`) | 1 |
+| `authorization.security-spec.ts` | P0-2 writes without a role check (stock adjustment, reservation lock) | 1 |
+| `authorization.security-spec.ts` | P0-3 cross-shop batch stock, vendor bill supplier, revision compare | 1 |
+| `money.security-spec.ts` | P1-1 partial returns refund more than the sale | 3 |
+| `money.security-spec.ts` | P1-2 ledger running balance overflows at 10 crore | 3 |
+| `authentication.security-spec.ts` | P1-4 lockout revokes sessions already open | 2 |
+| `authentication.security-spec.ts` | P1-5 placeholder JWT secret accepted | 2 |
+| `authentication.security-spec.ts` | P1-6 auth bypass reachable without `NODE_ENV` | 2 |
+| `authentication.security-spec.ts` | P2-10 long User-Agent breaks login | 2 |
+| `authentication.security-spec.ts` | P1-9 uploads buffered without a size limit | 5 |

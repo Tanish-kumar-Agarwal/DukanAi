@@ -33,7 +33,7 @@ export class ReturnRefundWorker extends WorkerHost {
     
     // In production, this pings the Gateway (Stripe/Razorpay) to process
     // the refund asynchronously to avoid blocking the Returns API.
-    const { returnOrderId, refundAmount } = job.data;
+    const { returnOrderId } = job.data;
     
     // Update ReturnOrder refundStatus
     await this.prisma.returnOrder.update({

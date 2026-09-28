@@ -1,6 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BullConfig } from '../../config/domains/bull.config';
 

@@ -1,8 +1,11 @@
-import { Controller, Post, Get, Body, Param, UseGuards, Req, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, UseGuards, Req } from '@nestjs/common';
 import { ProductValidationService } from './product-validation.service';
 import { ValidationRuleEngine } from './validation-rule.engine';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
+import { BulkValidationDto } from './dto/bulk-validation.dto';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('products')
@@ -12,18 +15,16 @@ export class ProductValidationController {
     private readonly ruleEngine: ValidationRuleEngine,
   ) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post(':id/validate')
   async validateProduct(@Param('id') productId: string, @Req() req: any) {
     // Synchronous execution for immediate feedback
     return this.validationService.executeValidation(req.shop.id, productId);
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('bulk-validation')
-  async bulkValidate(@Body() body: { productIds: string[] }, @Req() req: any) {
-    if (!body.productIds || body.productIds.length === 0) {
-      throw new BadRequestException('Provide at least one productId');
-    }
-    
+  async bulkValidate(@Body() body: BulkValidationDto, @Req() req: any) {
     // Async execution for bulk
     for (const id of body.productIds) {
       await this.validationService.queueValidation(req.shop.id, id);

@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
+import { GenerateInvoiceDto } from '../dto/generate-invoice.dto';
 
 @Injectable()
 export class InvoiceValidationEngine {
@@ -6,7 +7,7 @@ export class InvoiceValidationEngine {
   /**
    * Validates structural and mathematical integrity of an invoice payload before saving.
    */
-  validatePayload(payload: any) {
+  validatePayload(payload: GenerateInvoiceDto) {
     if (!payload.lines || payload.lines.length === 0) {
       throw new BadRequestException('Invoice must contain at least one line item.');
     }
