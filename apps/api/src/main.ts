@@ -8,6 +8,7 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
 import helmet from 'helmet';
 import { AuthenticatedIoAdapter } from './iam/websockets/authenticated-io.adapter';
 import { AppConfig, Environment } from './config/domains/app.config';
+import { applyTrustProxy } from './common/http/trust-proxy';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -34,8 +35,12 @@ async function bootstrap() {
   // Helmet Security
   app.use(helmet());
 
-  // Strict CORS Lockdown
   const appConfig = app.get(AppConfig);
+
+  // Reverse proxies: decides what req.ip is (rate limiting, login audit rows).
+  applyTrustProxy(app, appConfig.trustProxy, logger);
+
+  // Strict CORS Lockdown
   const frontendUrl = appConfig.frontendUrl;
   app.enableCors({
     origin: frontendUrl.split(',').map((s: string) => s.trim()),

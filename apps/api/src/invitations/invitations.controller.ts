@@ -9,6 +9,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Public } from '../auth/public.decorator';
+import { AuthThrottle } from '../common/throttling/auth-throttle.decorator';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiResponse } from '@nestjs/swagger';
 
 @ApiTags('invitations')
@@ -29,6 +30,7 @@ export class InvitationsController {
   }
 
   @Public()
+  @AuthThrottle()
   @Post('accept')
   @ApiOperation({ summary: 'Accept an invitation and register an account' })
   @ApiResponse({ status: 201, description: 'User successfully created' })

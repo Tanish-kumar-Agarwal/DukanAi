@@ -16,6 +16,7 @@ import type { Request as ExpressRequest } from 'express';
 import { GoogleAuthDto } from './dto/google-auth.dto';
 import { GoogleIdentityService } from './google-identity.service';
 import { AnyAuthenticated } from './/any-authenticated.decorator';
+import { AuthThrottle } from '../common/throttling/auth-throttle.decorator';
 
 interface AuthenticatedRequest extends ExpressRequest {
   user: SafeUserDto;
@@ -31,6 +32,7 @@ export class AuthController {
   ) {}
 
   @Public()
+  @AuthThrottle()
   @Post('register')
   @ApiOperation({ summary: 'Register a new user (defaults to CASHIER role for security)' })
   @ApiBody({ type: CreateUserDto })
@@ -49,6 +51,7 @@ export class AuthController {
   }
 
   @Public()
+  @AuthThrottle()
   @UseGuards(LocalAuthGuard)
   @Post('login')
   @ApiOperation({ summary: 'Login with email and password' })
@@ -57,6 +60,7 @@ export class AuthController {
   }
 
   @Public()
+  @AuthThrottle()
   @Post('google')
   @ApiOperation({ summary: 'Authenticate or register via Google OAuth' })
   @ApiBody({ type: GoogleAuthDto })
@@ -72,6 +76,7 @@ export class AuthController {
   }
 
   @Public()
+  @AuthThrottle()
   @Post('refresh')
   @ApiOperation({ summary: 'Refresh access token using refresh token' })
   @ApiBody({ schema: { type: 'object', properties: { refresh_token: { type: 'string' } } } })

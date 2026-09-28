@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigDomain, EnvVariable } from '../registry/registry.decorators';
 import { IsNumber, IsString, IsEnum } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { IsTrustProxySetting } from '../../common/http/trust-proxy';
 
 export enum Environment {
   Development = 'development',
@@ -24,4 +25,14 @@ export class AppConfig {
   @IsString()
   @EnvVariable('FRONTEND_URL')
   readonly frontendUrl: string;
+
+  /**
+   * Express `trust proxy` setting (see `common/http/trust-proxy.ts`): `false`
+   * trusts no proxy, a number is the hop count, or named ranges / IPs / CIDRs.
+   * Decides what `req.ip` is, and with it whom the rate limiter counts.
+   */
+  @IsString()
+  @IsTrustProxySetting()
+  @EnvVariable('TRUST_PROXY')
+  readonly trustProxy: string = 'false';
 }

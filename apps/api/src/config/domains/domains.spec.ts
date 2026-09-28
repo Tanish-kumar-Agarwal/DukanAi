@@ -10,29 +10,45 @@ import { CacheConfig } from './cache.config';
 
 describe('Configuration Domains', () => {
   describe('SecurityConfig', () => {
-    it('should hydrate defaults correctly when no env variables are provided', () => {
-      const config = plainToInstance(SecurityConfig, {}, { enableImplicitConversion: true });
+    it('keeps the defaults (millisecond windows) when no env variables are provided', () => {
+      const config = hydrateFromEnv(SecurityConfig, {});
       expect(config.bcryptRounds).toBe(10);
-      expect(config.rateLimitShortTtl).toBe(1000);
+      expect(config.rateLimitShortTtlMs).toBe(10000);
+      expect(config.rateLimitMediumTtlMs).toBe(60000);
+      expect(config.rateLimitLongTtlMs).toBe(3600000);
+      expect(config.authRateLimitShortLimit).toBe(5);
       expect(config.maxLoginAttempts).toBe(5);
+      expect(validateSync(config)).toEqual([]);
     });
 
-    it('should hydrate values correctly from environment variables', () => {
-      const env = {
+    it('hydrates values from environment variables', () => {
+      const config = hydrateFromEnv(SecurityConfig, {
         BCRYPT_ROUNDS: '12',
-        RATE_LIMIT_SHORT_TTL: '2000',
+        RATE_LIMIT_SHORT_TTL_MS: '2000',
+        AUTH_RATE_LIMIT_SHORT_LIMIT: '3',
         SECURITY_MAX_LOGIN_ATTEMPTS: '10',
-      };
-      const config = plainToInstance(SecurityConfig, env, { enableImplicitConversion: true });
+      });
       expect(config.bcryptRounds).toBe(12);
-      expect(config.rateLimitShortTtl).toBe(2000);
+      expect(config.rateLimitShortTtlMs).toBe(2000);
+      expect(config.authRateLimitShortLimit).toBe(3);
       expect(config.maxLoginAttempts).toBe(10);
+      expect(validateSync(config)).toEqual([]);
     });
 
-    it('should pass validation with valid values', () => {
-      const config = plainToInstance(SecurityConfig, {}, { enableImplicitConversion: true });
-      const errors = validateSync(config);
-      expect(errors.length).toBe(0);
+    it('ignores the old second-based RATE_LIMIT_*_TTL keys instead of reading them as milliseconds', () => {
+      const config = hydrateFromEnv(SecurityConfig, { RATE_LIMIT_SHORT_TTL: '10', RATE_LIMIT_LONG_TTL: '3600' });
+      expect(config.rateLimitShortTtlMs).toBe(10000);
+      expect(config.rateLimitLongTtlMs).toBe(3600000);
+    });
+
+    it.each([
+      ['a sub-second window', { RATE_LIMIT_SHORT_TTL_MS: '10' }, 'rateLimitShortTtlMs'],
+      ['a non-integer window', { RATE_LIMIT_MEDIUM_TTL_MS: 'soon' }, 'rateLimitMediumTtlMs'],
+      ['a zero limit', { AUTH_RATE_LIMIT_LONG_LIMIT: '0' }, 'authRateLimitLongLimit'],
+      ['a bcrypt cost outside 4..31', { BCRYPT_ROUNDS: '3' }, 'bcryptRounds'],
+    ])('rejects %s', (_label, env, property) => {
+      const errors = validateSync(hydrateFromEnv(SecurityConfig, env));
+      expect(errors.map((e) => e.property)).toEqual([property]);
     });
   });
 

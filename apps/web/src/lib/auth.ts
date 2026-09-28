@@ -44,6 +44,24 @@ function accessTokenExpiryFor(accessToken: string): number {
   return decodeJwtExpiryMs(accessToken) ?? Date.now() + FALLBACK_ACCESS_LIFETIME_MS;
 }
 
+// ---------------------------------------------------------------------------
+// The API rate-limits sign-in and refresh per client address. Every call below
+// is made by this server, so without help the API would see one address for
+// every user of the deployment. Forward the browser's address (Next.js fills
+// `x-forwarded-for` from the socket when no proxy set it); the API honours it
+// only where TRUST_PROXY covers this server.
+// ---------------------------------------------------------------------------
+async function forwardedClientHeaders(): Promise<Record<string, string>> {
+  try {
+    const { headers } = await import('next/headers');
+    const forwardedFor = headers().get('x-forwarded-for');
+    return forwardedFor ? { 'X-Forwarded-For': forwardedFor } : {};
+  } catch {
+    // next/headers unavailable outside a request scope — nothing to forward
+    return {};
+  }
+}
+
 type ProvisionResult =
   | { ok: true; user: DukaanUser }
   | { ok: false; reason: 'rejected' | 'unreachable' };
@@ -55,7 +73,7 @@ async function provisionUserFromBackend(
   try {
     res = await fetch(`${API_URL}/auth/${payload.googleId ? 'google' : 'login'}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await forwardedClientHeaders()) },
       body: JSON.stringify(payload),
     });
   } catch (error) {
@@ -105,7 +123,7 @@ async function exchangeRefreshToken(refreshToken: string): Promise<RefreshOutcom
   try {
     const res = await fetch(`${API_URL}/auth/refresh`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await forwardedClientHeaders()) },
       body: JSON.stringify({ refresh_token: refreshToken }),
     });
     const data = await res.json().catch(() => null);

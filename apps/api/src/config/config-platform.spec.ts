@@ -19,7 +19,7 @@ describe('Configuration Platform Integration', () => {
       SALES_ENABLE_CREDIT_LIMITS: 'false',
       SALES_DEFAULT_CREDIT_LIMIT: '50000',
       SECURITY_MAX_LOGIN_ATTEMPTS: '7',
-      RATE_LIMIT_SHORT_TTL: '500',
+      RATE_LIMIT_SHORT_TTL_MS: '5000',
       CRON_SALES_OUTBOX_RELAY: '0 0 29 2 *',
       CRON_ENABLED: 'false',
       CACHE_CUSTOMER_SEARCH_TTL_MS: '15000',
@@ -73,7 +73,7 @@ describe('Configuration Platform Integration', () => {
     const securityConfig = module.get<SecurityConfig>(SecurityConfig);
     expect(securityConfig).toBeDefined();
     expect(securityConfig.maxLoginAttempts).toBe(7); // from EnvVariable
-    expect(securityConfig.rateLimitShortTtl).toBe(500); // from EnvVariable
+    expect(securityConfig.rateLimitShortTtlMs).toBe(5000); // from EnvVariable
     expect(securityConfig.bcryptRounds).toBe(10); // default
   });
 

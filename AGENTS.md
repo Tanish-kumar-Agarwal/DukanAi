@@ -214,6 +214,22 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   from the parent); nested creates must set it, and `BatchStock`'s unique key
   is `(shopId, batchId, inventoryItemId)`.
 
+## Rate limiting and proxies (roadmap 2.1)
+
+- `SecurityConfig` windows are milliseconds (`RATE_LIMIT_*_TTL_MS`, under
+  1000 fails boot); the old second-based `RATE_LIMIT_*_TTL` keys are not read.
+  Counters live in Redis (`RedisThrottlerStorage`, keys `throttle:{...}`) and
+  degrade to the per-process storage when Redis is down. Routes that take
+  credentials carry `@AuthThrottle()` (login, register, refresh, google,
+  invitation accept) and get the `AUTH_RATE_LIMIT_*` limits instead of the
+  general ones (`src/common/throttling`). `.env.test` opens every window wide;
+  `test/integration/rate-limit.integration-spec.ts` proves the limiter with its
+  own overrides and clears `throttle:*` before and after.
+- The tracker is `req.ip`, so `TRUST_PROXY` (Express `trust proxy`, applied in
+  `main.ts`) decides whether `X-Forwarded-For` counts. Every sign-in and
+  refresh call reaches the API from the web server, which forwards the
+  browser's address (`apps/web/src/lib/auth.ts`); count it as a hop.
+
 ## Auth bypass flag
 
 - `AUTH_DISABLED` (API) + `NEXT_PUBLIC_AUTH_DISABLED` (web, build-time) disable

@@ -74,6 +74,7 @@ function validateConfig<T extends object>(configClass: T): T {
           nodeEnv: (process.env.NODE_ENV as Environment) || Environment.Development,
           port: parseInt(process.env.PORT || '3002', 10),
           frontendUrl: process.env.FRONTEND_URL,
+          trustProxy: process.env.TRUST_PROXY?.trim() || 'false',
         });
         return validateConfig(config);
       },
@@ -283,9 +284,7 @@ function validateConfig<T extends object>(configClass: T): T {
     },
     {
       provide: SecurityConfig,
-      useFactory: () => {
-        return validateConfig(plainToInstance(SecurityConfig, process.env, { enableImplicitConversion: true }));
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(SecurityConfig)),
     },
     {
       provide: CorsConfig,

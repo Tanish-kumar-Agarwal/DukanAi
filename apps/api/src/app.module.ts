@@ -24,6 +24,10 @@ import { CacheModule } from '@nestjs/cache-manager';
 import { CustomersModule } from './customers/customers.module';
 import { OcrModule } from './ocr/ocr.module';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import type Redis from 'ioredis';
+import { REDIS_CLIENT } from './common/redis/redis.module';
+import { RedisThrottlerStorage } from './common/throttling/redis-throttler.storage';
+import { buildThrottlerOptions } from './common/throttling/throttler-options';
 import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RolesGuard } from './auth/roles.guard';
@@ -119,13 +123,12 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
         },
       }),
     }),
+    // Per-IP rate limits with counters in Redis (shared by every instance);
+    // routes marked @AuthThrottle() get the stricter AUTH_RATE_LIMIT_* limits.
     ThrottlerModule.forRootAsync({
-      inject: [SecurityConfig],
-      useFactory: (securityConfig: SecurityConfig) => [
-        { name: 'short', ttl: securityConfig.rateLimitShortTtl, limit: securityConfig.rateLimitShortLimit },
-        { name: 'medium', ttl: securityConfig.rateLimitMediumTtl, limit: securityConfig.rateLimitMediumLimit },
-        { name: 'long', ttl: securityConfig.rateLimitLongTtl, limit: securityConfig.rateLimitLongLimit },
-      ],
+      inject: [SecurityConfig, REDIS_CLIENT],
+      useFactory: (securityConfig: SecurityConfig, redis: Redis) =>
+        buildThrottlerOptions(securityConfig, new RedisThrottlerStorage(redis)),
     }),
     PrismaModule,
     StorageModule,
