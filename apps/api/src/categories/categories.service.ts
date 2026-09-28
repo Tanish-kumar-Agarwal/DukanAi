@@ -121,7 +121,7 @@ export class CategoriesService {
 
   async softDelete(id: string) {
     const shopId = this.tenantContext.getShopId();
-    const category = await this.findOne(id);
+    await this.findOne(id); // existence check: throws NotFoundException
     
     // Check if it has active children
     const childrenCount = await this.prisma.category.count({

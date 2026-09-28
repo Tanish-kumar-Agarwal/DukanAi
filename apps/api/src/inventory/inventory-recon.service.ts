@@ -61,6 +61,10 @@ export class InventoryReconService implements OnApplicationBootstrap {
   ) {}
 
   onApplicationBootstrap() {
+    if (!this.cronConfig.enabled) {
+      this.logger.warn('InventoryRecon schedule not registered: CRON_ENABLED=false');
+      return;
+    }
     const job = new CronJob(this.cronConfig.inventoryReconCron, () => {
       void this.handleCron();
     });

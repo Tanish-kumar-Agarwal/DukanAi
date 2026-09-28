@@ -1,9 +1,11 @@
-import { Controller, Get, Post, Param, UseGuards, Req, Body } from '@nestjs/common';
+import { Controller, Get, Post, UseGuards, Req, Body } from '@nestjs/common';
 import { ProductEventReplayService } from '../../services/event-replay.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { JwtAuthGuard } from '../../../auth/jwt-auth.guard';
 import { TenantGuard } from '../../../iam/guards/tenant.guard';
 import { EventsFeatureConfig } from '../../../config/domains/features/events-feature.config';
+import { MANAGEMENT_ROLES } from '../../../auth/role-sets';
+import { Roles } from '../../../auth/roles.decorator';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('events')
@@ -28,6 +30,7 @@ export class ProductEventsController {
     return this.eventReplay.getMetrics(req.shop.id);
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('replay')
   async replayEvent(@Body('eventId') eventId: string, @Req() req: any) {
     await this.eventReplay.replayEvent(eventId, req.shop.id);

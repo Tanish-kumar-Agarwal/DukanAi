@@ -8,14 +8,14 @@ export class PurchaseReturnValidationService {
    * Enterprise Return Validation
    * Prevents returning more than received.
    */
-  async validateReturnLines(tx: Prisma.TransactionClient, lines: any[]) {
+  async validateReturnLines(tx: Prisma.TransactionClient, shopId: string, lines: any[]) {
     for (const line of lines) {
       if (!line.grnLineId) {
         throw new BadRequestException('Enterprise Compliance Violation: Purchase Return Line must explicitly reference a valid GRN Line.');
       }
 
-      const grnLine = await tx.goodsReceiptLine.findUnique({
-        where: { id: line.grnLineId }
+      const grnLine = await tx.goodsReceiptLine.findFirst({
+        where: { id: line.grnLineId, shopId }
       });
 
       if (!grnLine) {
@@ -23,7 +23,7 @@ export class PurchaseReturnValidationService {
       }
 
       const previouslyReturnedAgg = await tx.purchaseReturnLine.aggregate({
-        where: { grnLineId: line.grnLineId },
+        where: { grnLineId: line.grnLineId, shopId },
         _sum: { returnQuantity: true }
       });
       const previouslyReturned = new Decimal(previouslyReturnedAgg._sum.returnQuantity || 0);

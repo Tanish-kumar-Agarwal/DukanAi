@@ -1,8 +1,9 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateAdjustmentRequestDto } from '../dto/stock-count.dto';
 import { AdjustmentPostingService } from './adjustment-posting.service';
-import { AdjustmentStatus, Prisma } from '@prisma/client';
+import { AdjustmentStatus } from '@prisma/client';
+import { assertOwned } from '../../prisma/tenant-ownership';
 
 @Injectable()
 export class AdjustmentApprovalService {
@@ -21,6 +22,8 @@ export class AdjustmentApprovalService {
    * flags large ones for manual management review.
    */
   async requestAdjustment(shopId: string, requestedByUserId: string, dto: CreateAdjustmentRequestDto) {
+    await assertOwned(this.prisma, 'inventoryItem', dto.inventoryItemId, shopId);
+    await assertOwned(this.prisma, 'stockCountItem', dto.countItemId, shopId);
     const isAutoApprovable = Math.abs(dto.requestedQuantityDelta) <= this.AUTO_APPROVE_THRESHOLD;
 
     const request = await this.prisma.adjustmentRequest.create({
@@ -52,6 +55,14 @@ export class AdjustmentApprovalService {
    * Called by a Manager to approve a pending request.
    */
   async approveAdjustment(shopId: string, adjustmentId: string, managerUserId: string) {
+    const request = await this.prisma.adjustmentRequest.findFirst({
+      where: { id: adjustmentId, shopId, status: AdjustmentStatus.PENDING_APPROVAL },
+      select: { requestedById: true },
+    });
+    if (!request) throw new NotFoundException('Pending adjustment request not found');
+    // Separation of duties: the requester of a stock adjustment cannot approve it.
+    if (request.requestedById === managerUserId) throw new ForbiddenException('The person who requested a stock adjustment cannot approve it.');
+
     await this.prisma.adjustmentRequest.update({
       where: { id: adjustmentId, shopId, status: AdjustmentStatus.PENDING_APPROVAL },
       data: {

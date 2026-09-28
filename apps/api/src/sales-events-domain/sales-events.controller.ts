@@ -7,6 +7,8 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { SalesFeatureConfig } from '../config/domains/features/sales-feature.config';
 import { SALES_EVENT_JOB_ID_PREFIX } from './workers/sales-outbox-relay.cron';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('sales/events')
@@ -47,6 +49,7 @@ export class SalesEventsController {
    * event. A stale BullMQ job under that id (failed, or completed and retained)
    * would make the relay's addBulk a silent no-op, so it is removed first.
    */
+  @Roles(...MANAGEMENT_ROLES)
   @Post('retry')
   async retryEvent(@CurrentShop() shopId: string, @Body('eventId') eventId: string) {
     const event = await this.prisma.outboxEvent.findUnique({

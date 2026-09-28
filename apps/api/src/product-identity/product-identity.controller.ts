@@ -7,6 +7,9 @@ import { BarcodeFormat } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
 import type { Response } from 'express';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
+import { AssignBarcodeDto } from './dto/assign-barcode.dto';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('product-identity')
@@ -17,10 +20,11 @@ export class ProductIdentityController {
     private readonly identityAudit: IdentityAuditService,
   ) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('products/:id/barcode')
   async assignBarcodeToProduct(
     @Param('id') productId: string,
-    @Body() body: { code: string; format: BarcodeFormat },
+    @Body() body: AssignBarcodeDto,
     @Req() req: any,
   ) {
     return this.productIdentityService.generateBarcode({
@@ -32,10 +36,11 @@ export class ProductIdentityController {
     });
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('variants/:id/barcode')
   async assignBarcodeToVariant(
     @Param('id') variantId: string,
-    @Body() body: { code: string; format: BarcodeFormat },
+    @Body() body: AssignBarcodeDto,
     @Req() req: any,
   ) {
     return this.productIdentityService.generateBarcode({

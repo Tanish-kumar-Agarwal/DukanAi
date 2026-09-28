@@ -37,7 +37,7 @@ export class EventsDlqService {
     });
   }
 
-  async retryDeadLetter(shopId: string, deadLetterId: string) {
+  async retryDeadLetter(_shopId: string, _deadLetterId: string) {
     // Moves back to Outbox status PENDING, sets DLQ to RESOLVED
     return { success: true, message: 'Re-queued to Outbox' };
   }

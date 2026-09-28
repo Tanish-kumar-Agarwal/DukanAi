@@ -1,5 +1,7 @@
 import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
+import { hydrateFromEnv } from '../hydrate-from-env';
+import { CronConfig } from './cron.config';
 import { validateSync } from 'class-validator';
 import { SecurityConfig } from './security.config';
 import { BullConfig } from './bull.config';
@@ -88,11 +90,71 @@ describe('Configuration Domains', () => {
     });
   });
 
-  describe('CacheConfig', () => {
-    it('should hydrate from defaults', () => {
-      const config = plainToInstance(CacheConfig, {}, { enableImplicitConversion: true });
+  describe('CacheConfig (hydrateFromEnv)', () => {
+    it('keeps every default when nothing is set, including fields without their own transform', () => {
+      const config = hydrateFromEnv(CacheConfig, {});
+      expect(validateSync(config)).toEqual([]);
       expect(config.ttl).toBe(3600000);
       expect(config.maxItems).toBe(1000);
+      expect(config.customerSearchTtlMs).toBe(60000);
+      expect(config.analyticsKpiTtlMs).toBe(60000);
+    });
+
+    it('reads integers from the environment, allows 0 and treats blank as unset', () => {
+      const config = hydrateFromEnv(CacheConfig, { CACHE_TTL: '0', CACHE_ANALYTICS_KPI_TTL_MS: ' 250 ', CACHE_MAX_ITEMS: '' });
+      expect(validateSync(config)).toEqual([]);
+      expect(config.ttl).toBe(0);
+      expect(config.analyticsKpiTtlMs).toBe(250);
+      expect(config.maxItems).toBe(1000);
+    });
+
+    it('rejects values that are not integers instead of silently using the default', () => {
+      for (const bad of ['abc', '1.5', '10ms']) {
+        const errors = validateSync(hydrateFromEnv(CacheConfig, { CACHE_INVOICE_TTL_MS: bad }));
+        expect(errors.map((e) => e.property)).toEqual(['invoiceTtlMs']);
+      }
+      expect(validateSync(hydrateFromEnv(CacheConfig, { CACHE_TTL: '-1' })).map((e) => e.property)).toEqual(['ttl']);
+    });
+
+    it('copies only declared variables, never the rest of the environment', () => {
+      const config = hydrateFromEnv(CacheConfig, { JWT_SECRET: 'top-secret', CACHE_TTL: '5' });
+      expect(config).not.toHaveProperty('JWT_SECRET');
+      expect(config.ttl).toBe(5);
+    });
+  });
+
+  describe('CronConfig (hydrateFromEnv)', () => {
+    it('keeps the defaults when nothing is set', () => {
+      const config = hydrateFromEnv(CronConfig, {});
+      expect(validateSync(config)).toEqual([]);
+      expect(config.salesOutboxRelayCron).toBe('* * * * * *');
+      expect(config.analyticsJobCron).toBe('0 0 * * *');
+    });
+
+    it('reads schedules from the environment; blank keeps the default', () => {
+      const config = hydrateFromEnv(CronConfig, { CRON_SALES_OUTBOX_RELAY: ' 0 0 29 2 * ', CRON_ANALYTICS_JOB: '' });
+      expect(validateSync(config)).toEqual([]);
+      expect(config.salesOutboxRelayCron).toBe('0 0 29 2 *');
+      expect(config.analyticsJobCron).toBe('0 0 * * *');
+    });
+
+    it('reads the CRON_ENABLED switch and rejects anything that is not a boolean', () => {
+      expect(hydrateFromEnv(CronConfig, {}).enabled).toBe(true);
+      expect(hydrateFromEnv(CronConfig, { CRON_ENABLED: 'false' }).enabled).toBe(false);
+      expect(hydrateFromEnv(CronConfig, { CRON_ENABLED: 'FALSE' }).enabled).toBe(false);
+      expect(hydrateFromEnv(CronConfig, { CRON_ENABLED: '' }).enabled).toBe(true);
+      expect(validateSync(hydrateFromEnv(CronConfig, { CRON_ENABLED: 'maybe' })).map((e) => e.property)).toEqual(['enabled']);
+    });
+
+    it('rejects a schedule that can never run (CronJob.start() would throw on it)', () => {
+      const errors = validateSync(hydrateFromEnv(CronConfig, { CRON_SALES_OUTBOX_RELAY: '0 0 31 2 *' }));
+      expect(errors.map((e) => e.property)).toEqual(['salesOutboxRelayCron']);
+    });
+
+    it('rejects an invalid cron expression with the property named', () => {
+      const errors = validateSync(hydrateFromEnv(CronConfig, { CRON_INVENTORY_RECON: 'every 5 minutes' }));
+      expect(errors.map((e) => e.property)).toEqual(['inventoryReconCron']);
+      expect(Object.values(errors[0].constraints ?? {}).join()).toContain('valid cron expression');
     });
   });
 });

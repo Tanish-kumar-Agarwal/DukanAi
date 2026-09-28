@@ -21,8 +21,12 @@ export class PurchaseOutboxRelayCron implements OnApplicationBootstrap {
   ) {}
 
   onApplicationBootstrap() {
+    if (!this.cronConfig.enabled) {
+      this.logger.warn('PurchaseOutboxRelayCron schedule not registered: CRON_ENABLED=false');
+      return;
+    }
     const job = new CronJob(this.cronConfig.purchaseOutboxRelayCron, () => {
-      this.relayPendingEvents();
+      void this.relayPendingEvents();
     });
     this.schedulerRegistry.addCronJob('PurchaseOutboxRelayCron', job);
     job.start();

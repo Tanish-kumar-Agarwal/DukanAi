@@ -1,3 +1,4 @@
+import { writeSync } from 'fs';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';
@@ -73,6 +74,6 @@ async function bootstrap() {
 }
 bootstrap().catch((error) => {
   const msg = `\n\n[Bootstrap FATAL]: ${error?.stack || error?.message || error}\n\n`;
-  require('fs').writeSync(2, msg);
+  writeSync(2, msg);
   process.exit(1);
 });

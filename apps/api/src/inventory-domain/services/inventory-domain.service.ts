@@ -9,6 +9,7 @@ import { InventoryMutationEngine, MutationType } from './inventory-mutation.engi
 import { OptimisticLockConflictError, InsufficientStockError } from '../errors/inventory.errors';
 import { InventoryLocationService } from './inventory-location.service';
 import { InventoryCacheService } from '../../inventory/inventory-cache.service';
+import { assertOwned } from '../../prisma/tenant-ownership';
 
 @Injectable()
 export class InventoryDomainService {
@@ -27,6 +28,8 @@ export class InventoryDomainService {
 
   async ensureInventoryItem(productId: string, variantId?: string, explicitLocationId?: string) {
     const shopId = this.tenantContext.getShopId();
+    await assertOwned(this.prisma, 'product', productId, shopId, { isDeleted: false });
+    await assertOwned(this.prisma, 'productVariant', variantId, shopId);
 
     // 1. Resolve Location: explicit ids must belong to this shop; otherwise use the sale location.
     let locationId: string;

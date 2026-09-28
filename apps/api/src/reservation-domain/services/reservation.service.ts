@@ -5,6 +5,7 @@ import { ReservationValidationService } from './reservation-validation.service';
 import { AllocationService } from './allocation.service';
 import { ReservationStatus } from '@prisma/client';
 import { EventPublisherService } from '../../events-domain/services/event-publisher.service';
+import { assertOwnedMany } from '../../prisma/tenant-ownership';
 
 @Injectable()
 export class ReservationService {
@@ -21,6 +22,9 @@ export class ReservationService {
    * Creates a reservation, locking the inventory physically.
    */
   async createReservation(shopId: string, dto: CreateReservationDto) {
+    await assertOwnedMany(this.prisma, 'product', dto.items.map((i) => i.productId), shopId, { isDeleted: false });
+    await assertOwnedMany(this.prisma, 'productVariant', dto.items.map((i) => i.variantId), shopId);
+
     // 1. Pre-flight Validation check (prevent obvious oversells before entering the transaction)
     for (const item of dto.items) {
       await this.validation.validateAvailabilityOrThrow(

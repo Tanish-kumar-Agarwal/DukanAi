@@ -1,10 +1,12 @@
 import 'reflect-metadata';
 import { Test, TestingModule } from '@nestjs/testing';
-import { EnterpriseConfigModule } from '../src/config/enterprise-config.module';
-import { ConfigurationRegistryModule } from '../src/config/registry/configuration-registry.module';
-import { RuntimeValidationModule } from '../src/config/validation/runtime-validation.module';
-import { SalesFeatureConfig } from '../src/config/domains/features/sales-feature.config';
-import { SecurityConfig } from '../src/config/domains/security.config';
+import { EnterpriseConfigModule } from './enterprise-config.module';
+import { ConfigurationRegistryModule } from './registry/configuration-registry.module';
+import { RuntimeValidationModule } from './validation/runtime-validation.module';
+import { SalesFeatureConfig } from './domains/features/sales-feature.config';
+import { SecurityConfig } from './domains/security.config';
+import { CronConfig } from './domains/cron.config';
+import { CacheConfig } from './domains/cache.config';
 
 describe('Configuration Platform Integration', () => {
   let module: TestingModule;
@@ -18,6 +20,10 @@ describe('Configuration Platform Integration', () => {
       SALES_DEFAULT_CREDIT_LIMIT: '50000',
       SECURITY_MAX_LOGIN_ATTEMPTS: '7',
       RATE_LIMIT_SHORT_TTL: '500',
+      CRON_SALES_OUTBOX_RELAY: '0 0 29 2 *',
+      CRON_ENABLED: 'false',
+      CACHE_CUSTOMER_SEARCH_TTL_MS: '15000',
+      CACHE_TTL: '',
       DATABASE_URL: 'postgres://localhost/test',
       REDIS_URL: 'redis://localhost:6379',
       JWT_SECRET: 'secret',
@@ -69,5 +75,19 @@ describe('Configuration Platform Integration', () => {
     expect(securityConfig.maxLoginAttempts).toBe(7); // from EnvVariable
     expect(securityConfig.rateLimitShortTtl).toBe(500); // from EnvVariable
     expect(securityConfig.bcryptRounds).toBe(10); // default
+  });
+
+  it('hydrates CronConfig from the environment (schedulers read this, tests rely on it)', () => {
+    const cron = module.get<CronConfig>(CronConfig);
+    expect(cron.salesOutboxRelayCron).toBe('0 0 29 2 *'); // from EnvVariable
+    expect(cron.enabled).toBe(false); // from EnvVariable
+    expect(cron.analyticsJobCron).toBe('0 0 * * *'); // default
+  });
+
+  it('hydrates CacheConfig from the environment; a blank variable keeps the default', () => {
+    const cache = module.get<CacheConfig>(CacheConfig);
+    expect(cache.customerSearchTtlMs).toBe(15000); // from EnvVariable
+    expect(cache.ttl).toBe(3600000); // CACHE_TTL='' keeps the default
+    expect(cache).not.toHaveProperty('JWT_SECRET'); // only declared variables are copied
   });
 });

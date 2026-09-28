@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { CapturePaymentDto } from '../dto/capture-payment.dto';
 
 @Injectable()
 export class PaymentValidationEngine {
@@ -8,7 +9,7 @@ export class PaymentValidationEngine {
   /**
    * Validates structural and logical integrity of a payment payload.
    */
-  validatePayload(payload: any) {
+  validatePayload(payload: CapturePaymentDto) {
     if (payload.amount <= 0) {
       throw new BadRequestException('Payment amount must be greater than zero.');
     }
@@ -24,7 +25,7 @@ export class PaymentValidationEngine {
     }
   }
 
-  async validateAllocation(shopId: string, invoiceIds: string[], amount: number) {
+  async validateAllocation(shopId: string, invoiceIds: string[], _amount: number) {
     const invoices = await this.prisma.enterpriseInvoice.findMany({
       where: { id: { in: invoiceIds }, shopId }
     });

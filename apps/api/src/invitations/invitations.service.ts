@@ -48,7 +48,7 @@ export class InvitationsService {
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 2); // 48 hours
 
-    const invite = await this.prisma.invitation.create({
+    await this.prisma.invitation.create({
       data: {
         email: data.email,
         role: data.role,
@@ -121,7 +121,7 @@ export class InvitationsService {
       });
 
       return UserMapper.toSafeUserDto(user);
-    } catch (error) {
+    } catch {
       throw new BadRequestException('Failed to accept invitation. The email might already be registered.');
     }
   }

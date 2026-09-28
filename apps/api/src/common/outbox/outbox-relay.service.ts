@@ -8,6 +8,7 @@ import { Prisma } from '@prisma/client';
 import { EventsFeatureConfig } from '../../config/domains/features/events-feature.config';
 import { CronConfig } from '../../config/domains/cron.config';
 import { buildSystemEventJob, buildSystemEventsTypePredicate, OutboxRelayRow } from './outbox-routing';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 
 /**
  * Relays PENDING OutboxEvent rows that no domain relay owns into the
@@ -26,9 +27,14 @@ export class OutboxRelayService implements OnApplicationBootstrap {
     private readonly eventsConfig: EventsFeatureConfig,
     private readonly cronConfig: CronConfig,
     private readonly schedulerRegistry: SchedulerRegistry,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   onApplicationBootstrap() {
+    if (!this.cronConfig.enabled) {
+      this.logger.warn('EventsOutboxRelayService schedule not registered: CRON_ENABLED=false');
+      return;
+    }
     const job = new CronJob(this.cronConfig.eventsOutboxRelayCron, () => {
       void this.relayEvents();
     });
@@ -36,7 +42,12 @@ export class OutboxRelayService implements OnApplicationBootstrap {
     job.start();
   }
 
-  async relayEvents(): Promise<void> {
+  /** Relays every shop's pending events; runs as the system tenant because the outbox spans shops. */
+  relayEvents(): Promise<void> {
+    return this.tenantContext.runAsSuperAdmin(() => this.relayEventsAsSystem());
+  }
+
+  private async relayEventsAsSystem(): Promise<void> {
     // Overlapping ticks on one pod are pointless; SKIP LOCKED covers other pods.
     if (this.isProcessing) return;
     this.isProcessing = true;

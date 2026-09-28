@@ -4,6 +4,8 @@ import { LocationHierarchyService } from './services/location-hierarchy.service'
 import { CreateWarehouseDto, CreateLocationDto } from './dto/warehouse.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('warehouse-domain')
@@ -13,6 +15,7 @@ export class WarehouseDomainController {
     private readonly locationHierarchy: LocationHierarchyService
   ) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('warehouses')
   async createWarehouse(@Body() dto: CreateWarehouseDto) {
     return this.warehouseService.create(dto);
@@ -28,6 +31,7 @@ export class WarehouseDomainController {
     return this.warehouseService.findOne(id);
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('locations')
   async createLocation(@Body() dto: CreateLocationDto) {
     return this.locationHierarchy.createLocation(dto);

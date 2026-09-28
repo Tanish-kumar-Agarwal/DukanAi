@@ -7,6 +7,8 @@ import { Queue } from 'bullmq';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
 import { ImportExportFeatureConfig } from '../config/domains/features/import-export-feature.config';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('imports')
@@ -18,6 +20,7 @@ export class ImportExportController {
     private readonly importExportFeatureConfig: ImportExportFeatureConfig,
   ) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('products/upload')
   @UseInterceptors(FileInterceptor('file'))
   async uploadImportFile(

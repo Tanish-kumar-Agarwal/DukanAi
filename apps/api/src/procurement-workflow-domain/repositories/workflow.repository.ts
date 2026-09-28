@@ -5,7 +5,9 @@ import { WorkflowEngineService } from '../services/workflow-engine.service';
 import { WorkflowApprovalService } from '../services/workflow-approval.service';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
-import { Prisma, WorkflowStatus } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import { CreateWorkflowDefinitionDto } from '../dto/workflow.dto';
+import { assertOwnedMany } from '../../prisma/tenant-ownership';
 
 @Injectable()
 export class WorkflowRepository {
@@ -24,23 +26,25 @@ export class WorkflowRepository {
     });
   }
 
-  async createDefinition(shopId: string, payload: any) {
+  async createDefinition(shopId: string, payload: CreateWorkflowDefinitionDto) {
     return this.prisma.$transaction(async (tx) => {
+      await assertOwnedMany(tx, 'user', payload.steps.map((s) => s.approverId), shopId, { isDeleted: false });
+      await assertOwnedMany(tx, 'user', payload.steps.map((s) => s.approverId), shopId, { isDeleted: false });
       const def = await tx.workflowDefinition.create({
         data: {
           shopId,
           name: payload.name,
           documentType: payload.documentType,
-          conditions: payload.conditions,
+          conditions: payload.conditions as Prisma.InputJsonValue | undefined,
           steps: {
-            create: payload.steps.map((s: any, idx: number) => ({
+            create: payload.steps.map((s, idx) => ({
               stepOrder: idx + 1,
               name: s.name,
               approverRole: s.approverRole,
               approverId: s.approverId,
               departmentId: s.departmentId,
               isParallel: s.isParallel || false,
-              conditions: s.conditions,
+              conditions: s.conditions as Prisma.InputJsonValue | undefined,
               slaMinutes: s.slaMinutes
             }))
           }

@@ -9,7 +9,7 @@ async function bootstrap() {
   const providerCounts = new Map<any, string[]>();
   const instances = new Map<any, Set<any>>();
 
-  for (const [moduleName, module] of container.entries()) {
+  for (const module of container.values()) {
     for (const [token, wrapper] of module.providers.entries()) {
       // Ignore internal NestJS providers and string tokens
       if (typeof token !== 'function') continue;

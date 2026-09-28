@@ -20,7 +20,6 @@ export class OcrController {
   async scanHandwrittenBill(
     @UploadedFile() file: Express.Multer.File,
     @Body('documentType') documentType: string,
-    @Request() req: any,
   ) {
     if (!file) {
       throw new BadRequestException('No file provided');

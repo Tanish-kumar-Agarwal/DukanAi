@@ -25,6 +25,10 @@ export class AnalyticsJobScheduler implements OnApplicationBootstrap {
   ) {}
 
   onApplicationBootstrap() {
+    if (!this.cronConfig.enabled) {
+      this.logger.warn('AnalyticsJob schedule not registered: CRON_ENABLED=false');
+      return;
+    }
     const job = new CronJob(this.cronConfig.analyticsJobCron, () => {
       this.runDailyAnalytics().catch((error: unknown) => {
         this.logger.error(`Analytics job crashed: ${(error as Error).message}`);

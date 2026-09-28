@@ -5,6 +5,7 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
 import { EventsFeatureConfig } from '../../config/domains/features/events-feature.config';
 import { CronConfig } from '../../config/domains/cron.config';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 
 @Injectable()
 export class OutboxProcessorWorker implements OnApplicationBootstrap {
@@ -16,12 +17,17 @@ export class OutboxProcessorWorker implements OnApplicationBootstrap {
     private readonly eventRouter: EventRouterService,
     private readonly eventsFeatureConfig: EventsFeatureConfig,
     private readonly cronConfig: CronConfig,
-    private readonly schedulerRegistry: SchedulerRegistry
+    private readonly schedulerRegistry: SchedulerRegistry,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   onApplicationBootstrap() {
+    if (!this.cronConfig.enabled) {
+      this.logger.warn('ProductOutboxProcessorWorker schedule not registered: CRON_ENABLED=false');
+      return;
+    }
     const job = new CronJob(this.cronConfig.productOutboxRelayCron, () => {
-      this.processOutbox();
+      void this.processOutbox();
     });
     this.schedulerRegistry.addCronJob('ProductOutboxProcessorWorker', job);
     job.start();
@@ -32,7 +38,12 @@ export class OutboxProcessorWorker implements OnApplicationBootstrap {
    * In a true distributed system, we might use Debezium (CDC) or Prisma Pulse,
    * but polling is fine for this simulated architecture context.
    */
-  async processOutbox() {
+  /** Drains every shop's pending product events; runs as the system tenant because the outbox spans shops. */
+  processOutbox(): Promise<void> {
+    return this.tenantContext.runAsSuperAdmin(() => this.processOutboxAsSystem());
+  }
+
+  private async processOutboxAsSystem(): Promise<void> {
     if (this.isProcessing) return;
     this.isProcessing = true;
 
@@ -71,7 +82,7 @@ export class OutboxProcessorWorker implements OnApplicationBootstrap {
       for (const eventId of eventsToProcess) {
         try {
           await this.eventRouter.routeEvent(eventId);
-        } catch (err) {
+        } catch {
           this.logger.error(`Failed to route event ${eventId}. It will be retried later.`);
         }
       }

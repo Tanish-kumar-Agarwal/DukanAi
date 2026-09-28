@@ -1,5 +1,5 @@
 import { IsString, IsEnum, IsOptional, IsNumber, Min } from 'class-validator';
-import { WarehouseType, LocationType, LocationStatus } from '@prisma/client';
+import { WarehouseType, LocationType } from '@prisma/client';
 
 export class CreateWarehouseDto {
   @IsString()

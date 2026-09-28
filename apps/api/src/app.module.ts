@@ -24,9 +24,10 @@ import { CacheModule } from '@nestjs/cache-manager';
 import { CustomersModule } from './customers/customers.module';
 import { OcrModule } from './ocr/ocr.module';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RolesGuard } from './auth/roles.guard';
+import { RouteAuthorizationAssertion } from './auth/route-authorization.assertion';
 import { TenantGuard } from './iam/guards/tenant.guard';
 import { IamModule } from './iam/iam.module';
 import { CronLockModule } from './common/cron-lock/cron-lock.module';
@@ -103,6 +104,9 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
           port: parseInt(new URL(redisConfig.redisUrl).port || '6379', 10),
           username: new URL(redisConfig.redisUrl).username || undefined,
           password: new URL(redisConfig.redisUrl).password || undefined,
+          // redis://host:port/<db>: queues must live in the configured database, or
+          // environments sharing one Redis server consume each other's jobs.
+          db: parseInt(new URL(redisConfig.redisUrl).pathname.slice(1), 10) || 0,
         } : { host: 'localhost', port: 6379 },
         defaultJobOptions: {
           removeOnComplete: bullConfig.removeOnComplete,
@@ -176,6 +180,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     SuppliersModule,
     ExpensesModule,
     NotificationsModule,
+    DiscoveryModule,
   ],
   controllers: [AppController],
   providers: [
@@ -189,6 +194,8 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: TenantGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    // Refuses to boot while any write handler lacks @Roles / @AnyAuthenticated / @Public.
+    RouteAuthorizationAssertion,
   ],
 })
 export class AppModule {}

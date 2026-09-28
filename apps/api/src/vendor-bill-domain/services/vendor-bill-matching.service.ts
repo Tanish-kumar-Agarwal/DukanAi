@@ -17,12 +17,12 @@ export class VendorBillMatchingService {
     for (const billLine of vendorBillLines) {
       if (!billLine.purchaseOrderLineId || !billLine.grnLineId) continue;
 
-      const poLine = await tx.purchaseOrderItem.findUnique({
-        where: { id: billLine.purchaseOrderLineId }
+      const poLine = await tx.purchaseOrderItem.findFirst({
+        where: { id: billLine.purchaseOrderLineId, shopId }
       });
       
-      const grnLine = await tx.goodsReceiptLine.findUnique({
-        where: { id: billLine.grnLineId }
+      const grnLine = await tx.goodsReceiptLine.findFirst({
+        where: { id: billLine.grnLineId, shopId }
       });
 
       if (!poLine || !grnLine) {
