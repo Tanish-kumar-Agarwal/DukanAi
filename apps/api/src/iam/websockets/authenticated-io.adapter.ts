@@ -55,7 +55,7 @@ export class AuthenticatedIoAdapter extends IoAdapter {
           algorithms: [JWT_ALGORITHM],
         });
 
-        if (!payload || !payload.sub || !payload.shopId) {
+        if (!payload || !payload.sub || !payload.shopId || typeof payload.sid !== 'string') {
           this.logger.warn(`Connection rejected: Invalid token payload`);
           return next(new Error('Authentication Error: Invalid token'));
         }
@@ -65,16 +65,23 @@ export class AuthenticatedIoAdapter extends IoAdapter {
         const tokenVersion = payload.tokenVersion;
 
         // Perform Zero Trust check against Database
+        const now = new Date();
         const user = await this.prisma.user.findUnique({
           where: { id: userId, isDeleted: false },
-          select: { isActive: true, tokenVersion: true, role: true },
+          select: {
+            isActive: true,
+            tokenVersion: true,
+            role: true,
+            // The session family behind the token must still be live (logout, revoke, reuse, absolute lifetime).
+            refreshTokens: { where: { familyId: payload.sid, isRevoked: false, expiresAt: { gt: now }, absoluteExpiresAt: { gt: now } }, select: { id: true }, take: 1 },
+          },
         });
 
         if (!user) {
           return next(new Error('Authentication Error: User not found or deleted'));
         }
         // A brute-force lock blocks new logins only; it does not drop live sockets (P1-4).
-        if (!user.isActive) {
+        if (!user.isActive || user.refreshTokens.length === 0) {
           return next(new Error('Authentication Error: Account suspended or locked'));
         }
         if (user.tokenVersion !== tokenVersion) {

@@ -30,6 +30,8 @@ Never delete or skip a failing test to get green. Fix the behaviour and flip it.
 | `authentication.security-spec.ts` | P1-4 lockout revokes sessions already open | 2.2 (fixed) |
 | `authentication.security-spec.ts` | P1-5 placeholder JWT secret accepted | 2.3 (fixed) |
 | `authentication.security-spec.ts` | P1-6 auth bypass reachable without `NODE_ENV` | 2.4 (fixed) |
-| `authentication.security-spec.ts` | P2-10 long User-Agent breaks login | 2 |
+| `authentication.security-spec.ts` | P1-7 suspend/delete responses carried the password hash | 2.7 (fixed) |
+| `authentication.security-spec.ts` | P2-10 long User-Agent breaks login | 2.7 (fixed) |
+| `../integration/sessions.integration-spec.ts` | P2-13/P2-14 refresh rotation without reuse detection, no logout, access tokens outliving the session | 2.6 (fixed) |
 | `authentication.security-spec.ts` | P1-9 uploads buffered without a size limit | 5 |
 | `../integration/rate-limit.integration-spec.ts` | P1-3 rate limiting off (second/millisecond mix-up, no auth limits), P2-16 trust proxy | 2.1 (fixed) |

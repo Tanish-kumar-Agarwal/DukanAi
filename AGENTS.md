@@ -269,6 +269,20 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   is no `JWT_REFRESH_SECRET`. The web enforces a real `NEXTAUTH_SECRET` on a
   running production server (`apps/web/src/config/env.ts`, skipped during
   `next build`, which cannot know the runtime secret).
+- Sessions are refresh-token families (`AuthService`, roadmap 2.6): a login
+  opens a family (`RefreshToken.familyId`), every refresh consumes the token
+  (`rotatedAt`, conditional `updateMany`) and writes a successor in one
+  transaction; a consumed token presented again is reuse and revokes the
+  family AND bumps `tokenVersion` (all sessions end); `absoluteExpiresAt`
+  (`SESSION_ABSOLUTE_LIFETIME`, 30d) caps a family, `JWT_REFRESH_EXPIRES_IN`
+  (7d) is one token's idle life. Access tokens live 15 min (`JWT_EXPIRES_IN`)
+  and carry `sid` = familyId; `JwtStrategy`/the socket adapter reject a token
+  whose family has no live row, so `POST /auth/logout`, `DELETE
+  /auth/sessions/:id` and reuse take effect at once. Tests must mint tokens
+  through `issueTokens`/`httpAs` (`test/security/security-fixtures.ts`, async):
+  a bare `jwtService.sign` token names no session and is refused. The web's
+  sign-out buttons call `signOutEverywhere` (`apps/web/src/lib/sign-out.ts`),
+  which hits `/auth/logout` before NextAuth `signOut`.
 
 ## Git attribution rule
 

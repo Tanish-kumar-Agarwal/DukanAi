@@ -18,7 +18,7 @@ describe('tenant isolation: foreign IDs on every write route', () => {
   let run: ReturnType<typeof tenantRunner>;
   let A: TestShop;
   let B: TestShop;
-  let http: ReturnType<typeof httpAs>;
+  let http: Awaited<ReturnType<typeof httpAs>>;
   // shop B rows the attacker knows the IDs of
   let b: {
     product: string;
@@ -47,7 +47,7 @@ describe('tenant isolation: foreign IDs on every write route', () => {
     run = tenantRunner(app);
     A = await createShop(app, 'isoA');
     B = await createShop(app, 'isoB');
-    http = httpAs(app, A, ownerOf(A));
+    http = (await httpAs(app, A, ownerOf(A)));
 
     const seed = async (shop: TestShop, tag: string) => {
       const product = await createProduct(app, shop, { key: `${tag}p` });
@@ -187,7 +187,7 @@ describe('tenant isolation: foreign IDs on every write route', () => {
   });
   describe('TenantGuard (roadmap 1.8)', () => {
     it('only an ACTIVE shop can use the API', async () => {
-      const bOwner = httpAs(app, B, ownerOf(B));
+      const bOwner = (await httpAs(app, B, ownerOf(B)));
       expect((await bOwner.get('/api/shops/me')).status).toBe(200);
       try {
         for (const status of ['SUSPENDED', 'LOCKED', 'ARCHIVED'] as const) {

@@ -1,7 +1,8 @@
 /**
  * Authentication hardening and resource limits (audit P1-4, P1-5, P1-6,
  * P2-10, P1-9). Findings that are still open use `it.failing`; see README.md.
- * P1-4, P1-5 and P1-6 were fixed in roadmap phase 2 and run as plain `it`.
+ * P1-4, P1-5, P1-6, P1-7 and P2-10 were fixed in roadmap phase 2 and run as
+ * plain `it`.
  */
 import { INestApplication } from '@nestjs/common';
 import { Role } from '@prisma/client';
@@ -57,7 +58,7 @@ describe('security: authentication and limits', () => {
     expect(profile.status).toBe(200);
   });
 
-  it.failing('P2-10: a login from a browser with a 300-character User-Agent succeeds', async () => {
+  it('P2-10: a login from a browser with a 300-character User-Agent succeeds', async () => {
     const user = await createUser(app, shop, Role.CASHIER, PASSWORD);
     const res = await login(user.email, PASSWORD, `Mozilla/5.0 ${'FBAN/FBIOS;'.repeat(30)}`);
     expect(res.status).toBe(201);
@@ -102,8 +103,22 @@ describe('security: authentication and limits', () => {
     });
   });
 
+  it('P1-7: suspending or deleting a user never returns the password hash', async () => {
+    const owner = ownerOf(shop);
+    const victim = await createUser(app, shop, Role.CASHIER, PASSWORD);
+    const suspended = await (await httpAs(app, shop, owner)).patch(`/api/users/${victim.id}/suspend`).send({ isActive: false });
+    expect(suspended.status).toBe(200);
+    expect(suspended.body).toMatchObject({ id: victim.id, isActive: false });
+    expect(suspended.body.password).toBeUndefined();
+
+    const deleted = await (await httpAs(app, shop, owner)).delete(`/api/users/${victim.id}`);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body.password).toBeUndefined();
+    expect(Object.keys(deleted.body)).not.toEqual(expect.arrayContaining(['password', 'failedAttempts', 'lockedUntil']));
+  });
+
   it.failing('P1-9: a 30 MB upload is refused with 413 instead of being buffered', async () => {
-    const res = await httpAs(app, shop, ownerOf(shop))
+    const res = await (await httpAs(app, shop, ownerOf(shop)))
       .post('/api/imports/products/upload')
       .attach('file', Buffer.alloc(30 * 1024 * 1024, 0x41), 'big.csv');
     expect(res.status).toBe(413);

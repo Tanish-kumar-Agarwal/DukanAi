@@ -677,19 +677,27 @@ model User {
   @@index([shopId])
 }
 
+/// One row per refresh token; a login opens a session family (familyId = the
+/// first token's id) and every rotation adds a row to it. `rotatedAt` marks a
+/// token consumed by rotation: presenting it again is reuse and revokes the
+/// family. `absoluteExpiresAt` bounds the family whatever the rotation count.
 model RefreshToken {
-  id        String   @id @default(cuid())
-  token     String   @unique
-  userId    String
-  expiresAt DateTime
-  isRevoked Boolean  @default(false)
-  ipAddress String?
-  userAgent String?
-  createdAt DateTime @default(now())
+  id                String    @id @default(cuid())
+  token             String    @unique
+  userId            String
+  familyId          String
+  expiresAt         DateTime
+  absoluteExpiresAt DateTime
+  isRevoked         Boolean   @default(false)
+  rotatedAt         DateTime?
+  ipAddress         String?
+  userAgent         String?
+  createdAt         DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([familyId])
 }
 
 model Invitation {

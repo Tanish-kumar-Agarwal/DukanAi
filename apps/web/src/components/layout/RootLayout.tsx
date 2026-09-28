@@ -3,7 +3,8 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { signOut, useSession } from 'next-auth/react';
+import { useSession } from 'next-auth/react';
+import { signOutEverywhere } from '@/lib/sign-out';
 import { Sidebar } from '@/components/navigation/Sidebar';
 import { Navbar } from '@/components/navigation/Navbar';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
@@ -39,7 +40,7 @@ export function RootLayout({ children }: { children: React.ReactNode }) {
           <span>Your session has expired and could not be renewed. Sign in again to continue.</span>
           <button
             type="button"
-            onClick={() => void signOut({ callbackUrl: '/login' })}
+            onClick={() => void signOutEverywhere('/login')}
             className="whitespace-nowrap font-bold text-amber-800 hover:text-amber-950"
           >
             Sign in again

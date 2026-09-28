@@ -36,7 +36,7 @@ describe('security: authorization and shop isolation', () => {
   describe('P0-1: PATCH /shops/me accepts only the documented profile fields', () => {
     it('a MANAGER cannot change roles through the shop profile body', async () => {
       const manager = await createUser(app, shopA, Role.MANAGER);
-      const res = await httpAs(app, shopA, manager)
+      const res = await (await httpAs(app, shopA, manager))
         .patch('/api/shops/me')
         .send({ name: `Renamed ${shopA.suffix}`, users: { updateMany: { where: { id: manager.id }, data: { role: 'OWNER' } } } });
 
@@ -47,7 +47,7 @@ describe('security: authorization and shop isolation', () => {
 
     it('the shop profile body cannot connect another shop\'s product', async () => {
       const foreignProduct = await createProduct(app, shopB, { key: 'foreign' });
-      const res = await httpAs(app, shopA, ownerOf(shopA))
+      const res = await (await httpAs(app, shopA, ownerOf(shopA)))
         .patch('/api/shops/me')
         .send({ products: { connect: [{ id: foreignProduct }] } });
 
@@ -60,7 +60,7 @@ describe('security: authorization and shop isolation', () => {
   describe('P0-2: write routes require an explicit role', () => {
     it('control: a VIEWER is refused on POST /products', async () => {
       const viewer = await createUser(app, shopA, Role.VIEWER);
-      const res = await httpAs(app, shopA, viewer).post('/api/products').send({ name: 'x', sellingPrice: 1 });
+      const res = await (await httpAs(app, shopA, viewer)).post('/api/products').send({ name: 'x', sellingPrice: 1 });
       expect(res.status).toBe(403);
     });
 
@@ -70,7 +70,7 @@ describe('security: authorization and shop isolation', () => {
       await receiveStock(app, shopA, productId, 10);
       const item = await inventoryItemOf(shopA, productId);
 
-      const res = await httpAs(app, shopA, viewer).post(`/api/inventory-domain/${item.id}/adjust`).send({ reason: 'CORRECTION', quantityChange: 100000 });
+      const res = await (await httpAs(app, shopA, viewer)).post(`/api/inventory-domain/${item.id}/adjust`).send({ reason: 'CORRECTION', quantityChange: 100000 });
 
       expect(res.status).toBe(403);
       expect(await makeReaders(app, shopA).onHand(productId)).toBe(10);
@@ -81,7 +81,7 @@ describe('security: authorization and shop isolation', () => {
       const productId = await createProduct(app, shopA, { key: 'reserve' });
       await receiveStock(app, shopA, productId, 50);
 
-      const res = await httpAs(app, shopA, viewer).post('/api/reservations').send({ source: 'POS', items: [{ productId, requestedQuantity: 50 }] });
+      const res = await (await httpAs(app, shopA, viewer)).post('/api/reservations').send({ source: 'POS', items: [{ productId, requestedQuantity: 50 }] });
 
       expect(res.status).toBe(403);
       const reservations = await run.system(() => prisma.reservationItem.count({ where: { productId } }));
@@ -92,7 +92,7 @@ describe('security: authorization and shop isolation', () => {
   describe('P0-3: records of another shop are unreachable by ID', () => {
     it('control: another shop\'s product is 404 on the product route', async () => {
       const foreignProduct = await createProduct(app, shopB, { key: 'ctrl' });
-      const res = await httpAs(app, shopA, ownerOf(shopA)).get(`/api/products/${foreignProduct}`);
+      const res = await (await httpAs(app, shopA, ownerOf(shopA))).get(`/api/products/${foreignProduct}`);
       expect(res.status).toBe(404);
     });
 
@@ -103,7 +103,7 @@ describe('security: authorization and shop isolation', () => {
       const batchB = await run.system(() => prisma.batch.create({ data: { shopId: shopB.shopId, productId: productB, batchNumber: `B-${shopB.suffix}`, type: 'PURCHASE' } }));
       await run.system(() => prisma.batchStock.create({ data: { shopId: shopB.shopId, batchId: batchB.id, inventoryItemId: itemB.id, quantity: 20 } }));
 
-      const res = await httpAs(app, shopA, ownerOf(shopA)).post(`/api/batches/${batchB.id}/stock`).send({ inventoryItemId: itemB.id, quantity: -15 });
+      const res = await (await httpAs(app, shopA, ownerOf(shopA))).post(`/api/batches/${batchB.id}/stock`).send({ inventoryItemId: itemB.id, quantity: -15 });
 
       expect(res.status).toBe(404);
       const stock = await run.system(() => prisma.batchStock.findUniqueOrThrow({ where: { shopId_batchId_inventoryItemId: { shopId: shopB.shopId, batchId: batchB.id, inventoryItemId: itemB.id } } }));
@@ -113,7 +113,7 @@ describe('security: authorization and shop isolation', () => {
     it('a vendor bill cannot reference another shop\'s supplier', async () => {
       const supplierB = await run.system(() => prisma.supplier.create({ data: { name: 'Foreign supplier', phone: `8${shopB.suffix.replace(/\D/g, '').slice(-9).padStart(9, '1')}`, shopId: shopB.shopId } }));
       const productA = await createProduct(app, shopA, { key: 'vb' });
-      const client = httpAs(app, shopA, ownerOf(shopA));
+      const client = (await httpAs(app, shopA, ownerOf(shopA)));
 
       const res = await client.post('/api/vendor-bills').send({ supplierId: supplierB.id, lines: [{ productId: productA, billedQuantity: 1, unitPrice: 10, taxPercentage: 0 }] });
 
@@ -132,7 +132,7 @@ describe('security: authorization and shop isolation', () => {
       const revA = await run.as(shopA.shopId, shopA.ownerId, Role.OWNER, () => versioning.createDraft(productA));
       const revB = await run.as(shopB.shopId, shopB.ownerId, Role.OWNER, () => versioning.createDraft(productB));
 
-      const res = await httpAs(app, shopA, ownerOf(shopA)).get(`/api/products/${productA}/revisions/compare/${revA.id}/${revB.id}`);
+      const res = await (await httpAs(app, shopA, ownerOf(shopA))).get(`/api/products/${productA}/revisions/compare/${revA.id}/${revB.id}`);
 
       expect(res.status).toBe(404);
     });

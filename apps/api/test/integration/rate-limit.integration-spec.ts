@@ -100,7 +100,7 @@ describe('rate limiting on credential routes (roadmap 2.1)', () => {
       expect(res.headers['x-ratelimit-limit-short']).toBeUndefined();
     }
 
-    const general = await httpAs(app, shop, owner).get('/api/products');
+    const general = await (await httpAs(app, shop, owner)).get('/api/products');
     expect(general.status).toBe(200);
     expect(general.headers['x-ratelimit-limit-short']).toBe(String(GENERAL_SHORT_LIMIT));
     expect(general.headers['x-ratelimit-limit-auth-short']).toBeUndefined();
@@ -154,14 +154,14 @@ describe('rate limiting on credential routes (roadmap 2.1)', () => {
     await deleteThrottleKeys(redis);
     const owner = ownerOf(shop);
     for (let i = 0; i < GENERAL_SHORT_LIMIT; i++) {
-      expect((await httpAs(app, shop, owner).get('/api/products')).status).toBe(200);
+      expect((await (await httpAs(app, shop, owner)).get('/api/products')).status).toBe(200);
     }
-    const blocked = await httpAs(app, shop, owner).get('/api/products');
+    const blocked = await (await httpAs(app, shop, owner)).get('/api/products');
     expect(blocked.status).toBe(429);
     expect(blocked.headers['retry-after-short']).toBeDefined();
     // The block is per address, not per user: another user of the same shop is blocked too.
     const cashier = await createUser(app, shop, Role.CASHIER);
-    expect((await httpAs(app, shop, cashier).get('/api/products')).status).toBe(429);
+    expect((await (await httpAs(app, shop, cashier)).get('/api/products')).status).toBe(429);
     await deleteThrottleKeys(redis);
   });
 
