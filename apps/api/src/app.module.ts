@@ -3,7 +3,6 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { StorageModule } from './storage/storage.module';
 import { BullModule } from '@nestjs/bullmq';
-import { redisStore } from 'cache-manager-redis-yet';
 
 import { EnterpriseConfigModule } from './config/enterprise-config.module';
 import { RedisConfig } from './config/domains/redis.config';
@@ -27,6 +26,8 @@ import { OcrModule } from './ocr/ocr.module';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import type Redis from 'ioredis';
 import { REDIS_CLIENT } from './common/redis/redis.module';
+import { bullConnectionFromUrl } from './common/redis/redis-connection';
+import { buildCacheOptions } from './common/cache/cache-options';
 import { RedisThrottlerStorage } from './common/throttling/redis-throttler.storage';
 import { buildThrottlerOptions } from './common/throttling/throttler-options';
 import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
@@ -86,33 +87,17 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     EnterpriseConfigModule,
     ConfigurationRegistryModule,
     RuntimeValidationModule,
+    // Cache entries live in Redis (Keyv store) so every instance shares them.
     CacheModule.registerAsync({
       isGlobal: true,
       inject: [RedisConfig, CacheConfig],
-      useFactory: async (redisConfig: RedisConfig, cacheConfig: CacheConfig) => {
-        if (redisConfig.redisUrl) {
-          return {
-            store: redisStore as any,
-            url: redisConfig.redisUrl,
-            ttl: cacheConfig.ttl,
-            max: cacheConfig.maxItems,
-          } as any;
-        }
-        return { ttl: cacheConfig.ttl, max: cacheConfig.maxItems } as any;
-      },
+      useFactory: (redisConfig: RedisConfig, cacheConfig: CacheConfig) => buildCacheOptions(redisConfig, cacheConfig),
     }),
     BullModule.forRootAsync({
       inject: [RedisConfig, BullConfig],
       useFactory: (redisConfig: RedisConfig, bullConfig: BullConfig) => ({
-        connection: redisConfig.redisUrl ? {
-          host: new URL(redisConfig.redisUrl).hostname,
-          port: parseInt(new URL(redisConfig.redisUrl).port || '6379', 10),
-          username: new URL(redisConfig.redisUrl).username || undefined,
-          password: new URL(redisConfig.redisUrl).password || undefined,
-          // redis://host:port/<db>: queues must live in the configured database, or
-          // environments sharing one Redis server consume each other's jobs.
-          db: parseInt(new URL(redisConfig.redisUrl).pathname.slice(1), 10) || 0,
-        } : { host: 'localhost', port: 6379 },
+        // Parsed once from REDIS_URL: TLS for rediss://, decoded credentials, db index.
+        connection: bullConnectionFromUrl(redisConfig.redisUrl),
         defaultJobOptions: {
           removeOnComplete: bullConfig.removeOnComplete,
           removeOnFail: bullConfig.removeOnFail,

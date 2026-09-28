@@ -36,8 +36,12 @@ export class GlobalExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
+    // The middleware settles req.correlationId before guards run, so a 401/403
+    // thrown by a guard (before the tenant interceptor opened its context) still
+    // carries the id the client can quote; the ALS store is the fallback.
+    const request = ctx.getRequest<{ correlationId?: string } | undefined>();
     const correlationId =
-      TenantContextService.asAsyncLocalStorage.getStore()?.correlationId || 'unknown';
+      request?.correlationId || TenantContextService.asAsyncLocalStorage.getStore()?.correlationId || 'unknown';
 
     let statusCode: number;
     let message: string;

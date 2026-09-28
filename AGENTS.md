@@ -121,9 +121,21 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `it` (see `test/security/README.md`). Never skip or delete one.
   Point either at another database with `TEST_DATABASE_URL` (integration) or
   `DATABASE_URL` + `E2E_DATABASE_URL` (Playwright); no env file edits needed.
-- BullMQ takes host/port/credentials/db from `REDIS_URL` (`app.module.ts`).
-  The db index matters: dev (db 0) and tests (db 1) share one Redis server,
-  and before the db was honoured a running dev API consumed the tests' jobs.
+- BullMQ's connection comes from `bullConnectionFromUrl(REDIS_URL)`
+  (`src/common/redis/redis-connection.ts`: `rediss://` turns TLS on,
+  credentials are percent-decoded, the path is the db, `maxRetriesPerRequest:
+  null`). The db index matters: dev (db 0) and tests (db 1) share one Redis
+  server, and before the db was honoured a running dev API consumed the tests'
+  jobs. Every queue is BullMQ (`@nestjs/bullmq`); the legacy `@nestjs/bull`
+  package is gone (`barcode-bulk` was its last processor and dialled
+  localhost:6379 db 0 regardless of `REDIS_URL`). The shared `REDIS_CLIENT` is
+  QUIT on application shutdown (`RedisClientLifecycle`).
+- The cache (`CACHE_MANAGER`) is a Keyv Redis store (`buildCacheOptions`,
+  `src/common/cache/cache-options.ts`): keys are `cache:<key>` in Redis, so
+  every instance shares entries and an invalidation is seen by all. Without
+  `REDIS_URL` it is an in-process Map (dev only). cache-manager 7 reads
+  `stores`, not `store`: the old `cache-manager-redis-yet` wiring was ignored
+  and left an unbounded per-process Map.
 - Integration runs are hermetic: `test/jest-integration.global-setup.ts`
   flushes the test Redis db first (index >= 1 only), and the setup file sets
   `CRON_ENABLED=false` so no scheduler registers (the two
@@ -277,6 +289,25 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   identity to an existing account that was not created through Google (409,
   surfaced as `AccessDenied` on the login page): anyone can register a
   password account under someone else's address.
+
+## WebSockets and correlation (roadmap 2.13, 2.14)
+
+- `AuthenticatedIoAdapter` registers its middleware on the root socket.io
+  server AND on every namespace as it is created (`new_namespace`), because
+  `server.use` alone never guards `/inventory`. The middleware verifies the
+  access token (HS256, live session family), the user and the shop, then joins
+  `tenant:<shopId>`; `InventoryGateway` emits to that room under the tenant
+  context. `test/integration/infrastructure.integration-spec.ts` connects with
+  `socket.io-client`.
+- A request's correlation id is settled once by `CorrelationIdMiddleware`
+  (`sanitizeIdentifier` in `src/common/correlation/correlation-id.ts`: a
+  well-formed client value is kept, anything else becomes a UUID) and read as
+  `req.correlationId` by the tenant interceptor and `GlobalExceptionFilter`
+  (so a guard's 401 carries it too); never read the raw header. The socket
+  handshake header goes through the same function.
+- `CorrelationLogger` prints one JSON line per entry (Nest's ConsoleLogger
+  json mode) with the correlation id (`system-job` outside a request) and
+  redacts sensitive keys cycle- and depth-safely (`redact`).
 
 ## Auth bypass flag
 

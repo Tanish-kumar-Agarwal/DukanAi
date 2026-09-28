@@ -6,6 +6,7 @@ import { AppConfig } from '../../config/domains/app.config';
 import { JWT_ALGORITHM, JwtConfig } from '../../config/domains/jwt.config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SocketSessionService } from './socket-session.service';
+import { CORRELATION_HEADER, sanitizeIdentifier } from '../../common/correlation/correlation-id';
 
 export class AuthenticatedIoAdapter extends IoAdapter {
   private readonly logger = new Logger(AuthenticatedIoAdapter.name);
@@ -37,8 +38,18 @@ export class AuthenticatedIoAdapter extends IoAdapter {
     };
     const server: Server = super.createIOServer(port, options);
 
-    // This middleware intercepts ALL connections before they reach the Gateway
-    server.use(async (socket: Socket, next) => {
+    // `server.use` only guards the root namespace; gateways such as /inventory
+    // are namespaces of their own, created after this point. Register the
+    // middleware on the root and on every namespace as it appears (P2-17).
+    server.use(this.authenticate);
+    server.on('new_namespace', (namespace) => namespace.use(this.authenticate));
+
+    return server;
+  }
+
+  /** Verifies the token, checks the user, session family and shop, then joins the tenant room. */
+  private readonly authenticate = async (socket: Socket, next: (err?: Error) => void): Promise<void> => {
+    {
       try {
         const token =
           socket.handshake.auth?.token ||
@@ -105,7 +116,7 @@ export class AuthenticatedIoAdapter extends IoAdapter {
         socket.data.userId = userId;
         socket.data.shopId = shopId;
         socket.data.role = user.role;
-        socket.data.correlationId = socket.handshake.headers['x-correlation-id'] || `ws-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        socket.data.correlationId = sanitizeIdentifier(socket.handshake.headers[CORRELATION_HEADER]);
         
         // Register connection for session revocation
         this.sessionService.registerSocket(userId, socket);
@@ -118,8 +129,6 @@ export class AuthenticatedIoAdapter extends IoAdapter {
         this.logger.warn(`Connection rejected: ${error.message}`);
         next(new Error('Authentication Error: Unauthorized'));
       }
-    });
-
-    return server;
-  }
+    }
+  };
 }

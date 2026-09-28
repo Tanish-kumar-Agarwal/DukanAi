@@ -5,16 +5,14 @@ import { Gs1EngineService } from './gs1-engine.service';
 import { BarcodeGeneratorService } from './barcode-generator.service';
 import { IdentityAuditService } from './identity-audit.service';
 import { PrintingEngineService } from './printing-engine.service';
-import { BulkBarcodeProcessor } from './bulk-barcode.processor';
-import { BullModule } from '@nestjs/bull';
+import { BARCODE_BULK_QUEUE, BulkBarcodeProcessor } from './bulk-barcode.processor';
+import { BullModule } from '@nestjs/bullmq';
 import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({
   imports: [
     PrismaModule,
-    BullModule.registerQueue({
-      name: 'barcode-bulk',
-    }),
+    BullModule.registerQueue({ name: BARCODE_BULK_QUEUE }),
   ],
   controllers: [ProductIdentityController],
   providers: [

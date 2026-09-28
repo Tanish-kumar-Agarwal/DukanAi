@@ -1,4 +1,4 @@
-import { Global, Module, Logger } from '@nestjs/common';
+import { Global, Inject, Injectable, Logger, Module, OnApplicationShutdown } from '@nestjs/common';
 import Redis, { RedisOptions } from 'ioredis';
 import { RedisConfig } from '../../config/domains/redis.config';
 
@@ -56,6 +56,28 @@ export function createRedisClient(redisConfig: RedisConfig, logger: Logger = new
   return client;
 }
 
+/**
+ * Closes the shared client when the application shuts down (roadmap 2.12):
+ * QUIT lets Redis finish in-flight replies, and an already ended connection is
+ * left alone. Without this the process kept a live socket after `app.close()`.
+ */
+@Injectable()
+export class RedisClientLifecycle implements OnApplicationShutdown {
+  private readonly logger = new Logger(RedisClientLifecycle.name);
+
+  constructor(@Inject(REDIS_CLIENT) private readonly client: Redis) {}
+
+  async onApplicationShutdown(): Promise<void> {
+    if (this.client.status === 'end') return;
+    try {
+      await this.client.quit();
+    } catch (error) {
+      this.logger.warn(`Redis client did not quit cleanly: ${error instanceof Error ? error.message : String(error)}`);
+      this.client.disconnect();
+    }
+  }
+}
+
 @Global()
 @Module({
   providers: [
@@ -64,6 +86,7 @@ export function createRedisClient(redisConfig: RedisConfig, logger: Logger = new
       useFactory: (redisConfig: RedisConfig) => createRedisClient(redisConfig),
       inject: [RedisConfig],
     },
+    RedisClientLifecycle,
   ],
   exports: [REDIS_CLIENT],
 })
