@@ -15,6 +15,7 @@ import type { Cache } from 'cache-manager';
 import { CacheConfig } from '../../config/domains/cache.config';
 import { CreatePurchaseOrderDto, UpdatePurchaseDraftDto } from '../dto/purchase-order.dto';
 import { assertOwnedMany } from '../../prisma/tenant-ownership';
+import { procurementTransaction } from '../../common/db/procurement-transaction';
 
 @Injectable()
 export class PurchaseRepository {
@@ -38,22 +39,21 @@ export class PurchaseRepository {
     await this.validation.validateSupplier(shopId, supplierId);
     await this.validation.validateItems(shopId, items);
     await this.assertItemReferencesOwned(shopId, items);
-    await this.assertItemReferencesOwned(shopId, items);
-    await this.assertItemReferencesOwned(shopId, items);
 
-    // Perform tax calculation if required
-    const taxedItems = this.tax.calculateTaxes(items, metadata.taxMode || 'EXCLUSIVE', metadata.currency || 'USD', metadata.exchangeRate || 1);
+    // Line math is server-side: the order total is the sum of its taxed lines, never the client's figure.
+    const taxedItems = this.tax.calculateTaxes(items, metadata.taxMode || 'EXCLUSIVE', metadata.currency || 'INR', metadata.exchangeRate || 1);
+    const totalAmount = taxedItems.reduce((sum: Prisma.Decimal, item: { totalCost: number }) => sum.plus(new Prisma.Decimal(item.totalCost || 0)), new Prisma.Decimal(0)).toDecimalPlaces(2);
 
-    return this.prisma.$transaction(async (tx) => {
+    return procurementTransaction(this.prisma, async (tx) => {
       const orderNumber = await this.numberEngine.generateNextOrderNumber(tx, shopId, 'PO');
-      
+
       const purchaseOrder = await tx.purchaseOrder.create({
         data: {
           shopId,
           supplierId,
           orderNumber,
           status: 'DRAFT',
-          totalAmount: metadata.totalAmount || 0,
+          totalAmount,
           notes: metadata.notes,
           department: metadata.department,
           costCenter: metadata.costCenter,
@@ -61,7 +61,7 @@ export class PurchaseRepository {
           expectedDelivery: metadata.expectedDelivery ? new Date(metadata.expectedDelivery) : null,
           deliveryTerms: metadata.deliveryTerms,
           paymentTerms: metadata.paymentTerms,
-          currency: metadata.currency || 'USD',
+          currency: metadata.currency || 'INR',
           exchangeRate: metadata.exchangeRate || 1.0,
           remarks: metadata.remarks,
           taxMode: metadata.taxMode || 'EXCLUSIVE',
@@ -94,18 +94,19 @@ export class PurchaseRepository {
       });
 
       await this.audit.recordAudit(tx, purchaseOrder.id, shopId, 'CREATED', actorId, null, purchaseOrder as any, ipAddress);
-      await this.lifecycle.transitionStatus(tx, purchaseOrder.id, shopId, 'DRAFT', 'DRAFT', actorId, 'Initial PO Creation');
+      // The first timeline row is the initial status, not a transition (DRAFT -> DRAFT used to roll the create back).
+      await this.lifecycle.recordInitialStatus(tx, purchaseOrder.id, shopId, 'DRAFT', actorId, 'Initial PO Creation');
 
       await this.eventPublisher.publish(tx, shopId, {
-        eventType: 'PurchaseCreated',
+        eventType: 'PurchaseOrderCreated',
         aggregateId: purchaseOrder.id,
         aggregateType: 'PurchaseOrder',
-        payload: purchaseOrder,
+        payload: { id: purchaseOrder.id, orderNumber, status: 'DRAFT', supplierId, totalAmount: totalAmount.toFixed(2), department: metadata.department ?? null },
         actorId,
       });
 
       return purchaseOrder;
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
   }
 
   async getPurchaseOrder(shopId: string, id: string) {
@@ -145,47 +146,48 @@ export class PurchaseRepository {
   }
 
   async submitPurchaseOrder(shopId: string, id: string, actorId: string, comments?: string) {
-    return this.prisma.$transaction(async (tx) => {
+    return procurementTransaction(this.prisma, async (tx) => {
       const po = await this.approval.submitForApproval(tx, shopId, id, actorId, comments);
-      await this.audit.recordAudit(tx, id, shopId, 'SUBMITTED', actorId, null, { comments: comments ?? null }, undefined);
 
+      // The workflow engine's budget check reads totalAmount and department from this payload.
       await this.eventPublisher.publish(tx, shopId, {
         eventType: 'PurchaseOrderSubmitted',
         aggregateId: id,
         aggregateType: 'PurchaseOrder',
-        payload: { id, status: 'SUBMITTED' },
+        payload: { id, status: 'SUBMITTED', totalAmount: po?.totalAmount?.toFixed(2) ?? '0.00', department: po?.department ?? null, supplierId: po?.supplierId ?? null },
         actorId,
       });
 
       await this.cacheManager.del(`po:${shopId}:${id}`);
       return po;
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
   }
 
-  async approvePurchaseOrder(shopId: string, id: string, actorId: string, ipAddress?: string, comments?: string, signature?: string) {
-    return this.prisma.$transaction(async (tx) => {
+  async approvePurchaseOrder(shopId: string, id: string, actorId: string, _ipAddress?: string, comments?: string, signature?: string) {
+    return procurementTransaction(this.prisma, async (tx) => {
       const po = await this.approval.processApproval(tx, shopId, id, actorId, 'APPROVE', comments, signature);
-      
+
       // Store immutable pricing snapshot upon approval
       await this.pricing.createSnapshot(tx, shopId, id);
 
+      // Named like the other order events; the analytics listener subscribes to this name.
       await this.eventPublisher.publish(tx, shopId, {
-        eventType: 'PurchaseApproved',
+        eventType: 'PurchaseOrderApproved',
         aggregateId: po!.id,
         aggregateType: 'PurchaseOrder',
-        payload: { id: po!.id, status: 'APPROVED' },
+        payload: { id: po!.id, status: 'APPROVED', totalAmount: po!.totalAmount.toFixed(2), supplierId: po!.supplierId },
         actorId,
       });
-      
+
       await this.cacheManager.del(`po:${shopId}:${id}`);
-      return tx.purchaseOrder.findUnique({ where: { id: po!.id } });
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      return po;
+    });
   }
 
   async rejectPurchaseOrder(shopId: string, id: string, actorId: string, comments?: string) {
-    return this.prisma.$transaction(async (tx) => {
+    return procurementTransaction(this.prisma, async (tx) => {
       const po = await this.approval.processApproval(tx, shopId, id, actorId, 'REJECT', comments);
-      
+
       await this.eventPublisher.publish(tx, shopId, {
         eventType: 'PurchaseOrderRejected',
         aggregateId: po!.id,
@@ -196,7 +198,7 @@ export class PurchaseRepository {
 
       await this.cacheManager.del(`po:${shopId}:${id}`);
       return po;
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
   }
 
   async updateDraft(shopId: string, id: string, payload: UpdatePurchaseDraftDto, actorId: string) {
@@ -204,9 +206,9 @@ export class PurchaseRepository {
       await this.validation.validateItems(shopId, payload.items);
       await this.assertItemReferencesOwned(shopId, payload.items);
     }
-    return this.prisma.$transaction(async (tx) => {
+    return procurementTransaction(this.prisma, async (tx) => {
       const updatedPo = await this.draft.saveDraft(tx, shopId, id, payload, actorId);
-      
+
       await this.eventPublisher.publish(tx, shopId, {
         eventType: 'PurchaseOrderVersionCreated',
         aggregateId: id,
@@ -217,7 +219,7 @@ export class PurchaseRepository {
 
       await this.cacheManager.del(`po:${shopId}:${id}`);
       return updatedPo;
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
   }
 
   /** Every ID an order line names must belong to this shop (roadmap 1.5). */

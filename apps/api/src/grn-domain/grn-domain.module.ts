@@ -17,10 +17,11 @@ import { PurchaseEventsDomainModule } from '../purchase-events-domain/purchase-e
 import { StorageModule } from '../storage/storage.module';
 import { DocumentModule } from '../common/document/document.module';
 import { InventoryDomainModule } from '../inventory-domain/inventory-domain.module';
+import { PurchaseDomainModule } from '../purchase-domain/purchase-domain.module';
 
 @Module({
   imports: [
-    PrismaModule, 
+    PrismaModule,
     SalesEventsDomainModule,
     StockLedgerModule,
     ProductEventsModule,
@@ -28,6 +29,7 @@ import { InventoryDomainModule } from '../inventory-domain/inventory-domain.modu
     StorageModule,
     DocumentModule,
     InventoryDomainModule,
+    PurchaseDomainModule,
     BullModule.registerQueue({ name: 'grn-jobs' })
   ],
   controllers: [GrnController],

@@ -1,9 +1,26 @@
 import { Prisma } from '@prisma/client';
 
 /**
+ * OutboxEvent.type prefixes owned by the purchase-events relay (roadmap 4.2):
+ * every event the procurement repositories publish. `Goods*` (GoodsAccepted),
+ * `Inspection*` and `Outstanding*` (OutstandingReduced) are procurement
+ * document events too; before they were listed here no relay ever picked
+ * them up and the rows stayed PENDING for good.
+ */
+export const PURCHASE_RELAY_TYPE_PREFIXES: readonly string[] = Object.freeze([
+  'Purchase',
+  'GRN',
+  'VendorBill',
+  'SupplierCredit',
+  'Goods',
+  'Inspection',
+  'Outstanding',
+]);
+
+/**
  * OutboxEvent.type prefixes owned by a domain relay:
  *  - sales-events-domain    : Order*, Invoice*, Payment*, Return*, Exchange*
- *  - purchase-events-domain : Purchase*, GRN*, VendorBill*, SupplierCredit*
+ *  - purchase-events-domain : PURCHASE_RELAY_TYPE_PREFIXES above
  *  - product-events         : Product*, Inventory*, Category*, Brand*
  *
  * The system-events relay (common/outbox) owns everything else, notably the
@@ -20,10 +37,7 @@ export const DOMAIN_RELAY_TYPE_PREFIXES: readonly string[] = Object.freeze([
   'Payment',
   'Return',
   'Exchange',
-  'Purchase',
-  'GRN',
-  'VendorBill',
-  'SupplierCredit',
+  ...PURCHASE_RELAY_TYPE_PREFIXES,
   'Product',
   'Inventory',
   'Category',
@@ -33,6 +47,17 @@ export const DOMAIN_RELAY_TYPE_PREFIXES: readonly string[] = Object.freeze([
 /** TypeScript mirror of the SQL predicate (case-sensitive prefix match). */
 export function isDomainRelayOwnedType(type: string): boolean {
   return DOMAIN_RELAY_TYPE_PREFIXES.some((prefix) => type.startsWith(prefix));
+}
+
+/** True when the purchase-events relay owns rows of this type. */
+export function isPurchaseRelayType(type: string): boolean {
+  return PURCHASE_RELAY_TYPE_PREFIXES.some((prefix) => type.startsWith(prefix));
+}
+
+/** `(type LIKE BINARY 'Purchase%' OR type LIKE BINARY 'GRN%' OR ...)` for the purchase-events relay. */
+export function buildPurchaseEventsTypePredicate(prefixes: readonly string[] = PURCHASE_RELAY_TYPE_PREFIXES): Prisma.Sql {
+  const clauses = prefixes.map((prefix) => Prisma.sql`type LIKE BINARY ${`${prefix}%`}`);
+  return Prisma.join(clauses, ' OR ', '(', ')');
 }
 
 /**

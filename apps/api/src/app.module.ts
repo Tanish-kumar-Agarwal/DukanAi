@@ -18,6 +18,7 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { BillingModule } from './billing/billing.module';
 import { LedgerModule } from './ledger/ledger.module';
+import { NumberSequenceModule } from './common/numbering/number-sequence.service';
 import { ShiftsModule } from './shifts/shifts.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { CacheModule } from '@nestjs/cache-manager';
@@ -121,6 +122,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     UsersModule,
     AuthModule,
     LedgerModule,
+    NumberSequenceModule,
     BillingModule,
     ShiftsModule,
     InventoryModule,

@@ -34,12 +34,15 @@ export class EventsProcessorService extends WorkerHost {
     const eventId = job.data.outboxEventId;
     if (!eventId) return;
 
+    // The relay hands the row over as PROCESSING (roadmap 4.2, audit P2-7); it
+    // used to mark it DONE on enqueue, so every job returned here and nothing
+    // was ever delivered. A row already DONE or FAILED is a replayed job.
     const outboxRecord = await this.prisma.outboxEvent.findUnique({ where: { id: eventId } });
-    if (!outboxRecord || outboxRecord.status !== 'PENDING') return;
+    if (!outboxRecord || (outboxRecord.status !== 'PENDING' && outboxRecord.status !== 'PROCESSING')) return;
 
     try {
       // 1. Deliver Internally
-      await this.delivery.routeInternalEvent(outboxRecord.shopId, outboxRecord.id, outboxRecord.type, outboxRecord.payload);
+      await this.delivery.routeInternalEvent(outboxRecord.shopId, outboxRecord.id, outboxRecord.type, outboxRecord.payload, outboxRecord.entityId, outboxRecord.correlationId);
       
       // 2. Deliver Externally via true Webhook Dispatcher
       await this.webhooks.dispatchWebhooksForEvent(outboxRecord.shopId, outboxRecord.id, outboxRecord.type, outboxRecord.payload);

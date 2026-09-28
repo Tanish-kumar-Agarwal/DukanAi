@@ -15,6 +15,7 @@ import { PurchasePricingService } from './services/purchase-pricing.service';
 import { PurchaseTaxService } from './services/purchase-tax.service';
 import { PurchaseAttachmentProcessor } from './services/purchase-attachment.processor';
 import { PurchaseController } from './purchase.controller';
+import { PurchaseReceiptService } from './services/purchase-receipt.service';
 
 @Module({
   imports: [
@@ -37,8 +38,9 @@ import { PurchaseController } from './purchase.controller';
     PurchasePricingService,
     PurchaseTaxService,
     PurchaseAttachmentProcessor,
+    PurchaseReceiptService,
     PurchaseRepository
   ],
-  exports: [PurchaseRepository]
+  exports: [PurchaseRepository, PurchaseReceiptService, PurchaseLifecycleService]
 })
 export class PurchaseDomainModule {}

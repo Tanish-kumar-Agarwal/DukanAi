@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -6,6 +7,8 @@ import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
 import { EventsFeatureConfig } from '../../config/domains/features/events-feature.config';
 import { CronConfig } from '../../config/domains/cron.config';
+import { buildPurchaseEventsTypePredicate } from '../../common/outbox/outbox-routing';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 
 @Injectable()
 export class PurchaseOutboxRelayCron implements OnApplicationBootstrap {
@@ -17,7 +20,8 @@ export class PurchaseOutboxRelayCron implements OnApplicationBootstrap {
     @InjectQueue('purchase-events') private readonly purchaseEventsQueue: Queue,
     private readonly eventsConfig: EventsFeatureConfig,
     private readonly cronConfig: CronConfig,
-    private readonly schedulerRegistry: SchedulerRegistry
+    private readonly schedulerRegistry: SchedulerRegistry,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   onApplicationBootstrap() {
@@ -33,9 +37,16 @@ export class PurchaseOutboxRelayCron implements OnApplicationBootstrap {
   }
 
   /**
-   * Sweeps the OutboxEvent table for PENDING purchase events and relays them to BullMQ.
+   * Sweeps the OutboxEvent table for PENDING purchase events (the
+   * `PURCHASE_RELAY_TYPE_PREFIXES` family, oldest first, one batch per tick)
+   * and relays them to BullMQ. The outbox spans shops, so the sweep runs as
+   * the system tenant.
    */
-  async relayPendingEvents() {
+  relayPendingEvents(): Promise<void> {
+    return this.tenantContext.runAsSuperAdmin(() => this.relayPendingEventsAsSystem());
+  }
+
+  private async relayPendingEventsAsSystem(): Promise<void> {
     if (this.isProcessing) return;
     this.isProcessing = true;
 
@@ -45,12 +56,12 @@ export class PurchaseOutboxRelayCron implements OnApplicationBootstrap {
       await this.prisma.$transaction(async (tx) => {
         // 1. Fetch pending events with SKIP LOCKED
         const events: any[] = await tx.$queryRaw`
-          SELECT id, type, payload, status, retryCount 
-          FROM OutboxEvent 
-          WHERE status = 'PENDING' 
-            AND (type LIKE BINARY 'Purchase%' OR type LIKE BINARY 'GRN%' OR type LIKE BINARY 'VendorBill%' OR type LIKE BINARY 'SupplierCredit%')
-          ORDER BY createdAt ASC 
-          LIMIT ${batchSize} 
+          SELECT id, type, payload, status, retryCount
+          FROM OutboxEvent
+          WHERE status = 'PENDING'
+            AND ${buildPurchaseEventsTypePredicate()}
+          ORDER BY createdAt ASC
+          LIMIT ${batchSize}
           FOR UPDATE SKIP LOCKED
         `;
 
@@ -75,12 +86,15 @@ export class PurchaseOutboxRelayCron implements OnApplicationBootstrap {
         // If BullMQ fails or Redis is down, this throws and the transaction rolls back safely
         await this.purchaseEventsQueue.addBulk(jobs);
 
-        // 3. Update status to DONE
+        // 3. Hand the rows over: PROCESSING until the worker delivers them and
+        //    sets DONE / FAILED (roadmap 4.2, audit P2-7). Marking them DONE here
+        //    made the worker skip every event. (A dynamic `import('@prisma/client')`
+        //    used to sit here: it threw under jest, rolled the hand-over back
+        //    after the jobs were already queued, and left the rows PENDING.)
         const eventIds = events.map(e => e.id);
-        const { Prisma } = await import('@prisma/client');
         await tx.$executeRaw`
-          UPDATE OutboxEvent 
-          SET status = 'DONE', processedAt = NOW(3)
+          UPDATE OutboxEvent
+          SET status = 'PROCESSING'
           WHERE id IN (${Prisma.join(eventIds)})
         `;
       });

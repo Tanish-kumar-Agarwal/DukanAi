@@ -1551,8 +1551,9 @@ model PurchaseOrderItem {
   isDeleted       Boolean   @default(false)
   deletedAt       DateTime?
 
-  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
-  product       Product       @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  purchaseOrder PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product       Product            @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  receiptLines  GoodsReceiptLine[]
 
   // Enterprise Extensions
   variantId   String?
@@ -1751,26 +1752,29 @@ model GoodsReceipt {
 }
 
 model GoodsReceiptLine {
-  id               String  @id @default(cuid())
-  shopId           String // owning shop, copied from the parent document (roadmap 1.6)
-  goodsReceiptId   String
-  productId        String
-  variantId        String?
-  batchId          String?
-  serialId         String?
-  orderedQuantity  Decimal @default(0) @db.Decimal(10, 3)
-  receivedQuantity Decimal @default(0) @db.Decimal(10, 3)
-  acceptedQuantity Decimal @default(0) @db.Decimal(10, 3)
-  rejectedQuantity Decimal @default(0) @db.Decimal(10, 3)
-  damagedQuantity  Decimal @default(0) @db.Decimal(10, 3)
-  pendingQuantity  Decimal @default(0) @db.Decimal(10, 3)
-  unit             String?
-  unitPrice        Decimal @default(0) @db.Decimal(10, 2)
-  remarks          String? @db.Text
-  binId            String?
-  isDeleted        Boolean @default(false)
+  id                  String  @id @default(cuid())
+  shopId              String // owning shop, copied from the parent document (roadmap 1.6)
+  goodsReceiptId      String
+  /// The purchase-order line this receipt line fulfils (roadmap 4.2): ordered quantity and price come from it.
+  purchaseOrderItemId String?
+  productId           String
+  variantId           String?
+  batchId             String?
+  serialId            String?
+  orderedQuantity     Decimal @default(0) @db.Decimal(10, 3)
+  receivedQuantity    Decimal @default(0) @db.Decimal(10, 3)
+  acceptedQuantity    Decimal @default(0) @db.Decimal(10, 3)
+  rejectedQuantity    Decimal @default(0) @db.Decimal(10, 3)
+  damagedQuantity     Decimal @default(0) @db.Decimal(10, 3)
+  pendingQuantity     Decimal @default(0) @db.Decimal(10, 3)
+  unit                String?
+  unitPrice           Decimal @default(0) @db.Decimal(10, 2)
+  remarks             String? @db.Text
+  binId               String?
+  isDeleted           Boolean @default(false)
 
-  goodsReceipt GoodsReceipt @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  goodsReceipt      GoodsReceipt       @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  purchaseOrderItem PurchaseOrderItem? @relation(fields: [purchaseOrderItemId], references: [id], onDelete: SetNull)
 
   @@index([shopId])
   @@index([goodsReceiptId])

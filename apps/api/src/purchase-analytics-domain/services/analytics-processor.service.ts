@@ -60,11 +60,13 @@ export class AnalyticsProcessorService extends WorkerHost {
       _sum: { outstandingAmount: true }
     });
     
-    // Compute exact Average Lead Time across all historical GRNs using PostgreSQL aggregation
-    const leadTimeRaw: any[] = await this.prisma.$queryRaw`
-      SELECT AVG(EXTRACT(EPOCH FROM ("receivedDate" - "createdAt")) / 86400) as avg_days 
-      FROM "GoodsReceipt" 
-      WHERE "shopId" = ${shopId} AND "status" = 'COMPLETED' AND "receivedDate" IS NOT NULL
+    // Average lead time (days from receipt creation to goods received) over
+    // accepted and completed receipts. MySQL syntax (roadmap 4.2): the former
+    // PostgreSQL query (EXTRACT(EPOCH ...), quoted identifiers) never ran here.
+    const leadTimeRaw: Array<{ avg_days: number | string | null }> = await this.prisma.$queryRaw`
+      SELECT AVG(TIMESTAMPDIFF(SECOND, createdAt, receivedDate) / 86400) AS avg_days
+      FROM GoodsReceipt
+      WHERE shopId = ${shopId} AND status IN ('ACCEPTED', 'COMPLETED', 'CLOSED') AND receivedDate IS NOT NULL AND isDeleted = false
     `;
     const averageLeadTimeDays = leadTimeRaw.length > 0 && leadTimeRaw[0].avg_days ? Math.ceil(Number(leadTimeRaw[0].avg_days)) : 0;
 

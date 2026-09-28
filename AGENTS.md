@@ -267,6 +267,61 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `@Processor` source and fails a worker that touches a collaborator
   without one (a pure Redis/queue worker is allowlisted there with its reason).
   Producers put `shopId` on the job (`import-job`, `webhook-delivery`).
+- 4.2 procurement (purchase, grn, purchase-return, vendor-bill,
+  supplier-credit domains; kept and fixed because the phase 3 payables build
+  on GRNs and bills; the web does not call these routes yet):
+  - Document numbers come from `NumberSequenceService`
+    (`src/common/numbering`, global; one `NumberSequence` row per
+    `(shopId, entityType)` under `FOR UPDATE`): `PO-YYYYMM-00001`,
+    `GRN|PR|VB|SCN-<FY>-000001`; the POS invoice/return numbers use the same
+    service. Never number a document from `Date.now()`.
+  - Every procurement write runs in `procurementTransaction`
+    (`src/common/db/procurement-transaction.ts`: READ COMMITTED, 30 s,
+    serialization retry), not Serializable, and takes the canonical locks:
+    the order header (`PurchaseReceiptService.lockReceivableOrder`, raw
+    `FOR UPDATE`) then `InventoryMutationEngine.lockProducts` before stock moves.
+  - State machines are the `*LifecycleService` maps; a purchase-order
+    transition is a compare-and-set `updateMany` on the current status (0 rows
+    is 409 `PURCHASE_ORDER_STATE_CONFLICT`). Submission opens one PENDING
+    approval row (`openApproval`) and puts returns, bills and credit notes in
+    `PENDING_APPROVAL`; an order is decided SUBMITTED → APPROVED/REJECTED in one
+    step. The creator/submitter never approves (`SEPARATION_OF_DUTIES`, 403);
+    approving without a PENDING row is 400 `*_NOT_PENDING`.
+  - A goods receipt is bound to its order: the order must be APPROVED,
+    ORDERED or PARTIALLY_RECEIVED, the supplier must match, each line fulfils
+    one `PurchaseOrderItem` (`GoodsReceiptLine.purchaseOrderItemId`, migration
+    `20260929140000`), ordered quantity and unit price come from that line
+    (the DTO has neither), and Σ accepted over every ACCEPTED/COMPLETED/CLOSED
+    receipt of a line never exceeds what was ordered (`GRN_OVER_RECEIPT`).
+    Inspection quantities are applied to the lines; acceptance stocks the
+    inspected (else received) quantities, posts DR INVENTORY / CR
+    ACCOUNTS_PAYABLE and moves the order to PARTIALLY_RECEIVED / RECEIVED.
+  - A purchase return line names its GRN line; over-return is checked against
+    accepted minus the other live returns (`COUNTED_RETURN_STATUSES`), the
+    return's own rows excluded on re-validation. Vendor-bill three-way match
+    is cumulative over the other live bills of the receipt line. A credit note
+    is worth its lines, is issued on approval, and allocates only to a
+    POSTED/PARTIALLY_PAID bill of its own supplier (the bill becomes
+    PARTIALLY_PAID/PAID; the ledger payable was already reduced by the
+    purchase return, so an allocation posts nothing).
+  - Outbox: the purchase relay claims rows as PROCESSING and the
+    `purchase-events` worker sets DONE/FAILED (marking DONE at enqueue made the
+    worker skip everything). The relay's family is
+    `PURCHASE_RELAY_TYPE_PREFIXES` (`src/common/outbox/outbox-routing.ts`,
+    incl. `Goods*`, `Inspection*`, `Outstanding*`); `Inventory*`/`Product*`
+    rows still wait for the product-events relay (4.7). Listeners receive one
+    envelope `{ shopId, outboxEventId, aggregateId, correlationId, payload }`;
+    the order approval event is `PurchaseOrderApproved`. Analytics SQL is MySQL
+    (`TIMESTAMPDIFF`), not PostgreSQL.
+  - `test/integration/procurement.integration-spec.ts` walks the whole chain
+    over HTTP (numbers, approvals, receipts, bill, payments, return, credit
+    note, relay) and asserts stock, ledger and `Supplier.pendingPayables`.
+- 4.3 warehouses/locations (`src/warehouse-domain`): MANAGER+ writes, shop
+  from the tenant context, `Warehouse.code` unique per shop and
+  `Location.code` per warehouse (409 `WAREHOUSE_CODE_IN_USE` /
+  `LOCATION_CODE_IN_USE`, unique indexes with `deletedToken` behind the
+  pre-check), `warehouseId` through `assertOwned`, a parent location must be
+  in the same warehouse (404). Covered by the procurement spec above.
 
 ## Toolchain
 

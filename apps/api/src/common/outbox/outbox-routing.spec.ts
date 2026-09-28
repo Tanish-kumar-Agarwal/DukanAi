@@ -1,12 +1,35 @@
 import {
   DOMAIN_RELAY_TYPE_PREFIXES,
+  PURCHASE_RELAY_TYPE_PREFIXES,
+  buildPurchaseEventsTypePredicate,
   buildSystemEventJob,
   buildSystemEventsTypePredicate,
   isDomainRelayOwnedType,
+  isPurchaseRelayType,
   parseOutboxPayload,
 } from './outbox-routing';
 
 describe('outbox routing', () => {
+  describe('purchase relay family (roadmap 4.2)', () => {
+    it('owns every event the procurement repositories publish and nothing of the sales or POS families', () => {
+      for (const type of ['PurchaseOrderApproved', 'GRNCompleted', 'VendorBillPaid', 'SupplierCreditAllocated', 'GoodsAccepted', 'InspectionCompleted', 'OutstandingReduced']) {
+        expect(isPurchaseRelayType(type)).toBe(true);
+        expect(isDomainRelayOwnedType(type)).toBe(true);
+      }
+      for (const type of ['InvoiceIssued', 'ReturnCreated', 'INVOICE_CREATED', 'CUSTOMER_PAYMENT_RECORDED']) {
+        expect(isPurchaseRelayType(type)).toBe(false);
+      }
+    });
+
+    it('emits one parameterised LIKE BINARY clause per prefix, OR-ed', () => {
+      const predicate = buildPurchaseEventsTypePredicate();
+      expect(predicate.sql.match(/type LIKE BINARY \?/g)).toHaveLength(PURCHASE_RELAY_TYPE_PREFIXES.length);
+      expect(predicate.sql).toContain(' OR ');
+      expect(predicate.sql).not.toContain('NOT LIKE');
+      expect(predicate.values).toEqual(PURCHASE_RELAY_TYPE_PREFIXES.map((p) => `${p}%`));
+    });
+  });
+
   describe('isDomainRelayOwnedType', () => {
     it('routes SCREAMING_CASE POS events to the system-events relay', () => {
       for (const type of ['INVOICE_CREATED', 'INVOICE_RETURNED', 'INVOICE_CANCELLED', 'CUSTOMER_PAYMENT_RECORDED', 'BILL_SCANNED']) {

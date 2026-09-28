@@ -1,6 +1,12 @@
 import { Type } from 'class-transformer';
 import { ArrayMinSize, IsArray, IsDateString, IsIn, IsNumber, IsObject, IsOptional, IsString, MaxLength, Min, ValidateNested } from 'class-validator';
 
+/**
+ * A receipt line fulfils one line of the purchase order (roadmap 4.2). The
+ * order line is named by `purchaseOrderItemId`, or found by product and
+ * variant when omitted. Ordered quantity and price are never taken from the
+ * client: they come from the order line.
+ */
 export class GoodsReceiptLineDto {
   @IsString()
   productId: string;
@@ -10,9 +16,8 @@ export class GoodsReceiptLineDto {
   variantId?: string;
 
   @IsOptional()
-  @IsNumber()
-  @Min(0)
-  orderedQuantity?: number;
+  @IsString()
+  purchaseOrderItemId?: string;
 
   @IsOptional()
   @IsNumber()
@@ -23,11 +28,6 @@ export class GoodsReceiptLineDto {
   @IsString()
   @MaxLength(50)
   unit?: string;
-
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  unitPrice?: number;
 
   @IsOptional()
   @IsString()
@@ -107,9 +107,36 @@ export class ReceiveGoodsDto {
 
 export const INSPECTION_STATUSES = ['PASS', 'FAIL', 'CONDITIONAL_PASS', 'HOLD', 'REJECT'] as const;
 
+/** Per-line inspection outcome: accepted + rejected + damaged may not exceed what was received. */
+export class InspectGoodsLineDto {
+  @IsString()
+  id: string;
+
+  @IsNumber()
+  @Min(0)
+  acceptedQuantity: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  rejectedQuantity?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  damagedQuantity?: number;
+}
+
 export class InspectGoodsDto {
   @IsIn(INSPECTION_STATUSES)
   status: (typeof INSPECTION_STATUSES)[number];
+
+  /** Omitted: every line is accepted as received (PASS) or fully rejected (FAIL / REJECT). */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => InspectGoodsLineDto)
+  lines?: InspectGoodsLineDto[];
 
   @IsOptional()
   @IsObject()
