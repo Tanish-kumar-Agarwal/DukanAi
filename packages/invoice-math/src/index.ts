@@ -1,4 +1,4 @@
-export { InvoiceMathEngine, deriveInvoicePaymentMode } from './invoice-math.engine';
+export { InvoiceMathEngine, deriveInvoicePaymentMode, allocateProportionally } from './invoice-math.engine';
 export { InvoiceMathError } from './invoice-math.error';
 export type { InvoiceMathErrorCode } from './invoice-math.error';
 export {
@@ -31,6 +31,7 @@ export type {
   DiscountType,
   NumericInput,
   ReturnMathInput,
+  ReturnSettlementInput,
   ReturnLineMathInput,
   ReturnCalculationResult,
   ReturnLineResult,

@@ -25,8 +25,8 @@ Never delete or skip a failing test to get green. Fix the behaviour and flip it.
 | `authorization.security-spec.ts` | P0-1 shop profile mass assignment (role escalation, cross-shop `connect`) | 1 |
 | `authorization.security-spec.ts` | P0-2 writes without a role check (stock adjustment, reservation lock) | 1 |
 | `authorization.security-spec.ts` | P0-3 cross-shop batch stock, vendor bill supplier, revision compare | 1 |
-| `money.security-spec.ts` | P1-1 partial returns refund more than the sale | 3 |
-| `money.security-spec.ts` | P1-2 ledger running balance overflows at 10 crore | 3 |
+| `money.security-spec.ts` | P1-1 partial returns refund more than the sale | 3.1 (fixed: cumulative return math, refunds capped at the sale) |
+| `money.security-spec.ts` | P1-2 ledger running balance overflows at 10 crore | 3.2 (fixed: balanceAfter DECIMAL(18,2)) |
 | `authentication.security-spec.ts` | P1-4 lockout revokes sessions already open | 2.2 (fixed) |
 | `authentication.security-spec.ts` | P1-5 placeholder JWT secret accepted | 2.3 (fixed) |
 | `authentication.security-spec.ts` | P1-6 auth bypass reachable without `NODE_ENV` | 2.4 (fixed) |

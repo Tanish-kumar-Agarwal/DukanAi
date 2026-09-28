@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { LedgerPostingService } from './ledger-posting.service';
+import { SupplierPayablesService } from './supplier-payables.service';
 
 /**
  * Double-entry posting authority. Global so that every domain that moves money
@@ -8,7 +9,7 @@ import { LedgerPostingService } from './ledger-posting.service';
  */
 @Global()
 @Module({
-  providers: [LedgerPostingService],
-  exports: [LedgerPostingService],
+  providers: [LedgerPostingService, SupplierPayablesService],
+  exports: [LedgerPostingService, SupplierPayablesService],
 })
 export class LedgerModule {}

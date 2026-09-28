@@ -12,6 +12,7 @@ import { Prisma } from '@prisma/client';
 import { CacheConfig } from '../../config/domains/cache.config';
 import { CreateVendorBillDto, PayVendorBillDto } from '../dto/vendor-bill.dto';
 import { assertOwned, assertOwnedMany } from '../../prisma/tenant-ownership';
+import { SupplierPayablesService } from '../../ledger/supplier-payables.service';
 
 @Injectable()
 export class VendorBillRepository {
@@ -23,7 +24,8 @@ export class VendorBillRepository {
     private readonly outstanding: VendorBillOutstandingService,
     private readonly eventPublisher: SalesEventPublisher,
     @Inject(CACHE_MANAGER) private cacheManager: Cache,
-    private readonly cacheConfig: CacheConfig
+    private readonly cacheConfig: CacheConfig,
+    private readonly payables: SupplierPayablesService
   ) {}
 
   async createVendorBill(shopId: string, payload: CreateVendorBillDto, actorId: string, ipAddress?: string) {
@@ -206,7 +208,13 @@ export class VendorBillRepository {
       if (!bill) throw new NotFoundException();
 
       const { paymentAmount } = payload;
-      
+
+      // Replay of an idempotent payment: the bill already carries it.
+      if (payload.idempotencyKey) {
+        const existing = await tx.supplierPayment.findFirst({ where: { shopId, idempotencyKey: payload.idempotencyKey }, select: { id: true } });
+        if (existing) return bill;
+      }
+
       const { paidAmount, outstandingAmount, isFullyPaid } = this.outstanding.processPayment(
         bill.totalAmount.toString(), 
         bill.paidAmount.toString(), 
@@ -220,6 +228,19 @@ export class VendorBillRepository {
 
       const nextStatus = isFullyPaid ? 'PAID' : 'PARTIALLY_PAID';
       await this.lifecycle.transitionStatus(tx, id, shopId, bill.status, nextStatus, actorId, `Paid ${paymentAmount}`);
+
+      // The money leaves through the payables authority (roadmap 3.11): a
+      // SupplierPayment row, the supplier's balance and DR AP / CR CASH|BANK.
+      await this.payables.pay(tx, {
+        shopId,
+        supplierId: bill.supplierId,
+        vendorBillId: id,
+        amount: paymentAmount,
+        tender: payload.tender,
+        reference: payload.reference,
+        idempotencyKey: payload.idempotencyKey,
+        recordedById: actorId,
+      });
 
       const updatedBill = await tx.vendorBill.findUnique({ where: { id } });
 

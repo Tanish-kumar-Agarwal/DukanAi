@@ -75,7 +75,7 @@ export function ReturnDialog({ isOpen, invoice, onClose, onReturned }: ReturnDia
     return { map, problems };
   }, [quantities, invoice.items]);
 
-  const preview = useMemo(() => calculateReturnPreview(invoice.items, parsed.map), [invoice.items, parsed.map]);
+  const preview = useMemo(() => calculateReturnPreview(invoice.items, parsed.map, invoice), [invoice, parsed.map]);
   const previewTotals = preview.ok ? preview.preview : null;
   const selectedCount = Object.values(parsed.map).filter((v) => v > 0).length;
   const hasProblems = Object.keys(parsed.problems).length > 0;

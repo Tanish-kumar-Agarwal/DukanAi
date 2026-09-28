@@ -3,6 +3,7 @@ import { GrnIntegrationService } from './grn-integration.service';
 import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 import { InventoryLocationService } from '../../inventory-domain/services/inventory-location.service';
 import { LedgerPostingService } from '../../ledger/ledger-posting.service';
+import { SupplierPayablesService } from '../../ledger/supplier-payables.service';
 
 const D = (v: string | number) => new Prisma.Decimal(v);
 
@@ -11,6 +12,7 @@ describe('GrnIntegrationService', () => {
   let engine: { mutateStock: jest.Mock };
   let locations: { resolveWarehouseBin: jest.Mock };
   let ledger: { post: jest.Mock };
+  let payables: { addPayable: jest.Mock; reducePayable: jest.Mock };
   let tx: Record<string, never>;
 
   const mutationResult = (bypassed: boolean) => ({
@@ -24,11 +26,13 @@ describe('GrnIntegrationService', () => {
     engine = { mutateStock: jest.fn().mockResolvedValue(mutationResult(false)) };
     locations = { resolveWarehouseBin: jest.fn().mockResolvedValue('loc-1') };
     ledger = { post: jest.fn().mockResolvedValue({ posted: true, postingId: 'lp-1' }) };
+    payables = { addPayable: jest.fn().mockResolvedValue(undefined), reducePayable: jest.fn().mockResolvedValue(undefined) };
     tx = {};
     service = new GrnIntegrationService(
       engine as unknown as InventoryMutationEngine,
       locations as unknown as InventoryLocationService,
       ledger as unknown as LedgerPostingService,
+      payables as unknown as SupplierPayablesService,
     );
   });
 

@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
+import { rethrowUniqueViolation } from '../common/db/unique-violation';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
@@ -74,26 +75,34 @@ export class ProductsService {
 
     if (barcode) await this.assertBarcodeAvailable(shopId, barcode);
 
-    const product = await this.prisma.$transaction(async (tx) => {
-      const newProduct = await tx.product.create({
-        data: {
-          ...createProductDto,
-          barcode,
+    let product;
+    try {
+      product = await this.prisma.$transaction(async (tx) => {
+        const newProduct = await tx.product.create({
+          data: {
+            ...createProductDto,
+            barcode,
+            shopId,
+            createdBy: userId,
+          },
+        });
+
+        await this.eventPublisher.publish(tx, {
           shopId,
-          createdBy: userId,
-        },
-      });
+          eventType: 'ProductCreated',
+          entityId: newProduct.id,
+          entityType: 'Product',
+          payload: newProduct,
+        });
 
-      await this.eventPublisher.publish(tx, {
-        shopId,
-        eventType: 'ProductCreated',
-        entityId: newProduct.id,
-        entityType: 'Product',
-        payload: newProduct,
+        return newProduct;
       });
-
-      return newProduct;
-    });
+    } catch (error) {
+      rethrowUniqueViolation(error, [
+        { index: 'Product_shopId_sku', code: 'PRODUCT_SKU_IN_USE', message: `Product with SKU ${createProductDto.sku} already exists.` },
+        { index: 'Product_shopId_barcode', code: 'BARCODE_IN_USE', message: `Barcode ${barcode} is already assigned to another product` },
+      ]);
+    }
 
     return product;
   }

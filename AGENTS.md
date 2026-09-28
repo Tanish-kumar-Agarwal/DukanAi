@@ -8,8 +8,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - `nest build` uses `tsconfig.build.json` (`include: ["src/**/*"]`), so the
   entrypoint compiles to `dist/main.js` and `start:prod` is `node dist/main`.
-  If the root-level `check-db.ts` / `setup-triggers.ts` ever get pulled into
-  the build, tsc widens rootDir and the output moves to `dist/src/main.js`;
+  If the root-level `check-db.ts` (or any other root-level script) ever gets
+  pulled into the build, tsc widens rootDir and the output moves to `dist/src/main.js`;
   `test/boot-regression.e2e-spec.ts` guards the script/output agreement.
 - Boot failures are surfaced via `abortOnError: false` + a `bootstrap().catch`
   in `src/main.ts` that writes to stderr. `bufferLogs: true` otherwise swallows
@@ -171,6 +171,76 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   spawns `node dist/main` for the matrix (no `NODE_ENV`, blank / placeholder /
   short `JWT_SECRET`, placeholder `FRONTEND_URL`, `AUTH_DISABLED` in
   production) and asserts each message.
+
+## Money and stock correctness (roadmap phase 3)
+
+- Returns are cumulative (`InvoiceMathEngine.calculateReturn`, spec in
+  `packages/invoice-math/CALCULATION_SPEC.md`): every line carries
+  `returnedQuantity`, a document refunds `cum(before + qty) − cum(before)`
+  per stored amount, is never rounded to the rupee on its own, and is settled
+  against the sale (`settlement`: capped at `invoiceTotal − refundedTotal`,
+  exact remainder when it completes the invoice). `InvoiceReversalService`
+  reads the earlier returns under the invoice lock (`priorReturns`) and the
+  web preview passes the same settlement. A cancellation settles as a
+  completing return, so its math lands on the stored total.
+- `splitRevenue` (`billing.types.ts`) decides the SALES_REVENUE / GST_PAYABLE
+  split of a sale or reversal: revenue carries the round-off and a sub-₹0.50
+  document moves the shortfall onto GST, because the ledger drops negative
+  entries. Use it for any new revenue posting.
+- Reversals run on soft-deleted products and customers: the engine blocks a
+  deleted product only for SALE/RESERVATION, `lockCustomer` takes
+  `allowDeleted`. A refund posts to the sale's shift while it is still open
+  and usable by the actor (`lockShiftForReversal`), else to the actor's own.
+- Authority: `creditLimit` is accepted from MANAGER+ only
+  (`CREDIT_LIMIT_REQUIRES_MANAGER`, AuditLog row `CUSTOMER_CREDIT_LIMIT_CHANGED`
+  in the same transaction). A cashier's discount authority is the max of the
+  line, invoice and combined effective percentages, and a cashier's custom
+  line is capped at `BILLING_CASHIER_MAX_CUSTOM_LINE_AMOUNT` (default 500,
+  `CUSTOM_LINE_REQUIRES_APPROVAL`).
+- Soft-delete unique keys use `deletedToken` (`''` live, the row id once
+  deleted; `src/prisma/soft-delete-token.ts`, DMMF-derived, stamped by the
+  Prisma extension on `update`/`upsert` by id: a soft delete through
+  `updateMany` throws). Keys are `(shopId, key, deletedToken)` on Category,
+  Product (sku, barcode), ProductVariant (sku, barcode), Supplier, Customer,
+  CustomerGroup/Category, PurchaseOrder, GoodsReceipt, VendorBill,
+  PurchaseReturn, SupplierCreditNote, Warehouse, Location. The index is the
+  guard: services pre-check for a friendly message and map P2002 with
+  `rethrowUniqueViolation` (`common/db/unique-violation.ts`); the global
+  filter answers 409 `DB_P2002` with `details.target` otherwise. Live rows
+  that were already duplicates when the migration ran keep their id as token
+  (exempt, still live); list them with `deletedToken <> '' AND isDeleted = 0`.
+- Stock engine: `idempotencyKey` is per document line (`GRN:<grn>:<lineId>`,
+  `PRET:<return>:<lineId>`) and callers skip the value of an `idempotent`
+  result; a RESERVATION_RELEASE floors `reserved` at 0; `variantId` on the
+  request addresses the variant row (adjustments, allocations, releases pass
+  it); a new product-level item bootstraps `currentStock − Σ onHand` as
+  OPENING_BALANCE; `InventoryReconService` writes an InventoryLog row
+  (recorded under the shop owner) when it corrects `currentStock`.
+- Reservations always expire (`expiresInSeconds` 30 s..7 d, mandatory);
+  `POST /reservations/:id/cancel|release` free the stock once
+  (`ReservationExpiryService.releaseReservation`, status-guarded). Stock-count
+  adjustments are never auto-approved, take their delta from
+  `StockCountItem.variance` when raised from a count item, need an approver
+  other than the requester, and approve + post in one transaction with
+  guarded PENDING_APPROVAL → APPROVED → POSTED transitions.
+- Payables (`SupplierPayablesService`, global LedgerModule): a GRN adds to
+  `Supplier.pendingPayables` and a purchase return floors it, in the same
+  transaction as their postings; supplier and vendor-bill payments create a
+  `SupplierPayment` row (idempotent per `(shopId, idempotencyKey)`), decrement
+  the balance under a guard (`PAYABLES_INSUFFICIENT`) and post DR
+  ACCOUNTS_PAYABLE / CR CASH|BANK with source `SUPPLIER_PAYMENT`.
+  `payablesFromLedger` rebuilds the balance (`openingPayables` + postings).
+- Migrations: an applied migration is never edited
+  (`scripts/check-migrations-immutable.sh`, run in CI against the base
+  branch); a fix ships as a new migration with `information_schema` guards
+  (`20260929090100_foundation_convergence` is the template); the ledger
+  immutability triggers are a migration (`20260929090200`), so
+  `LedgerTransaction` rows cannot be updated or deleted, not even by tests.
+  The boot drift message and `prisma/MIGRATIONS.md` give the
+  `migrate deploy` / `migrate resolve` runbook; `prisma db push` is never used.
+  `test/integration/migrations.integration-spec.ts` replays the phase 3
+  migrations on a seeded scratch database (needs CREATE DATABASE rights on
+  the test server).
 
 ## Toolchain
 

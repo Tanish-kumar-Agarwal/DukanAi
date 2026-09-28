@@ -346,7 +346,8 @@ describe('POS resilience, accounting and custom items', () => {
     const ledgerRowsBefore = await run.system(() => prisma.stockLedgerEntry.count({ where: { shopId: shop.shopId } }));
     const ret = await asCashier(() => reversal.processReturn({ idempotencyKey: randomUUID(), invoiceId: result.invoice.id, items: [{ invoiceItemId: custom.id, quantity: 2 }], refund: { tender: TenderType.CASH } }, cashier()));
     expect(ret.stock).toHaveLength(0);
-    expect(num(ret.invoice.totalAmount)).toBe(expected.lines[1].lineTotal.toDecimalPlaces(0).toNumber());
+    // A partial return refunds its exact line amount; only the return that completes the sale carries the round-off (roadmap 3.1).
+    expect(num(ret.invoice.totalAmount)).toBe(expected.lines[1].lineTotal.toNumber());
     expect(await run.system(() => prisma.stockLedgerEntry.count({ where: { shopId: shop.shopId } }))).toBe(ledgerRowsBefore);
 
     // Reporting includes it.

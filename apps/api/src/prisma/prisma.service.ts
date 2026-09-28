@@ -3,6 +3,7 @@ import { writeSync } from 'node:fs';
 import { PrismaClient } from '@prisma/client';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { tenantExtension } from './prisma-tenant.extension';
+import { softDeleteTokenExtension } from './soft-delete-token';
 import { AppConfig, Environment } from '../config/domains/app.config';
 import { PrismaConfig } from '../config/domains/prisma.config';
 
@@ -24,7 +25,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       log: logLevels.map(level => ({ emit: 'stdout', level })) as any,
     });
 
-    const extended = this.$extends(tenantExtension(this.tenantContextService));
+    const extended = this.$extends(tenantExtension(this.tenantContextService)).$extends(softDeleteTokenExtension());
 
     return new Proxy(this, {
       get: (target, prop) => {
@@ -83,8 +84,11 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
             '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!',
             `SCHEMA DRIFT DETECTED: ${detail}.`,
             `Prisma error: ${(error as Error).message?.split('\n').pop()?.trim()}`,
-            'Fix it by syncing the database with the schema:',
-            '    cd apps/api && npx prisma db push',
+            'Apply the pending migrations (never `prisma db push`, which bypasses the migration history):',
+            '    cd apps/api && npx prisma migrate status && npx prisma migrate deploy',
+            'A migration recorded as failed or edited after it was applied is settled with',
+            '    npx prisma migrate resolve --applied <name>   (or --rolled-back <name>)',
+            'and then `migrate deploy` again; see apps/api/prisma/MIGRATIONS.md.',
             '(Ensure DATABASE_URL points at the right database first.)',
             '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!',
             '',

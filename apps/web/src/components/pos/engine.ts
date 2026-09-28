@@ -299,15 +299,22 @@ function mapReturnResult(result: ReturnCalculationResult): ReturnPreview {
  * Proportional refund preview for a partial return, from the stored invoice
  * item amounts and the quantities being returned (contract §1 `calculateReturn`).
  */
+/**
+ * Preview of a return: the same cumulative math the API runs (roadmap 3.1).
+ * With the sale's totals and its completed returns the preview is settled the
+ * way the API settles it, so the refund shown is the refund paid.
+ */
 export function calculateReturnPreview(
   items: InvoiceDetailItem[],
   quantities: Record<string, number>,
+  sale?: { totalAmount: number; returns?: Array<{ status: string; totalAmount: number }> },
 ): ReturnOutcome {
   const lines: ReturnMathInput['lines'] = items
     .filter((item) => (quantities[item.id] ?? 0) > 0)
     .map((item) => ({
       lineRef: item.id,
       originalQuantity: item.quantity,
+      returnedQuantity: item.returnedQuantity,
       quantity: quantities[item.id],
       unitPrice: item.sellingPrice,
       discountAmount: item.discountAmount,
@@ -334,8 +341,15 @@ export function calculateReturnPreview(
       },
     };
   }
+  const settlement = sale
+    ? {
+        invoiceTotal: sale.totalAmount,
+        refundedTotal: (sale.returns ?? []).filter((r) => r.status === 'COMPLETED').reduce((sum, r) => sum + r.totalAmount, 0),
+        completesInvoice: items.every((item) => item.quantity - item.returnedQuantity - (quantities[item.id] ?? 0) <= 0.0005),
+      }
+    : undefined;
   try {
-    return { ok: true, preview: mapReturnResult(InvoiceMathEngine.calculateReturn({ lines })) };
+    return { ok: true, preview: mapReturnResult(InvoiceMathEngine.calculateReturn({ lines, settlement })) };
   } catch (error) {
     return { ok: false, error: toEngineError(error) };
   }

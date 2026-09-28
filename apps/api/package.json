@@ -25,7 +25,6 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:integration": "jest --config ./test/jest-integration.json --runInBand",
     "test:security": "jest --config ./test/jest-integration.json --runInBand --testRegex '\\.security-spec\\.ts$'",
-    "db:push:test": "prisma db push --skip-generate",
     "postinstall": "prisma generate"
   },
   "dependencies": {

@@ -141,12 +141,17 @@ Behaviour
 - Pricing is tax-exclusive only; there is no tax-inclusive mode and no coupon
   mechanism.
 - **Discount authority**: a `CASHIER` may apply at most
-  `BILLING_CASHIER_MAX_DISCOUNT_PERCENT` (default 10) percent, per line and
-  as the effective invoice-level percentage of the post-line-discount subtotal
-  (the two limits are checked independently, so a cashier may combine a 10 %
-  line discount with a 10 % invoice discount). Above that a `MANAGER`+ must
-  bill the invoice (`403 DISCOUNT_REQUIRES_APPROVAL`, details `{ maxPercent,
-  requestedPercent }`). Whenever any line or invoice discount is applied, the
+  `BILLING_CASHIER_MAX_DISCOUNT_PERCENT` (default 10) percent, measured three
+  ways and all three must pass: the highest line discount (custom lines
+  included), the invoice discount as a percentage of the post-line-discount
+  subtotal, and the combined effective discount (`totalDiscount / subtotal`),
+  so a 10 % line discount cannot be stacked with a 10 % invoice discount.
+  Above that a `MANAGER`+ must bill the invoice (`403
+  DISCOUNT_REQUIRES_APPROVAL`, details `{ maxPercent, requestedPercent }`).
+  A cashier's custom line is capped at `BILLING_CASHIER_MAX_CUSTOM_LINE_AMOUNT`
+  rupees per line (default 500; 0 means cashiers cannot add custom lines):
+  above it a `MANAGER`+ must bill the invoice (`403
+  CUSTOM_LINE_REQUIRES_APPROVAL`, details `{ maxAmount, lineAmount, name }`). Whenever any line or invoice discount is applied, the
   billing user is stamped as `approvedBy` / `approvalTimestamp` and the audit
   row records the amounts. The engine's hard limit is 100% and never more
   than the subtotal.
@@ -202,7 +207,19 @@ reference? } }`. Omitting `items` returns everything still returnable.
 Custom lines can be returned (money only; no stock is restored).
 Refund order: the original credit portion is reversed on the customer first,
 the remainder is refunded through `refund.tender` (default `CASH`). A cash
-refund requires the cashier's OPEN shift.
+refund requires an OPEN shift: the refund posts to the sale's own shift while
+it is open and usable by the caller (its cashier, or a `MANAGER`+), otherwise
+to the caller's own open shift.
+
+Return math is cumulative (roadmap 3.1; `CALCULATION_SPEC.md`): each line
+refunds `cum(returnedQuantity + quantity) − cum(returnedQuantity)` of its
+stored amounts, the document is not rounded to the rupee on its own, and its
+total is settled against the sale: never more than
+`invoiceTotal − Σ earlier returns`, and exactly that remainder when the
+return completes the sale (that is where the sale's round-off is refunded).
+So the returns of a sale add up to its `totalAmount`, whatever the split.
+Returns and cancellations work on soft-deleted products and customers; only
+new sales are refused.
 
 Response `201`: return invoice (type `SALES_RETURN`) with items and payments.
 Codes: `INVOICE_NOT_FOUND`, `INVOICE_NOT_RETURNABLE`, `RETURN_QTY_EXCEEDS`,
@@ -235,6 +252,12 @@ totalReceipts, openedBy: { id, name }, closedBy }`.
 - `GET /customers?q&skip&take` returns `{ items, total }`.
 - `POST /customers { name, phone, email?, address?, city?, state?, creditLimit?, notes? }`.
 - `PATCH /customers/:id { name?, phone?, email?, address?, city?, state?, creditLimit?, notes?, isActive? }`.
+- `creditLimit` (create or update) is accepted from `MANAGER`+ only
+  (`403 CREDIT_LIMIT_REQUIRES_MANAGER`); a change writes an `AuditLog` row
+  `CUSTOMER_CREDIT_LIMIT_CHANGED` in the same transaction.
+- `phone` is unique among the shop's live customers (unique index
+  `(shopId, phone, deletedToken)`; `409 CUSTOMER_PHONE_IN_USE`, also under
+  concurrent creates). A soft-deleted customer frees its phone number.
 - `GET /customers/:id` returns the customer with `state`, `creditLimit`,
   `outstandingBalance`, `totalPurchases`, `totalPaid`, last 10 invoices and
   last 10 ledger rows.
@@ -362,7 +385,8 @@ Every money or stock-value movement posts through `LedgerPostingService`
 its business source, `(shopId, sourceType, sourceId)` with a unique index:
 `SALE` / `RETURN` / `CANCELLATION` (invoice id), `CUSTOMER_PAYMENT` (udhar
 transaction id), `GRN`, `PURCHASE_RETURN`, `ADJUSTMENT_REQUEST`,
-`STOCK_ADJUSTMENT` (their document ids). A replay of an already-posted
+`STOCK_ADJUSTMENT` (their document ids), `SUPPLIER_PAYMENT` (SupplierPayment
+id). A replay of an already-posted
 source posts nothing; a concurrent duplicate fails on the index and its
 transaction rolls back. Every `LedgerTransaction` row carries the header's
 `postingId`. Debit-normal accounts: `CASH`, `BANK`,
@@ -373,11 +397,23 @@ transaction rolls back. Every `LedgerTransaction` row carries the header's
 | Event | Debit | Credit |
 |---|---|---|
 | Sale | CASH / BANK (tenders), ACCOUNTS_RECEIVABLE (udhar), COST_OF_GOODS (stocked lines only) | SALES_REVENUE (taxable + round-off), GST_PAYABLE, INVENTORY (stocked lines only) |
+| Sale under ₹0.50 (rounds to ₹0) | as above | the negative round-off exceeds the taxable amount, so revenue posts 0 and the shortfall comes off GST_PAYABLE (`splitRevenue`); both entries stay >= 0 |
 | Return / cancellation | the exact reverse of the sale, cost of goods only for lines that physically came back | |
 | Customer repayment | CASH / BANK | ACCOUNTS_RECEIVABLE |
 | Goods receipt (GRN accepted) | INVENTORY (Σ unitPrice × acceptedQuantity) | ACCOUNTS_PAYABLE |
 | Purchase return | ACCOUNTS_PAYABLE | INVENTORY |
+| Supplier payment / vendor-bill payment | ACCOUNTS_PAYABLE | CASH (tender `CASH`) / BANK (other tenders) |
 | Stock adjustment, damage, loss, expiry, opening balance | delta > 0: INVENTORY / INVENTORY_ADJUSTMENT; delta < 0: INVENTORY_ADJUSTMENT / INVENTORY, at `Product.costPrice` | |
+
+`Supplier.pendingPayables` is the per-supplier view of `ACCOUNTS_PAYABLE`,
+maintained in the same transaction as each posting (receipt adds, purchase
+return subtracts down to zero, payment subtracts under a guard: paying more
+than is owed is `409 PAYABLES_INSUFFICIENT`). `POST /suppliers/:id/payments
+{ amount, tender?, reference?, idempotencyKey?, notes? }` and
+`POST /vendor-bills/:id/pay { paymentAmount, tender?, reference?,
+idempotencyKey? }` both record a `SupplierPayment` (the ledger source,
+replayed per idempotency key). `SupplierPayablesService.payablesFromLedger`
+rebuilds the balance from `openingPayables` and the postings.
 
 `SERVICE`, `DIGITAL` and custom lines never move `INVENTORY` or
 `COST_OF_GOODS`. Valuation basis: receipts and supplier returns post at the

@@ -48,11 +48,35 @@ subtotal − totalDiscount + totalTax + roundOff == finalTotal
 
 ## `InvoiceMathEngine.calculateReturn`
 
-For each returned line: `ratio = quantity / originalQuantity`. When the full
-quantity is returned the stored amounts are used unchanged; otherwise each
-stored amount (`discountAmount`, `taxableAmount`, `cgst`, `sgst`, `igst`,
-`cess`) is multiplied by `ratio` and rounded to 2 dp. Totals are sums of the
-line values and a fresh round-off is applied to the return grand total.
+Returns are cumulative (roadmap 3.1). For a stored line amount `A` (each of
+`discountAmount`, `taxableAmount`, `cgst`, `sgst`, `igst`, `cess`) and the
+original quantity `Q`, the amount refunded once `q` units have gone back is
+`cum(q) = round2(A × q / Q)`, with `cum(0) = 0` and `cum(Q) = A` exactly. A
+document that returns `quantity` after `returnedQuantity` units were already
+returned refunds `cum(returnedQuantity + quantity) − cum(returnedQuantity)`:
+whatever the split, the returns of a line add up to `A`, and the return that
+completes the line takes its exact remainder. `returnedQuantity + quantity`
+may not exceed `Q` (`ERR_RETURN_QTY_EXCEEDS`).
+
+Totals are sums of the line values. A return document is **never rounded to
+the rupee on its own** (that is how four returns of a ₹0.50 unit refunded ₹4
+on a ₹2 sale). With a `settlement` the document total is settled against the
+sale: `finalTotal = min(grandTotal, invoiceTotal − refundedTotal)`, and when
+`completesInvoice` is true (every line of the sale is fully returned after
+this document) `finalTotal = invoiceTotal − refundedTotal` exactly. So
+Σ refunds of a sale == its `finalTotal`, the sale's round-off is refunded
+once, by the last return, and a sale that was already over-refunded (legacy
+data) refunds nothing more. `roundOff = finalTotal − grandTotal`.
+
+## Allocation notes
+
+`allocateProportionally(total, weights)` (used for the invoice discount)
+returns 2 dp shares with `Σ shares == total` and `0 <= share_i <= weight_i`:
+half-up rounding can over- or undershoot by a few paise, and the difference
+is settled on the last lines with room, never by a negative share.
+
+A sale whose grand total is under ₹0.50 rounds to ₹0 (negative round-off);
+with no tender and no credit its payment mode is `CASH`, not `UDHAR`.
 
 ## Limits (storage-backed)
 

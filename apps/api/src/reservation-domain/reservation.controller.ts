@@ -1,4 +1,6 @@
-import { Controller, Post, Body, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, Param, UseGuards } from '@nestjs/common';
+import { CurrentUser } from '../iam/decorators/current-user.decorator';
+import { SafeUserDto } from '../users/dto/safe-user.dto';
 import { ReservationService } from './services/reservation.service';
 import { ReservationExpiryService } from './services/reservation-expiry.service';
 import { CreateReservationDto } from './dto/reservation.dto';
@@ -22,6 +24,20 @@ export class ReservationController {
   async createReservation(@Body() dto: CreateReservationDto) {
     const shopId = this.tenantContext.getShopId();
     return this.reservationService.createReservation(shopId, dto);
+  }
+
+  /** Abandons an active reservation and frees its stock (roadmap 3.8). */
+  @Roles(...MANAGEMENT_ROLES)
+  @Post(':id/cancel')
+  async cancelReservation(@Param('id') id: string, @CurrentUser() user: SafeUserDto) {
+    return this.expiryService.releaseReservation(this.tenantContext.getShopId(), id, 'CANCELLED', user.id);
+  }
+
+  /** Releases the hold of an active reservation without cancelling the business intent. */
+  @Roles(...MANAGEMENT_ROLES)
+  @Post(':id/release')
+  async releaseReservation(@Param('id') id: string, @CurrentUser() user: SafeUserDto) {
+    return this.expiryService.releaseReservation(this.tenantContext.getShopId(), id, 'RELEASED', user.id);
   }
 
   @Roles(...ADMIN_ROLES)

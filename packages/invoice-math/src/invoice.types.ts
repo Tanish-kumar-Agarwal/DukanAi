@@ -116,6 +116,9 @@ export interface ReturnLineMathInput {
   /** Identifier echoed back (e.g. invoiceItemId). */
   lineRef: string;
   originalQuantity: NumericInput;
+  /** Quantity of this line already returned by earlier return documents (default 0). */
+  returnedQuantity?: NumericInput;
+  /** Quantity returned by this document. */
   quantity: NumericInput;
   unitPrice: NumericInput;
   discountAmount: NumericInput;
@@ -127,8 +130,25 @@ export interface ReturnLineMathInput {
   totalAmount: NumericInput;
 }
 
+/**
+ * How this return settles against the sale it reverses. Without it the
+ * document total is the exact sum of its lines (no rupee rounding). With it,
+ * the total is capped so that all returns of the sale never refund more than
+ * `invoiceTotal`, and the return that completes the sale takes the exact
+ * remainder, which is where the sale's round-off is refunded.
+ */
+export interface ReturnSettlementInput {
+  /** The original invoice's final (rounded) total. */
+  invoiceTotal: NumericInput;
+  /** Σ totalAmount of the earlier completed returns of that invoice. */
+  refundedTotal?: NumericInput;
+  /** True when, after this document, every line of the sale is fully returned. */
+  completesInvoice: boolean;
+}
+
 export interface ReturnMathInput {
   lines: ReturnLineMathInput[];
+  settlement?: ReturnSettlementInput;
 }
 
 export interface ReturnLineResult {

@@ -1,4 +1,5 @@
-import { InvoiceMathEngine } from '../src/invoice-math.engine';
+import { InvoiceMathEngine, allocateProportionally } from '../src/invoice-math.engine';
+import { Decimal } from '../src/decimal';
 import { InvoiceMathError } from '../src/invoice-math.error';
 
 const line = (overrides: Partial<Parameters<typeof InvoiceMathEngine.calculate>[0]['items'][number]> = {}) => ({
@@ -246,24 +247,121 @@ describe('InvoiceMathEngine.calculateReturn', () => {
     totalAmount: 318.6,
   };
 
-  it('full return reproduces the original amounts', () => {
-    const result = InvoiceMathEngine.calculateReturn({ lines: [{ ...original, quantity: 3 }] });
+  it('full return reproduces the original amounts and, settled against the sale, refunds its rounded total', () => {
+    const result = InvoiceMathEngine.calculateReturn({ lines: [{ ...original, quantity: 3 }], settlement: { invoiceTotal: 319, refundedTotal: 0, completesInvoice: true } });
     expect(result.taxableTotal.toNumber()).toBe(270);
     expect(result.totalTax.toNumber()).toBe(48.6);
     expect(result.grandTotal.toNumber()).toBe(318.6);
+    expect(result.roundOff.toNumber()).toBe(0.4);
     expect(result.finalTotal.toNumber()).toBe(319);
   });
 
-  it('partial return scales proportionally', () => {
-    const result = InvoiceMathEngine.calculateReturn({ lines: [{ ...original, quantity: 1 }] });
+  it('partial return scales proportionally and is not rounded on its own', () => {
+    const result = InvoiceMathEngine.calculateReturn({ lines: [{ ...original, quantity: 1 }], settlement: { invoiceTotal: 319, refundedTotal: 0, completesInvoice: false } });
     expect(result.lines[0].discountAmount.toNumber()).toBe(10);
     expect(result.taxableTotal.toNumber()).toBe(90);
     expect(result.totalCgst.toNumber()).toBe(8.1);
     expect(result.grandTotal.toNumber()).toBe(106.2);
-    expect(result.finalTotal.toNumber()).toBe(106);
+    expect(result.roundOff.toNumber()).toBe(0);
+    expect(result.finalTotal.toNumber()).toBe(106.2);
   });
 
   it('rejects quantity above the original', () => {
     expect(() => InvoiceMathEngine.calculateReturn({ lines: [{ ...original, quantity: 4 }] })).toThrow(InvoiceMathError);
+  });
+});
+
+describe('InvoiceMathEngine.calculateReturn: cumulative returns (roadmap 3.1)', () => {
+  // A 4 x 0.50 sale, 0% GST: total 2.00, no round-off.
+  const half = { lineRef: 'half', originalQuantity: 4, unitPrice: 0.5, discountAmount: 0, taxableAmount: 2, cgstAmount: 0, sgstAmount: 0, igstAmount: 0, totalAmount: 2 };
+
+  it('four one-unit returns refund exactly the 2.00 that was paid, none of them rounded up', () => {
+    let refunded = new Decimal(0);
+    for (let returned = 0; returned < 4; returned++) {
+      const r = InvoiceMathEngine.calculateReturn({
+        lines: [{ ...half, returnedQuantity: returned, quantity: 1 }],
+        settlement: { invoiceTotal: 2, refundedTotal: refunded, completesInvoice: returned === 3 },
+      });
+      expect(r.finalTotal.toNumber()).toBe(0.5);
+      expect(r.roundOff.toNumber()).toBe(0);
+      refunded = refunded.plus(r.finalTotal);
+    }
+    expect(refunded.toNumber()).toBe(2);
+  });
+
+  it('cumulative slices of a taxed line add up to the stored amounts whatever the split', () => {
+    const line = { lineRef: 'l', originalQuantity: 3, unitPrice: 100, discountAmount: 30, taxableAmount: 270, cgstAmount: 24.3, sgstAmount: 24.3, igstAmount: 0, totalAmount: 318.6 };
+    const splits = [[1, 1, 1], [2, 1], [1, 2], [3], [0.5, 0.5, 2]];
+    for (const split of splits) {
+      let returned = new Decimal(0);
+      const sums = { taxable: new Decimal(0), cgst: new Decimal(0), discount: new Decimal(0), total: new Decimal(0) };
+      for (const qty of split) {
+        const r = InvoiceMathEngine.calculateReturn({ lines: [{ ...line, returnedQuantity: returned, quantity: qty }] });
+        sums.taxable = sums.taxable.plus(r.taxableTotal);
+        sums.cgst = sums.cgst.plus(r.totalCgst);
+        sums.discount = sums.discount.plus(r.totalDiscount);
+        sums.total = sums.total.plus(r.finalTotal);
+        returned = returned.plus(qty);
+      }
+      expect(sums.taxable.toNumber()).toBe(270);
+      expect(sums.cgst.toNumber()).toBe(24.3);
+      expect(sums.discount.toNumber()).toBe(30);
+      expect(sums.total.toNumber()).toBe(318.6);
+    }
+  });
+
+  it('the return that completes the invoice takes the exact remainder, which refunds the round-off once', () => {
+    // 3 x 0.50 = 1.50 rounds to 2.00 (+0.50 round-off).
+    const line = { lineRef: 'l', originalQuantity: 3, unitPrice: 0.5, discountAmount: 0, taxableAmount: 1.5, cgstAmount: 0, sgstAmount: 0, igstAmount: 0, totalAmount: 1.5 };
+    const first = InvoiceMathEngine.calculateReturn({ lines: [{ ...line, quantity: 1 }], settlement: { invoiceTotal: 2, refundedTotal: 0, completesInvoice: false } });
+    expect(first.finalTotal.toNumber()).toBe(0.5);
+    const last = InvoiceMathEngine.calculateReturn({ lines: [{ ...line, returnedQuantity: 1, quantity: 2 }], settlement: { invoiceTotal: 2, refundedTotal: 0.5, completesInvoice: true } });
+    expect(last.grandTotal.toNumber()).toBe(1);
+    expect(last.finalTotal.toNumber()).toBe(1.5);
+    expect(last.roundOff.toNumber()).toBe(0.5);
+  });
+
+  it('never refunds more than the invoice total, even after legacy over-refunds', () => {
+    const r = InvoiceMathEngine.calculateReturn({ lines: [{ ...half, returnedQuantity: 2, quantity: 1 }], settlement: { invoiceTotal: 2, refundedTotal: 1.8, completesInvoice: false } });
+    expect(r.finalTotal.toNumber()).toBe(0.2);
+    const capped = InvoiceMathEngine.calculateReturn({ lines: [{ ...half, returnedQuantity: 3, quantity: 1 }], settlement: { invoiceTotal: 2, refundedTotal: 2.5, completesInvoice: true } });
+    expect(capped.finalTotal.toNumber()).toBe(0);
+    expect(capped.roundOff.toNumber()).toBe(-0.5);
+  });
+
+  it('rejects a return beyond what is still returnable and inconsistent returned quantities', () => {
+    expect(() => InvoiceMathEngine.calculateReturn({ lines: [{ ...half, returnedQuantity: 3, quantity: 2 }] })).toThrow(/still be returned/);
+    expect(() => InvoiceMathEngine.calculateReturn({ lines: [{ ...half, returnedQuantity: 5, quantity: 1 }] })).toThrow(InvoiceMathError);
+    expect(() => InvoiceMathEngine.calculateReturn({ lines: [{ ...half, quantity: 1 }], settlement: { invoiceTotal: -1, completesInvoice: false } })).toThrow(InvoiceMathError);
+  });
+});
+
+describe('InvoiceMathEngine.calculate: allocation and tiny totals (roadmap 3.1)', () => {
+  it('never gives a line a negative share of the invoice discount', () => {
+    // Four 0.03 lines with a 0.05 discount: proportional shares round to 0.01 each (0.04) or overshoot with a 0.02.
+    const nets = [0.03, 0.03, 0.03, 0.01];
+    const shares = allocateProportionally(new Decimal(0.05), nets.map((n) => new Decimal(n)));
+    expect(shares.every((s) => !s.isNegative())).toBe(true);
+    expect(shares.reduce((a, s) => a.plus(s), new Decimal(0)).toNumber()).toBe(0.05);
+    shares.forEach((s, i) => expect(s.lessThanOrEqualTo(nets[i])).toBe(true));
+
+    const result = InvoiceMathEngine.calculate({
+      items: nets.map((n, i) => ({ productId: `p${i}`, quantity: 1, unitPrice: n, gstRate: 0 })),
+      discountType: 'FIXED_AMOUNT',
+      discountAmount: 0.05,
+      discountReason: 'test',
+    });
+    expect(result.lines.every((l) => !l.invoiceDiscountShare.isNegative() && !l.taxableAmount.isNegative())).toBe(true);
+    expect(result.invoiceDiscount.toNumber()).toBe(0.05);
+    expect(result.lines.reduce((a, l) => a.plus(l.invoiceDiscountShare), new Decimal(0)).toNumber()).toBe(0.05);
+  });
+
+  it('a sale under 0.50 rounds to zero with a negative round-off and settles as a zero CASH document', () => {
+    const result = InvoiceMathEngine.calculate({ items: [{ productId: 'p', quantity: 1, unitPrice: 0.34, gstRate: 18 }], payment: { tenders: [], udharAmount: 0 } });
+    expect(result.grandTotal.toNumber()).toBe(0.4);
+    expect(result.finalTotal.toNumber()).toBe(0);
+    expect(result.roundOff.toNumber()).toBe(-0.4);
+    expect(result.payment?.paymentMode).toBe('CASH');
+    expect(result.subtotal.minus(result.totalDiscount).plus(result.totalTax).plus(result.roundOff).toNumber()).toBe(0);
   });
 });

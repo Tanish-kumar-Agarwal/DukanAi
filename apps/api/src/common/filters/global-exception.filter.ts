@@ -95,6 +95,11 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       message = mapped?.message ?? 'Internal server error';
       error = HttpStatus[statusCode] || 'InternalServerError';
       code = mapped ? `DB_${exception.code}` : undefined;
+      if (exception.code === 'P2002') {
+        // The unique index that rejected the write, so clients can point at the field (roadmap 3.10).
+        const target = (exception.meta as { target?: unknown } | undefined)?.target;
+        details = { target: Array.isArray(target) ? target.map(String) : target === undefined ? undefined : String(target) };
+      }
       this.logger.error(
         `Prisma error ${exception.code} [correlationId=${correlationId}]`,
         exception.message,

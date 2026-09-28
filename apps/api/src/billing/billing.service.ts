@@ -22,7 +22,7 @@ import { InventoryLocationService } from '../inventory-domain/services/inventory
 import { OptimisticLockConflictError, InsufficientStockError } from '../inventory-domain/errors/inventory.errors';
 import { InvoiceNumberService } from './services/invoice-number.service';
 import { LedgerPostingService, LedgerEntryInput } from '../ledger/ledger-posting.service';
-import { BillingActor, INVOICE_INCLUDE, InvoiceWithRelations, StockOutcome, isManager, money, qty } from './billing.types';
+import { BillingActor, INVOICE_INCLUDE, InvoiceWithRelations, StockOutcome, isManager, money, qty, splitRevenue } from './billing.types';
 import { BillingCheckpoints } from './billing-checkpoints';
 import { isSerializationFailure } from '../common/db/serialization-retry';
 import { financialYearLabel, safeTimeZone } from '../common/time/business-day';
@@ -735,16 +735,32 @@ export class BillingService {
   enforceDiscountAuthority(actor: BillingActor, lines: NormalisedLine[], math: InvoiceCalculationResultV1): void {
     if (isManager(actor.role)) return;
     const limit = new Decimal(this.billingConfig.cashierMaxDiscountPercent);
+    // Custom lines count too: their discountPercent is in `lines`, and their
+    // free-form price is capped per line (roadmap 3.6, audit P2-23).
     const maxLine = lines.reduce((acc, l) => Decimal.max(acc, new Decimal(l.discountPercent)), new Decimal(0));
     const netSubtotal = math.subtotal.minus(math.totalItemDiscount);
     const invoicePct = netSubtotal.greaterThan(0) ? math.invoiceDiscount.div(netSubtotal).mul(100) : new Decimal(0);
-    const requested = Decimal.max(maxLine, invoicePct);
+    // Line and invoice discounts compound: 10% + 10% is a 19% discount on the goods.
+    const effectivePct = math.subtotal.greaterThan(0) ? math.totalDiscount.div(math.subtotal).mul(100) : new Decimal(0);
+    const requested = Decimal.max(maxLine, invoicePct, effectivePct);
     if (requested.greaterThan(limit)) {
       throw new ForbiddenException({
         message: `Discounts above ${limit.toFixed(2)}% need a manager to bill this invoice.`,
         code: 'DISCOUNT_REQUIRES_APPROVAL',
         details: { maxPercent: limit.toNumber(), requestedPercent: requested.toDecimalPlaces(2).toNumber() },
       });
+    }
+    const customCap = new Decimal(this.billingConfig.cashierMaxCustomLineAmount);
+    for (const line of math.lines) {
+      const source = lines.find((l) => l.key === line.productId);
+      if (!source?.custom) continue;
+      if (line.lineSubtotal.greaterThan(customCap)) {
+        throw new ForbiddenException({
+          message: customCap.isZero() ? 'Custom items need a manager to bill this invoice.' : `Custom items above ${customCap.toFixed(2)} need a manager to bill this invoice.`,
+          code: 'CUSTOM_LINE_REQUIRES_APPROVAL',
+          details: { maxAmount: customCap.toNumber(), lineAmount: line.lineSubtotal.toNumber(), name: source.custom.name },
+        });
+      }
     }
   }
 
@@ -803,10 +819,12 @@ export class BillingService {
    * Row-locks the customer. Inactive customers cannot be billed or take
    * payments; reversals of their existing invoices pass `allowInactive`.
    */
-  async lockCustomer(tx: Tx, shopId: string, customerId: string, options: { allowInactive?: boolean } = {}): Promise<LockedCustomer> {
+  async lockCustomer(tx: Tx, shopId: string, customerId: string, options: { allowInactive?: boolean; allowDeleted?: boolean } = {}): Promise<LockedCustomer> {
+    // Reversals pass `allowDeleted`: a soft-deleted customer's past invoices
+    // must still be returnable and cancellable (roadmap 3.5); a sale never is.
     const rows = await tx.$queryRaw<Array<{ id: string; name: string; state: string | null; outstandingBalance: unknown; creditLimit: unknown; isActive: number | boolean }>>`
       SELECT id, name, state, outstandingBalance, creditLimit, isActive FROM Customer
-      WHERE id = ${customerId} AND shopId = ${shopId} AND isDeleted = false FOR UPDATE
+      WHERE id = ${customerId} AND shopId = ${shopId} ${options.allowDeleted ? Prisma.empty : Prisma.sql`AND isDeleted = false`} FOR UPDATE
     `;
     if (rows.length === 0) throw new NotFoundException({ message: 'Customer not found.', code: 'CUSTOMER_NOT_FOUND' });
     const row = rows[0];
@@ -841,12 +859,13 @@ export class BillingService {
     costOfGoods: Decimal,
   ): LedgerEntryInput[] {
     const buckets = this.tenderBuckets(tenders);
+    const { revenue, gst } = splitRevenue(math.taxableTotal, math.totalTax, math.roundOff);
     const entries: LedgerEntryInput[] = [
       { account: LedgerAccount.CASH, type: LedgerEntryType.DEBIT, amount: buckets.cash },
       { account: LedgerAccount.BANK, type: LedgerEntryType.DEBIT, amount: buckets.bank },
       { account: LedgerAccount.ACCOUNTS_RECEIVABLE, type: LedgerEntryType.DEBIT, amount: money(udhar) },
-      { account: LedgerAccount.SALES_REVENUE, type: LedgerEntryType.CREDIT, amount: money(math.taxableTotal.plus(math.roundOff)) },
-      { account: LedgerAccount.GST_PAYABLE, type: LedgerEntryType.CREDIT, amount: money(math.totalTax) },
+      { account: LedgerAccount.SALES_REVENUE, type: LedgerEntryType.CREDIT, amount: revenue },
+      { account: LedgerAccount.GST_PAYABLE, type: LedgerEntryType.CREDIT, amount: gst },
     ];
     if (costOfGoods.greaterThan(0)) {
       entries.push({ account: LedgerAccount.COST_OF_GOODS, type: LedgerEntryType.DEBIT, amount: money(costOfGoods) });

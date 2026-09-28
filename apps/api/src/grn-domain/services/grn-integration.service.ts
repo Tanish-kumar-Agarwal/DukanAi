@@ -3,9 +3,13 @@ import { LedgerAccount, LedgerEntryType, Prisma } from '@prisma/client';
 import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 import { InventoryLocationService } from '../../inventory-domain/services/inventory-location.service';
 import { LedgerPostingService } from '../../ledger/ledger-posting.service';
+import { SupplierPayablesService } from '../../ledger/supplier-payables.service';
 
 export interface GrnIntegrationLine {
+  /** GoodsReceiptLine id: the stock idempotency key is per line, not per product. */
+  id?: string;
   productId: string;
+  variantId?: string | null;
   acceptedQuantity: Prisma.Decimal | number | string;
   unitPrice: Prisma.Decimal | number | string;
   batchId?: string | null;
@@ -15,6 +19,8 @@ export interface GrnIntegrationInput {
   id: string;
   warehouseId?: string | null;
   createdBy?: string | null;
+  /** The supplier owed for this receipt; its pendingPayables grows with the posted value. */
+  supplierId?: string | null;
   lines: GrnIntegrationLine[];
 }
 
@@ -26,6 +32,7 @@ export class GrnIntegrationService {
     private readonly inventoryMutationEngine: InventoryMutationEngine,
     private readonly locationService: InventoryLocationService,
     private readonly ledger: LedgerPostingService,
+    private readonly payables: SupplierPayablesService,
   ) {}
 
   /**
@@ -54,6 +61,7 @@ export class GrnIntegrationService {
         shopId,
         locationId,
         productId: line.productId,
+        variantId: line.variantId ?? null,
         quantity: accepted.toNumber(),
         mutationType: MutationType.PURCHASE,
         reason: `GRN Acceptance: ${grn.id}`,
@@ -61,21 +69,23 @@ export class GrnIntegrationService {
         performedBy: grn.createdBy || 'SYSTEM',
         occurredAt: new Date(),
         allowNegative: true,
-        idempotencyKey: `GRN:${grn.id}:${line.productId}`,
+        // One key per receipt line (roadmap 3.7, audit P2-25): two lines of the
+        // same product are two receipts, a replayed line is skipped and never valued.
+        idempotencyKey: `GRN:${grn.id}:${line.id ?? line.productId}`,
       });
 
       if (line.batchId) {
         this.logger.debug(`Batch ${line.batchId} received on GRN ${grn.id}`);
       }
 
-      if (result.bypassed) continue;
+      if (result.bypassed || result.idempotent) continue;
       inventoryValue = inventoryValue.plus(new Prisma.Decimal(line.unitPrice.toString()).times(accepted));
     }
 
-    await this.postInventoryReceipt(tx, shopId, grn.id, inventoryValue.toDecimalPlaces(2));
+    await this.postInventoryReceipt(tx, shopId, grn.id, inventoryValue.toDecimalPlaces(2), grn.supplierId);
   }
 
-  private async postInventoryReceipt(tx: Prisma.TransactionClient, shopId: string, grnId: string, value: Prisma.Decimal) {
+  private async postInventoryReceipt(tx: Prisma.TransactionClient, shopId: string, grnId: string, value: Prisma.Decimal, supplierId?: string | null) {
     if (value.lessThanOrEqualTo(0)) return;
 
     const description = `GRN ${grnId}`;
@@ -91,6 +101,10 @@ export class GrnIntegrationService {
         { account: LedgerAccount.ACCOUNTS_PAYABLE, type: LedgerEntryType.CREDIT, amount: value },
       ],
     });
-    if (!result.posted) this.logger.log(`Ledger posting for ${description} already exists. Skipped.`);
+    if (!result.posted) {
+      this.logger.log(`Ledger posting for ${description} already exists. Skipped.`);
+      return;
+    }
+    await this.payables.addPayable(tx, shopId, supplierId, value);
   }
 }

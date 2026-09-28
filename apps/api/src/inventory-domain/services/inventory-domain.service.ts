@@ -128,6 +128,8 @@ export class InventoryDomainService {
           shopId,
           locationId: item.locationId,
           productId: item.productId,
+          // The row the caller named: a variant's item, not the product-level row (roadmap 3.7, audit P2-27).
+          variantId: item.variantId,
           quantity: Math.abs(quantityChange),
           mutationType,
           metadata: { direction: isDeduction ? -1 : 1 },

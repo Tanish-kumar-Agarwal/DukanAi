@@ -10,7 +10,7 @@ import { InventoryMutationEngine, MutationType } from '../../inventory-domain/se
 import { InventoryLocationService } from '../../inventory-domain/services/inventory-location.service';
 import { InvoiceNumberService } from './invoice-number.service';
 import { LedgerPostingService, LedgerEntryInput } from '../../ledger/ledger-posting.service';
-import { BillingActor, INVOICE_INCLUDE, InvoiceWithRelations, StockOutcome, money, qty } from '../billing.types';
+import { BillingActor, INVOICE_INCLUDE, InvoiceWithRelations, StockOutcome, isManager, money, qty, splitRevenue } from '../billing.types';
 import { BillingFeatureConfig } from '../../config/domains/features/billing-feature.config';
 import { BillingCheckpoints, BillingFlow } from '../billing-checkpoints';
 import { withSerializationRetry } from '../../common/db/serialization-retry';
@@ -106,19 +106,28 @@ export class InvoiceReversalService {
         }
 
         const lines = this.selectReturnLines(original.items, dto.items);
-        const math = this.returnMath(lines);
+        // Every earlier return of this sale, read under the invoice lock: the
+        // refund is capped so that all returns together never exceed the sale,
+        // and the return that completes the sale takes the exact remainder.
+        const prior = await this.priorReturns(tx, actor.shopId, original.id);
+        const completesInvoice = original.items.every((item) => {
+          const returning = lines.find((l) => l.item.id === item.id)?.quantity ?? new Decimal(0);
+          return new Decimal(item.quantity.toString()).minus(item.returnedQuantity.toString()).minus(returning).lessThanOrEqualTo(0);
+        });
+        const math = this.returnMath(lines, { invoiceTotal: original.totalAmount, refundedTotal: prior.refunded, completesInvoice });
         const refundTotal = money(math.finalTotal);
         const now = new Date();
         const financialYear = financialYearLabel(now, timeZone);
 
-        // Shift before customer (canonical lock order). Cash leaves the drawer: an open shift is mandatory.
-        const shiftId = await this.billing.lockShift(tx, actor, undefined);
+        // Shift before customer (canonical lock order). The refund nets against
+        // the sale's own shift while it is open; otherwise the actor's drawer.
+        const shiftId = await this.lockShiftForReversal(tx, actor, original.shiftId);
 
         // Credit reversal: the refund first cancels credit (up to this sale's not
         // yet reversed credit and the customer's current outstanding balance;
         // repayments are not allocated per invoice), the rest is paid out.
-        const priorReturnedUdhar = await this.priorReturnedUdhar(tx, actor.shopId, original.id);
-        const customer = original.customerId ? await this.billing.lockCustomer(tx, actor.shopId, original.customerId, { allowInactive: true }) : null;
+        const priorReturnedUdhar = prior.udhar;
+        const customer = original.customerId ? await this.billing.lockCustomer(tx, actor.shopId, original.customerId, { allowInactive: true, allowDeleted: true }) : null;
         const reversibleCredit = Prisma.Decimal.max(original.udharAmount.minus(priorReturnedUdhar), 0);
         const udharReversal = customer
           ? Prisma.Decimal.min(refundTotal, reversibleCredit, Prisma.Decimal.max(customer.outstandingBalance, 0))
@@ -318,14 +327,16 @@ export class InvoiceReversalService {
 
         const now = new Date();
         const lines: ReversalLine[] = this.sortForLocking(original.items.map((item) => ({ item, quantity: new Decimal(item.quantity.toString()) })));
-        const math = this.returnMath(lines);
+        // A cancellation reverses the whole sale: the settlement makes the math
+        // land exactly on the stored total, round-off included.
+        const math = this.returnMath(lines, { invoiceTotal: original.totalAmount, refundedTotal: 0, completesInvoice: true });
         const refundTotal = original.totalAmount;
 
-        // Shift before customer (canonical lock order).
-        const shiftId = await this.billing.lockShift(tx, actor, undefined);
+        // Shift before customer (canonical lock order): the sale's shift while open, else the actor's.
+        const shiftId = await this.lockShiftForReversal(tx, actor, original.shiftId);
 
         // Refund every tender the way it was paid; credit that was already repaid comes back as cash.
-        const customer = original.customerId ? await this.billing.lockCustomer(tx, actor.shopId, original.customerId, { allowInactive: true }) : null;
+        const customer = original.customerId ? await this.billing.lockCustomer(tx, actor.shopId, original.customerId, { allowInactive: true, allowDeleted: true }) : null;
         const udharReversal = customer ? Prisma.Decimal.min(original.udharAmount, Prisma.Decimal.max(customer.outstandingBalance, 0)) : new Prisma.Decimal(0);
         const repaidCredit = original.udharAmount.minus(udharReversal);
         const tenderMap = new Map<TenderType, Prisma.Decimal>();
@@ -494,14 +505,16 @@ export class InvoiceReversalService {
     return { discountAmount: Prisma.Decimal.max(gross.minus(taxable), 0), taxableAmount: taxable };
   }
 
-  private returnMath(lines: ReversalLine[]): ReturnCalculationResult {
+  private returnMath(lines: ReversalLine[], settlement: { invoiceTotal: Prisma.Decimal; refundedTotal: Prisma.Decimal | number; completesInvoice: boolean }): ReturnCalculationResult {
     try {
       return InvoiceMathEngine.calculateReturn({
+        settlement: { invoiceTotal: settlement.invoiceTotal.toString(), refundedTotal: settlement.refundedTotal.toString(), completesInvoice: settlement.completesInvoice },
         lines: lines.map(({ item, quantity }) => {
           const amounts = this.lineAmounts(item);
           return {
             lineRef: item.id,
             originalQuantity: item.quantity.toString(),
+            returnedQuantity: item.returnedQuantity.toString(),
             quantity: quantity.toString(),
             unitPrice: item.sellingPrice.toString(),
             discountAmount: amounts.discountAmount.toString(),
@@ -522,9 +535,34 @@ export class InvoiceReversalService {
     }
   }
 
-  private async priorReturnedUdhar(tx: Tx, shopId: string, originalId: string): Promise<Prisma.Decimal> {
-    const agg = await tx.invoice.aggregate({ where: { shopId, originalId, type: 'SALES_RETURN', status: 'COMPLETED', isDeleted: false }, _sum: { udharAmount: true } });
-    return agg._sum.udharAmount ?? new Prisma.Decimal(0);
+  /** Credit and money already refunded by the completed returns of a sale. */
+  private async priorReturns(tx: Tx, shopId: string, originalId: string): Promise<{ udhar: Prisma.Decimal; refunded: Prisma.Decimal }> {
+    const agg = await tx.invoice.aggregate({ where: { shopId, originalId, type: 'SALES_RETURN', status: 'COMPLETED', isDeleted: false }, _sum: { udharAmount: true, totalAmount: true } });
+    return { udhar: agg._sum.udharAmount ?? new Prisma.Decimal(0), refunded: agg._sum.totalAmount ?? new Prisma.Decimal(0) };
+  }
+
+  /**
+   * The shift a refund posts to (roadmap 3.5): the sale's own shift while it
+   * is still open and the actor may use it (its cashier, or a manager), so
+   * a same-shift refund nets against the sale; otherwise the actor's own open
+   * shift, since that is the drawer the cash physically leaves.
+   */
+  private async lockShiftForReversal(tx: Tx, actor: BillingActor, saleShiftId: string | null): Promise<string | null> {
+    if (saleShiftId) {
+      // Decide without a lock, then lock only the shift that is used: locking
+      // the sale's shift and then the actor's would order Shift rows
+      // differently per transaction and invite deadlocks between cashiers.
+      const rows = await tx.$queryRaw<Array<{ id: string; openedById: string }>>`
+        SELECT id, openedById FROM Shift WHERE id = ${saleShiftId} AND shopId = ${actor.shopId} AND status = 'OPEN' AND isDeleted = false
+      `;
+      if (rows.length > 0 && (rows[0].openedById === actor.userId || isManager(actor.role))) {
+        const locked = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM Shift WHERE id = ${saleShiftId} AND shopId = ${actor.shopId} AND status = 'OPEN' AND isDeleted = false FOR UPDATE
+        `;
+        if (locked.length > 0) return locked[0].id;
+      }
+    }
+    return this.billing.lockShift(tx, actor, undefined);
   }
 
   /** Physical restock for catalogue lines; custom lines are money-only and never enter the inventory authority. */
@@ -571,9 +609,10 @@ export class InvoiceReversalService {
 
   private reversalLedgerEntries(math: ReturnCalculationResult, tenders: ReadonlyArray<{ type: string; amount: Decimal }>, udharReversal: Prisma.Decimal, costOfGoods: Decimal): LedgerEntryInput[] {
     const buckets = this.billing.tenderBuckets(tenders);
+    const { revenue, gst } = splitRevenue(math.taxableTotal, math.totalTax, math.roundOff);
     const entries: LedgerEntryInput[] = [
-      { account: LedgerAccount.SALES_REVENUE, type: LedgerEntryType.DEBIT, amount: money(math.taxableTotal.plus(math.roundOff)) },
-      { account: LedgerAccount.GST_PAYABLE, type: LedgerEntryType.DEBIT, amount: money(math.totalTax) },
+      { account: LedgerAccount.SALES_REVENUE, type: LedgerEntryType.DEBIT, amount: revenue },
+      { account: LedgerAccount.GST_PAYABLE, type: LedgerEntryType.DEBIT, amount: gst },
       { account: LedgerAccount.CASH, type: LedgerEntryType.CREDIT, amount: buckets.cash },
       { account: LedgerAccount.BANK, type: LedgerEntryType.CREDIT, amount: buckets.bank },
       { account: LedgerAccount.ACCOUNTS_RECEIVABLE, type: LedgerEntryType.CREDIT, amount: udharReversal },

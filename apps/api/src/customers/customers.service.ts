@@ -1,4 +1,5 @@
-import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import { rethrowUniqueViolation } from '../common/db/unique-violation';
 import { LedgerAccount, LedgerEntryType, Prisma } from '@prisma/client';
 import * as crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -12,7 +13,7 @@ import { CustomerType, CustomerLifecycleStatus, KycStatus } from './domain/enums
 import { SalesFeatureConfig } from '../config/domains/features/sales-feature.config';
 import { LedgerPostingService } from '../ledger/ledger-posting.service';
 import { BillingHelpers } from '../billing/billing.helpers';
-import { BillingActor, money } from '../billing/billing.types';
+import { BillingActor, isManager, money } from '../billing/billing.types';
 import { BillingCheckpoints } from '../billing/billing-checkpoints';
 import { withSerializationRetry } from '../common/db/serialization-retry';
 
@@ -34,35 +35,41 @@ export class CustomersService {
     private readonly checkpoints: BillingCheckpoints,
   ) {}
 
-  async create(data: CreateInput, actor?: Pick<BillingActor, 'userId' | 'ipAddress'>) {
+  async create(data: CreateInput, actor?: Pick<BillingActor, 'userId' | 'ipAddress' | 'role'>) {
     const shopId = this.tenantContext.getShopId();
+    this.assertCreditLimitAuthority(data.creditLimit, actor);
 
     const duplicate = await this.prisma.customer.findFirst({ where: { shopId, phone: data.phone, isDeleted: false }, select: { id: true } });
     if (duplicate) {
       throw new ConflictException({ message: 'A customer with this phone number already exists.', code: 'CUSTOMER_PHONE_IN_USE', details: { customerId: duplicate.id } });
     }
 
-    const newCustomer = await this.customerRepository.create({
-      name: data.name,
-      phone: data.phone,
-      // Scalar shopId (not shop.connect): the tenant Prisma extension injects
-      // shopId for tenant-owned models, and Prisma rejects both a relation
-      // connect and the scalar FK in the same create.
-      shopId,
-      email: data.email || null,
-      address: data.address || null,
-      city: data.city || null,
-      state: data.state || null,
-      notes: data.notes || null,
-      creditLimit: money(data.creditLimit ?? this.salesFeatureConfig.defaultCreditLimit),
-      outstandingBalance: 0,
-      type: data.type || CustomerType.RETAIL,
-      lifecycleStatus: data.lifecycleStatus || CustomerLifecycleStatus.LEAD,
-      kycStatus: KycStatus.PENDING,
-      profile: data.profile ? { create: data.profile } : undefined,
-      addresses: data.addresses?.length ? { create: data.addresses } : undefined,
-      contacts: data.contacts?.length ? { create: data.contacts } : undefined,
-    });
+    let newCustomer;
+    try {
+      newCustomer = await this.customerRepository.create({
+        name: data.name,
+        phone: data.phone,
+        // Scalar shopId (not shop.connect): the tenant Prisma extension injects
+        // shopId for tenant-owned models, and Prisma rejects both a relation
+        // connect and the scalar FK in the same create.
+        shopId,
+        email: data.email || null,
+        address: data.address || null,
+        city: data.city || null,
+        state: data.state || null,
+        notes: data.notes || null,
+        creditLimit: money(data.creditLimit ?? this.salesFeatureConfig.defaultCreditLimit),
+        outstandingBalance: 0,
+        type: data.type || CustomerType.RETAIL,
+        lifecycleStatus: data.lifecycleStatus || CustomerLifecycleStatus.LEAD,
+        kycStatus: KycStatus.PENDING,
+        profile: data.profile ? { create: data.profile } : undefined,
+        addresses: data.addresses?.length ? { create: data.addresses } : undefined,
+        contacts: data.contacts?.length ? { create: data.contacts } : undefined,
+      });
+    } catch (error) {
+      rethrowUniqueViolation(error, [{ index: 'Customer_shopId_phone', code: 'CUSTOMER_PHONE_IN_USE', message: 'A customer with this phone number already exists.' }]);
+    }
 
     await this.auditService.logAction({ customerId: newCustomer.id, actorId: actor?.userId, ipAddress: actor?.ipAddress, action: 'CUSTOMER_CREATED', newPayload: newCustomer });
 
@@ -88,8 +95,9 @@ export class CustomersService {
     return customer;
   }
 
-  async update(id: string, dto: UpdateCustomerDto, actor?: Pick<BillingActor, 'userId' | 'ipAddress'>) {
+  async update(id: string, dto: UpdateCustomerDto, actor?: Pick<BillingActor, 'userId' | 'ipAddress' | 'role'>) {
     const shopId = this.tenantContext.getShopId();
+    this.assertCreditLimitAuthority(dto.creditLimit, actor);
     const before = await this.prisma.customer.findFirst({ where: { id, shopId, isDeleted: false } });
     if (!before) throw new NotFoundException({ message: 'Customer not found', code: 'CUSTOMER_NOT_FOUND' });
 
@@ -109,7 +117,31 @@ export class CustomersService {
     if (dto.isActive !== undefined) data.isActive = dto.isActive;
     if (dto.creditLimit !== undefined) data.creditLimit = money(dto.creditLimit);
 
-    const updated = await this.customerRepository.update(id, shopId, data);
+    let updated: Awaited<ReturnType<CustomerRepository['update']>>;
+    try {
+      updated = await this.prisma.$transaction(async (tx) => {
+        const row = await tx.customer.update({ where: { id, shopId }, data });
+        // A credit-limit change is an authorisation event (roadmap 3.4, audit
+        // P1-11): it gets an AuditLog row in the same transaction as the change.
+        if (dto.creditLimit !== undefined && !before.creditLimit.equals(row.creditLimit) && actor?.userId) {
+          await tx.auditLog.create({
+            data: {
+              shopId,
+              userId: actor.userId,
+              action: 'CUSTOMER_CREDIT_LIMIT_CHANGED',
+              entity: 'Customer',
+              entityId: id,
+              ipAddress: actor.ipAddress ?? null,
+              beforeData: { creditLimit: before.creditLimit.toFixed(2) },
+              afterData: { creditLimit: row.creditLimit.toFixed(2) },
+            },
+          });
+        }
+        return row;
+      });
+    } catch (error) {
+      rethrowUniqueViolation(error, [{ index: 'Customer_shopId_phone', code: 'CUSTOMER_PHONE_IN_USE', message: 'A customer with this phone number already exists.' }]);
+    }
     await this.auditService.logAction({
       customerId: id,
       actorId: actor?.userId,
@@ -350,4 +382,12 @@ export class CustomersService {
     });
     return deleted;
   }
+  /** Only MANAGER and above may set or change a credit limit (roadmap 3.4, audit P1-11). */
+  private assertCreditLimitAuthority(creditLimit: number | undefined, actor?: Pick<BillingActor, 'role'>): void {
+    if (creditLimit === undefined) return;
+    if (!actor || !isManager(actor.role)) {
+      throw new ForbiddenException({ message: 'Only a manager can set a customer credit limit.', code: 'CREDIT_LIMIT_REQUIRES_MANAGER' });
+    }
+  }
+
 }

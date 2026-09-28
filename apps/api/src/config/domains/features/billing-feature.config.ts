@@ -44,4 +44,11 @@ export class BillingFeatureConfig {
   @NumberFromEnv()
   @EnvVariable('BILLING_CASHIER_MAX_DISCOUNT_PERCENT')
   cashierMaxDiscountPercent: number = 10;
+
+  /** Largest custom (ad-hoc, free-priced) line amount a CASHIER may bill on their own, in rupees per line (roadmap 3.6, audit P2-23). 0 means cashiers cannot add custom lines; a larger line needs a MANAGER/ADMIN/OWNER to bill the invoice. */
+  @IsNumber()
+  @Min(0)
+  @NumberFromEnv()
+  @EnvVariable('BILLING_CASHIER_MAX_CUSTOM_LINE_AMOUNT')
+  cashierMaxCustomLineAmount: number = 500;
 }

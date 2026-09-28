@@ -35,12 +35,8 @@ export class ReservationService {
     // 2. Open Serializable Transaction
     return this.prisma.$transaction(async (tx) => {
       
-      // Calculate Expiry
-      let expiresAt = null;
-      if (dto.expiresInSeconds) {
-        expiresAt = new Date();
-        expiresAt.setSeconds(expiresAt.getSeconds() + dto.expiresInSeconds);
-      }
+      // Every reservation expires (the DTO bounds the TTL); the per-shop sweep frees the stock.
+      const expiresAt = new Date(Date.now() + dto.expiresInSeconds * 1000);
 
       // 3. Create Reservation Header
       const reservation = await tx.stockReservation.create({

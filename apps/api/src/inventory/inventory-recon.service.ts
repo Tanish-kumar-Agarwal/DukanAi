@@ -6,7 +6,7 @@ import type { Cache } from 'cache-manager';
 import { PrismaService } from '../prisma/prisma.service';
 import { CronLockService } from '../common/cron-lock/cron-lock.service';
 import { DriftAlertService } from './drift-alert.service';
-import { DriftStatus, Prisma } from '@prisma/client';
+import { DriftStatus, InventoryChangeType, Prisma } from '@prisma/client';
 import { InventoryFeatureConfig } from '../config/domains/features/inventory-feature.config';
 import { CronConfig } from '../config/domains/cron.config';
 import { CacheConfig } from '../config/domains/cache.config';
@@ -242,6 +242,27 @@ export class InventoryReconService implements OnApplicationBootstrap {
         product.currentStock = ledgerStock;
         product.stockVersion += 1;
 
+        // The correction is itself a stock event (roadmap 3.7, audit P2-28):
+        // an InventoryLog row records what the cache said, what the ledger
+        // holds and which drift record explains it.
+        const recordedById = await this.systemActorFor(product.shopId);
+        if (recordedById) {
+          await this.prisma.inventoryLog.create({
+            data: {
+              shopId: product.shopId,
+              productId: product.id,
+              type: InventoryChangeType.ADJUSTMENT,
+              quantityBefore: cachedStock,
+              quantityChange: ledgerStock.minus(cachedStock),
+              quantityAfter: ledgerStock,
+              recordedById,
+              notes: `Product.currentStock reconciled to the inventory ledger (drift ${driftLog.id})`,
+            },
+          });
+        } else {
+          this.logger.warn(`Shop ${product.shopId} has no owner: the reconciliation of product ${product.id} is recorded only in drift log ${driftLog.id}.`);
+        }
+
         await this.prisma.inventoryDriftLog.update({
           where: { id: driftLog.id },
           data: { status: DriftStatus.REPAIRED, resolvedAt: new Date() },
@@ -385,4 +406,16 @@ export class InventoryReconService implements OnApplicationBootstrap {
 
     return counters;
   }
+  private readonly systemActors = new Map<string, string | null>();
+
+  /** InventoryLog.recordedById is a User: system corrections are recorded under the shop owner. */
+  private async systemActorFor(shopId: string): Promise<string | null> {
+    const cached = this.systemActors.get(shopId);
+    if (cached !== undefined) return cached;
+    const shop = await this.prisma.shop.findUnique({ where: { id: shopId }, select: { ownerId: true } });
+    const ownerId = shop?.ownerId ?? null;
+    this.systemActors.set(shopId, ownerId);
+    return ownerId;
+  }
+
 }
