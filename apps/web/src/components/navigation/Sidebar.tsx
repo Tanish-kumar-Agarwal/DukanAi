@@ -5,8 +5,8 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard, ShoppingCart, PackageSearch, UserCheck, Users,
-  ClipboardList, Receipt, UserCircle, BarChart3, Bot, Bell,
-  Settings, Database, ChevronDown, Sparkles, ShoppingBag, Menu, X,
+  ClipboardList, Receipt, UserCircle, BarChart3, Bell,
+  Settings, Sparkles, ShoppingBag, Menu, X,
   ScanLine, Camera, CheckCircle2, FileText, Clock,
 } from 'lucide-react';
 import { clsx } from '@/lib/utils';
@@ -35,7 +35,6 @@ const navigation: NavItem[] = [
   { name: 'Expenses', href: '/expenses', icon: Receipt },
   { name: 'Employees', href: '/employees', icon: UserCircle },
   { name: 'Reports & Analytics', href: '/analytics', icon: BarChart3 },
-  { name: 'AI Assistant', href: '/ai-assistant', icon: Bot, badge: 'Beta', badgeColor: 'bg-[#8B5CF6]' },
   { name: 'Notifications', href: '/notifications', icon: Bell },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
@@ -48,7 +47,6 @@ export function Sidebar() {
   const pathname = usePathname();
   const { sidebarOpen, toggleSidebar } = useAppStore();
   const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
-  const [isDatabaseOpen, setIsDatabaseOpen] = useState(pathname.startsWith('/database'));
 
   return (
     <>
@@ -125,33 +123,6 @@ export function Sidebar() {
             );
           })}
 
-          {/* Database Manager */}
-          <div className="pt-4 mt-4 border-t border-white/5">
-            <button
-              type="button"
-              onClick={() => setIsDatabaseOpen((open) => !open)}
-              aria-expanded={isDatabaseOpen}
-              className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5 transition-all"
-            >
-              <div className="flex items-center gap-3">
-                <Database size={18} />
-                <span>Database Manager</span>
-              </div>
-              <ChevronDown size={16} className={clsx('transition-transform', isDatabaseOpen && 'rotate-180')} />
-            </button>
-            {isDatabaseOpen && (
-              <div className="pl-11 pr-3 pt-1 pb-2 space-y-2">
-                <Link href="/database" className="flex items-center gap-2 text-xs text-gray-400 hover:text-white transition-colors">
-                  <div className="w-4 h-4 border border-gray-500 rounded flex items-center justify-center"><PackageSearch size={10} /></div>
-                  Products DB
-                </Link>
-                <Link href="/database" className="flex items-center gap-2 text-xs text-gray-400 hover:text-white transition-colors">
-                  <div className="w-4 h-4 border border-gray-500 rounded flex items-center justify-center"><Users size={10} /></div>
-                  Customers DB
-                </Link>
-              </div>
-            )}
-          </div>
         </nav>
 
         {/* Upgrade to Pro */}

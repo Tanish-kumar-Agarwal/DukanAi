@@ -8,7 +8,10 @@ export class StoragePathBuilder {
   private readonly storageRoot: string;
 
   constructor(private storageConfig: StorageConfig) {
-    this.storageRoot = this.storageConfig.storageRoot || path.join(process.cwd(), 'data', 'storage');
+    // Resolved once: `secureJoin` compares absolute paths, and a relative
+    // STORAGE_ROOT (the committed `./data/storage`) used to fail every upload
+    // as a "traversal" because the resolved path never started with it.
+    this.storageRoot = path.resolve(this.storageConfig.storageRoot || path.join(process.cwd(), 'data', 'storage'));
   }
 
   private sanitizeSegment(segment: string): string {
@@ -24,8 +27,9 @@ export class StoragePathBuilder {
 
   private secureJoin(base: string, ...segments: string[]): string {
     const resolved = path.resolve(base, ...segments);
-    // Anti-traversal check: The resolved path MUST still begin with the base path.
-    if (!resolved.startsWith(base)) {
+    // Anti-traversal check: the resolved path must be the base or live under it
+    // (a plain prefix test would accept a sibling such as `<base>2`).
+    if (resolved !== base && !resolved.startsWith(base + path.sep)) {
       throw new BadRequestException('Directory traversal detected');
     }
     return resolved;

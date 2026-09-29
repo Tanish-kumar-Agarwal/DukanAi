@@ -110,12 +110,18 @@ async function resolveToken(): Promise<string | null> {
   }
 }
 
-// ---- Request interceptor — inject Bearer token ----
+// ---- Request interceptor — inject Bearer token; multipart bodies keep their boundary ----
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
     const token = await resolveToken();
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
+    }
+    // The instance default is JSON, and axios serialises a FormData body as JSON
+    // under that type (`{"file":{}}`). Dropping the header lets the browser send
+    // multipart/form-data with its boundary (roadmap 6.1 uploads).
+    if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+      config.headers.setContentType(false);
     }
     return config;
   },

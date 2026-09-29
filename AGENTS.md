@@ -551,6 +551,52 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `docs/LOAD_TEST_BASELINE.md`; re-run and update it after a change to the
   checkout transaction, the dashboard queries or the upload path.
 
+## Web application (roadmap phase 6)
+
+- 6.1 no fake flows: every mutating page action either calls the API or is
+  gone. Employees (`/employees`) lists `GET /users/employees`, suspends /
+  reinstates through `PATCH /users/:id/suspend`, removes through
+  `DELETE /users/:id` (OWNER/ADMIN only, never self) and invites through
+  `POST /invitations/generate` (`employeesApi` in `src/lib/api-client.ts`,
+  roles from `INVITABLE_ROLES`); the code reaches the invitee by email only,
+  and the register page (`/register?invite=<code>`, or the code pasted into
+  the "Invitation Code" field) switches to join mode and calls
+  `POST /invitations/accept`. Payroll, attendance and shift columns are not
+  modelled by the API and were removed, not stubbed. Suppliers edit through
+  `PATCH /suppliers/:id` (MANAGER+), delete through `DELETE /suppliers/:id`
+  (ADMIN+, row removed only after the API answers) and send the chosen
+  payment mode as `tender`; "Record Purchase" is an honest info toast because
+  the web has no purchase-order UI. Smart Capture posts the JPEG (and, for
+  "Convert to PDF", a one-page PDF built client-side by `src/lib/jpeg-pdf.ts`,
+  no dependency) to `POST /storage/bills/:customerId/:billId`
+  (`storageApi.storeCapturedBill`, `Walk-in` when no customer is chosen);
+  "Try OCR Extraction" hands the frame to the AI scanner through
+  sessionStorage (`PENDING_SCAN_KEY`, `src/lib/smart-capture.ts`). The AI
+  scanner calls `POST /ocr/scan-bill` (`ocrApi.scanBill`), renders the API's
+  matched lines with their confidence, offers a CSV export and shows 503
+  `OCR_NOT_CONFIGURED` / 502 `OCR_UNREADABLE_RESPONSE` as failures; it never
+  claims to update stock (stock moves only through purchase orders / GRNs).
+  The AI Assistant and Database Manager pages had no backend and are deleted
+  with their sidebar entries. Role gates on these pages use the pattern in
+  `src/components/customers/permissions.ts` and treat `AUTH_DISABLED` as
+  OWNER. Never re-introduce a `setTimeout` "save" or a toast without a
+  request behind it.
+- The shared axios instance (`src/lib/api.ts`) defaults to JSON and axios
+  serialises a `FormData` body as JSON under that header (`{"file":{}}`); its
+  request interceptor drops the content type for `FormData` so the browser
+  sends multipart with a boundary. Post uploads through `apiClient`, never
+  through a second instance. `StoragePathBuilder` resolves `STORAGE_ROOT` to
+  an absolute path once (the committed relative `./data/storage` used to trip
+  the traversal guard on every upload) and the guard requires the base or a
+  child of it, not a string prefix.
+- `apps/web/e2e/fake-flows.spec.ts` is the phase 6 persistence suite: every
+  repaired action is asserted after a reload AND against the API or the API's
+  disk (`E2E_STORAGE_ROOT`, default `apps/api/data/storage`). Chromium does
+  not expose blob multipart bodies to Playwright, so upload tests assert the
+  multipart header and the server-side effect, not the request body. A JPEG
+  fixture is rendered in the page with a canvas (the API sniffs magic bytes).
+  Add a test here for every mutating UI action a later 6.x row repairs.
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and

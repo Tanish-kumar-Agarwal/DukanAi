@@ -845,45 +845,83 @@ export const analyticsApi = {
 // ---------------------------------------------------------------------------
 // Employees — API users mapped to the employees page shape
 // ---------------------------------------------------------------------------
+/** A shop user as the employees page shows it (roadmap 6.1: no payroll or attendance, the API has neither). */
 export interface EmployeeView {
   id: string;
   name: string;
   email: string;
+  /** API role key (`OWNER`, `MANAGER`, ...). */
+  roleKey: string;
+  /** Display label of the role. */
   role: string;
   phone: string;
-  shift: string;
-  salary: number;
-  advance: number;
-  status: 'On Shift' | 'Off Shift' | 'On Leave';
+  isActive: boolean;
+  isLocked: boolean;
+  status: 'Active' | 'Suspended';
+  createdAt: string | null;
 }
 
-const ROLE_LABELS: Record<string, string> = {
+export const ROLE_LABELS: Record<string, string> = {
   OWNER: 'Owner',
   SUPER_ADMIN: 'Owner',
-  ADMIN: 'Manager',
+  ADMIN: 'Admin',
   MANAGER: 'Manager',
   CASHIER: 'Cashier',
   VIEWER: 'Stock Clerk',
 };
 
+/** Roles an invitation can carry from the UI; the API also enforces that the role ranks below the inviter's. */
+export const INVITABLE_ROLES: Array<{ key: string; label: string }> = [
+  { key: 'CASHIER', label: ROLE_LABELS.CASHIER },
+  { key: 'VIEWER', label: ROLE_LABELS.VIEWER },
+  { key: 'MANAGER', label: ROLE_LABELS.MANAGER },
+  { key: 'ADMIN', label: ROLE_LABELS.ADMIN },
+];
+
+function mapEmployee(user: Record<string, unknown>): EmployeeView {
+  const roleKey = String(user.role ?? '');
+  const isActive = user.isActive !== false;
+  return {
+    id: String(user.id),
+    name: String(user.name ?? ''),
+    email: String(user.email ?? ''),
+    roleKey,
+    role: ROLE_LABELS[roleKey] ?? roleKey,
+    phone: user.phone ? String(user.phone) : '',
+    isActive,
+    isLocked: user.isLocked === true,
+    status: isActive ? 'Active' : 'Suspended',
+    createdAt: user.createdAt ? String(user.createdAt) : null,
+  };
+}
+
+export interface InvitationResult {
+  message: string;
+  invitationId: string;
+  email: string;
+  role: string;
+  expiresAt: string;
+}
+
 export const employeesApi = {
-  list: () =>
-    get<Array<Record<string, unknown>>>('/users/employees').then((users) =>
-      users.map(
-        (user): EmployeeView => ({
-          id: user.id as string,
-          name: user.name as string,
-          email: (user.email as string) ?? '',
-          role: ROLE_LABELS[(user.role as string) ?? ''] ?? 'Cashier',
-          phone: (user.phone as string) ?? '',
-          shift: 'General',
-          // Payroll is not modelled in the backend yet.
-          salary: 0,
-          advance: 0,
-          status: user.isActive === false ? 'On Leave' : 'Off Shift',
-        }),
-      ),
-    ),
+  /** `GET /users/employees` (capped page, array body). */
+  list: () => get<Array<Record<string, unknown>>>('/users/employees').then((users) => users.map(mapEmployee)),
+
+  /** `POST /invitations/generate`: the code reaches the invitee by email, never this client. */
+  invite: (data: { email: string; role: string }) => post<InvitationResult>('/invitations/generate', data),
+
+  /** `PATCH /users/:id/suspend` (OWNER/ADMIN; never yourself, never an equal or higher role). */
+  setActive: (id: string, isActive: boolean) =>
+    patch<Record<string, unknown>>(`/users/${id}/suspend`, { isActive }).then(mapEmployee),
+
+  /** `DELETE /users/:id` (OWNER/ADMIN): soft delete, sessions ended. */
+  remove: (id: string) => del(`/users/${id}`),
+};
+
+export const invitationsApi = {
+  /** `POST /invitations/accept` (public): creates the invited account; the caller then signs in. */
+  accept: (data: { token: string; name: string; password: string }) =>
+    post<{ id: string; email: string; role: string }>('/invitations/accept', data),
 };
 
 // ---------------------------------------------------------------------------
@@ -915,13 +953,98 @@ export const suppliersApi = {
     openingBalance?: number;
   }) => post<SupplierView>('/suppliers', data),
 
-  recordPayment: (id: string, amount: number) =>
-    post<SupplierView>(`/suppliers/${id}/payments`, { amount }),
+  /** `POST /suppliers/:id/payments`: CASH leaves the drawer, any other tender credits the bank account. */
+  recordPayment: (id: string, amount: number, tender: TenderType = 'CASH') =>
+    post<SupplierView>(`/suppliers/${id}/payments`, { amount, tender }),
 
-  update: (id: string, data: Record<string, unknown>) =>
-    patch<SupplierView>(`/suppliers/${id}`, data),
+  /** `PATCH /suppliers/:id` (MANAGER+). */
+  update: (
+    id: string,
+    data: Partial<{
+      name: string;
+      phone: string;
+      contactPerson: string;
+      email: string;
+      gstin: string;
+      address: string;
+      isActive: boolean;
+    }>,
+  ) => patch<SupplierView>(`/suppliers/${id}`, data),
 
+  /** `DELETE /suppliers/:id` (OWNER/ADMIN): soft delete. */
   delete: (id: string) => del(`/suppliers/${id}`),
+};
+
+// ---------------------------------------------------------------------------
+// Captured bills (Smart Capture -> `POST /storage/bills/:customerId/:billId`)
+// and bill OCR (`POST /ocr/scan-bill`) — multipart routes (roadmap 6.1).
+// ---------------------------------------------------------------------------
+/** The API's walk-in sentinel for a bill that is not linked to a customer. */
+export const WALK_IN_CUSTOMER = 'Walk-in';
+
+export const storageApi = {
+  /**
+   * Stores a captured bill under the customer's folder: the JPEG always, a PDF
+   * rendition when given. Answers `{ success: true }`; anything else throws.
+   */
+  storeCapturedBill: (
+    customerId: string | null,
+    billId: string,
+    image: Blob,
+    options: { pdf?: Blob; ocrText?: string } = {},
+  ) => {
+    const form = new FormData();
+    form.append('image', image, `${billId}.jpg`);
+    if (options.pdf) form.append('pdf', options.pdf, `${billId}.pdf`);
+    if (options.ocrText) form.append('ocrText', options.ocrText);
+    return apiClient
+      .post<{ success: boolean }>(`/storage/bills/${encodeURIComponent(customerId || WALK_IN_CUSTOMER)}/${encodeURIComponent(billId)}`, form, {
+        timeout: 60_000,
+      })
+      .then(({ data }) => data);
+  },
+};
+
+export interface OcrLineItem {
+  rawName: string;
+  qty: number;
+  price: number | null;
+}
+
+export interface OcrMatchedItem extends OcrLineItem {
+  matchedSku: string | null;
+  matchedName: string | null;
+  matchedProductSku: string | null;
+  dbPrice: number | null;
+  /** 0..1 similarity between the read name and the matched product; 0 when nothing matched. */
+  confidence: number;
+}
+
+export interface OcrScanResult {
+  success: boolean;
+  message: string;
+  documentType: string;
+  mimeType: string;
+  preview: { parsedData: { items: OcrLineItem[] }; matchedItems: OcrMatchedItem[] };
+}
+
+export type OcrDocumentType = 'BILL' | 'INVOICE' | 'RECEIPT' | 'HANDWRITTEN';
+
+export const ocrApi = {
+  /** `POST /ocr/scan-bill` (MANAGER+): JPEG, PNG or WebP in the `file` part; 503 when OCR is not configured. */
+  scanBill: (file: Blob, documentType: OcrDocumentType, onUploadProgress?: (fraction: number) => void) => {
+    const form = new FormData();
+    form.append('file', file, file instanceof File ? file.name : 'bill.jpg');
+    form.append('documentType', documentType);
+    return apiClient
+      .post<OcrScanResult>('/ocr/scan-bill', form, {
+        timeout: 90_000,
+        onUploadProgress: (event) => {
+          if (onUploadProgress && event.total) onUploadProgress(Math.min(1, event.loaded / event.total));
+        },
+      })
+      .then(({ data }) => data);
+  },
 };
 
 // ---------------------------------------------------------------------------
