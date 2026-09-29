@@ -1,8 +1,6 @@
-import { Controller, Get, Post, UseGuards, Body } from '@nestjs/common';
+import { Controller, Get, Post, Body } from '@nestjs/common';
 import { ProductEventReplayService } from '../../services/event-replay.service';
 import { PrismaService } from '../../../prisma/prisma.service';
-import { JwtAuthGuard } from '../../../auth/jwt-auth.guard';
-import { TenantGuard } from '../../../iam/guards/tenant.guard';
 import { CurrentShop } from '../../../iam/decorators';
 import { EventsFeatureConfig } from '../../../config/domains/features/events-feature.config';
 import { MANAGEMENT_ROLES } from '../../../auth/role-sets';
@@ -10,7 +8,6 @@ import { Roles } from '../../../auth/roles.decorator';
 import { ReplayEventDto } from '../../dto/replay-event.dto';
 
 /** Product event log and replay (roadmap 4.1): the shop comes from the verified session. */
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('events')
 export class ProductEventsController {
   constructor(

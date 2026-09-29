@@ -1,8 +1,6 @@
-import { Controller, Get, Post, Delete, Param, Body, UseGuards, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Param, Body, NotFoundException, BadRequestException } from '@nestjs/common';
 import { OutboundUrlBlockedError, OutboundUrlGuard } from '../../../common/net/outbound-url-guard';
 import { PrismaService } from '../../../prisma/prisma.service';
-import { JwtAuthGuard } from '../../../auth/jwt-auth.guard';
-import { TenantGuard } from '../../../iam/guards/tenant.guard';
 import { CurrentShop } from '../../../iam/decorators';
 import { EventsFeatureConfig } from '../../../config/domains/features/events-feature.config';
 import { MANAGEMENT_ROLES } from '../../../auth/role-sets';
@@ -19,7 +17,6 @@ const ENDPOINT_SELECT = { id: true, shopId: true, url: true, events: true, descr
  * exactly once, in the create response, and only when the server generated
  * it; it is never returned by any later read.
  */
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('webhooks')
 export class WebhookController {
   constructor(

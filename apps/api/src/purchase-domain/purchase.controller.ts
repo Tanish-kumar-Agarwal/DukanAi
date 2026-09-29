@@ -1,16 +1,14 @@
-import { Controller, Get, Post, Put, Param, Body, UseGuards, Query, Req } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
+import { Controller, Get, Post, Put, Param, Body, Query, Req } from '@nestjs/common';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { PurchaseRepository } from './repositories/purchase.repository';
 import type { Request } from 'express';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
+import { LimitOffsetQueryDto, limitOffsetArgs } from '../common/pagination';
 import { ApprovalDecisionDto } from '../common/dto/approval-decision.dto';
 import { CreatePurchaseOrderDto, UpdatePurchaseDraftDto } from './dto/purchase-order.dto';
 
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('purchases')
 export class PurchaseController {
   constructor(private readonly repository: PurchaseRepository) {}
@@ -25,10 +23,10 @@ export class PurchaseController {
   @Get()
   async listPurchaseOrders(
     @CurrentShop() shopId: string,
-    @Query('limit') limit?: number,
-    @Query('offset') offset?: number
+    @Query() query: LimitOffsetQueryDto,
   ) {
-    return this.repository.listPurchaseOrders(shopId, limit ? Number(limit) : 50, offset ? Number(offset) : 0);
+    const { limit, offset } = limitOffsetArgs(query);
+    return this.repository.listPurchaseOrders(shopId, limit, offset);
   }
 
   @Get(':id')

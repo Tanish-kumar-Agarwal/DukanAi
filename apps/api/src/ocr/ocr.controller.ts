@@ -1,16 +1,13 @@
-import { Controller, Post, UseInterceptors, UploadedFile, Body, BadRequestException, UseGuards } from '@nestjs/common';
+import { Controller, Post, UseInterceptors, UploadedFile, Body, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { OcrService } from './ocr.service';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
 import { Roles } from '../auth/roles.decorator';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { ScanBillDto } from './dto/scan-bill.dto';
 
 @ApiTags('ocr')
-@UseGuards(JwtAuthGuard, TenantGuard)
 @ApiBearerAuth()
 @Controller('ocr')
 export class OcrController {

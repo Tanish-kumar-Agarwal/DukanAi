@@ -1,6 +1,4 @@
-import { Controller, Get, Post, Param, Body, UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
+import { Controller, Get, Post, Param, Body } from '@nestjs/common';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { WorkflowRepository } from './repositories/workflow.repository';
@@ -11,7 +9,6 @@ import { Roles } from '../auth/roles.decorator';
 import { ApprovalDecisionDto } from '../common/dto/approval-decision.dto';
 import { CreateDelegationDto, CreateWorkflowDefinitionDto } from './dto/workflow.dto';
 
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('procurement-workflows')
 export class ProcurementWorkflowController {
   constructor(

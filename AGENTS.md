@@ -477,6 +477,50 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   system-events worker drop it with the others after every committed sale,
   return and cancellation. Add any new whole-history aggregate to that key
   family rather than caching it on its own.
+- 5.6 lists: every list route is a capped page. `src/common/pagination`:
+  `ListQueryDto` (`skip >= 0`, `take 1..MAX_LIST_TAKE` = 200, default
+  `DEFAULT_LIST_TAKE` = 100; a bad value is 400 under the global
+  `forbidNonWhitelisted` pipe) and `LimitOffsetQueryDto` for the procurement
+  lists that already used `limit`/`offset`; `pageArgs` / `limitOffsetArgs`
+  clamp again for direct callers. A service returns `PagedResult`
+  (`{ items, total, skip, take }`) and the handler carries `@PagedList()`:
+  the response body stays the plain array the web renders (UI unchanged) and
+  the page goes in `X-Total-Count` / `X-Page-Skip` / `X-Page-Take`. Applied
+  to expenses, suppliers, batches, categories (default = cap, tree order),
+  warehouses, the location subtree (`SubtreeQueryDto`, `path` required),
+  inventory-domain items and alerts, notifications, `/inventory/products`,
+  purchases / grn / vendor-bills / purchase-returns / supplier-credit-notes
+  and the purchase-events dead letter; shifts, customers, invoices, products
+  and search had their own caps already. A new list route takes
+  `@Query() query: ListQueryDto` and never a bare `@Query('limit')`. Every
+  paged `orderBy` ends in `id` so pages are stable.
+  `test/integration/list-caps.integration-spec.ts` walks every route.
+- 5.7 guards: `JwtAuthGuard`, `TenantGuard` and `RolesGuard` run once as
+  `APP_GUARD`s (`app.module.ts`); no controller repeats them with
+  `@UseGuards` (the only local guards left are `LocalAuthGuard` on login and
+  the socket guards on `InventoryGateway`). `raiseLowStockNotifications`
+  (system-events worker) is three statements per sale: products `in`,
+  unread LOW_STOCK notifications `in`, one `createMany`. A category move
+  (`CategoriesService.update`) runs in one transaction and re-roots the
+  subtree with one `UPDATE ... SET path = CONCAT(new, SUBSTRING(path, ...)),
+  depth = depth + delta WHERE shopId = ? AND path LIKE 'old%'`
+  (`updateDescendantsPath`, LIKE-escaped prefix), never one update per
+  descendant.
+- 5.8 load test: `apps/api/load/` (`pos-peak.yml`, `processor.js`,
+  `setup.mjs`, `summarize.mjs`, `run.sh`, README) drives checkout, dashboard
+  summary and login at 3x the assumed peak (15 / 30 / 3 per second) with
+  artillery (`npx artillery@2`, not a workspace dependency) against a built
+  API on a disposable database; `summarize.mjs` prints the table and fails
+  on the gate (checkout p95 < 500 ms, zero 5xx). The load is spread over
+  `LOAD_SHOPS` shops (16): a checkout holds the shop's shift, number-sequence
+  and product row locks, so one shop bills serially by design. The runner
+  boots with `PRISMA_LOG_QUERIES=false`; `PrismaService.logLevelsFor` now
+  honours that flag outside production (it used to log every query under
+  any non-production `NODE_ENV`, so `.env.test`/`.env.development` keep
+  `true` and a measurement must set it to `false`). The recorded baseline
+  and the environment it was taken on are in `docs/LOAD_TEST_BASELINE.md`;
+  re-run and update it after a change to the checkout transaction or the
+  dashboard queries.
 
 ## Toolchain
 

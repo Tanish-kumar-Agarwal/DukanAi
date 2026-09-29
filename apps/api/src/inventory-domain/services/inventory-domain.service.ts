@@ -10,6 +10,7 @@ import { OptimisticLockConflictError, InsufficientStockError } from '../errors/i
 import { InventoryLocationService } from './inventory-location.service';
 import { InventoryCacheService } from '../../inventory/inventory-cache.service';
 import { assertOwned } from '../../prisma/tenant-ownership';
+import { ListQueryDto, pageArgs } from '../../common/pagination';
 
 @Injectable()
 export class InventoryDomainService {
@@ -62,13 +63,21 @@ export class InventoryDomainService {
   /**
    * Retrieves all inventory items for the current shop.
    */
-  async findAll() {
+  async findAll(query?: ListQueryDto) {
     const shopId = this.tenantContext.getShopId();
-    return this.prisma.inventoryItem.findMany({
-      where: { shopId, isDeleted: false },
-      include: { product: { select: { id: true, name: true, sku: true, imageUrl: true, unit: true } } },
-      orderBy: { updatedAt: 'desc' },
-    });
+    const { skip, take } = pageArgs(query);
+    const where = { shopId, isDeleted: false };
+    const [items, total] = await Promise.all([
+      this.prisma.inventoryItem.findMany({
+        where,
+        include: { product: { select: { id: true, name: true, sku: true, imageUrl: true, unit: true } } },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+        skip,
+        take,
+      }),
+      this.prisma.inventoryItem.count({ where }),
+    ]);
+    return { items, total, skip, take };
   }
 
   /**
@@ -281,17 +290,25 @@ export class InventoryDomainService {
   /**
    * Get active alerts for the shop.
    */
-  async getAlerts() {
+  async getAlerts(query?: ListQueryDto) {
     const shopId = this.tenantContext.getShopId();
-    return this.prisma.inventoryAlert.findMany({
-      where: { shopId, isResolved: false },
-      include: {
-        inventoryItem: {
-          include: { product: { select: { id: true, name: true, sku: true } } },
+    const { skip, take } = pageArgs(query);
+    const where = { shopId, isResolved: false };
+    const [items, total] = await Promise.all([
+      this.prisma.inventoryAlert.findMany({
+        where,
+        include: {
+          inventoryItem: {
+            include: { product: { select: { id: true, name: true, sku: true } } },
+          },
         },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        skip,
+        take,
+      }),
+      this.prisma.inventoryAlert.count({ where }),
+    ]);
+    return { items, total, skip, take };
   }
 
   /**

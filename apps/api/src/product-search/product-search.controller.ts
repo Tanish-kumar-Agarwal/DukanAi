@@ -1,12 +1,10 @@
-import { BadRequestException, Body, Controller, Get, Logger, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Logger, Param, Post, Query } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { SearchEngineService } from './search-engine.service';
 import { SynonymEngineService } from './synonym-engine.service';
 import { SearchAnalyticsService } from './search-analytics.service';
 import { IndexingEngineService } from './indexing-engine.service';
 import { clampSearchQuery, parseLimit } from './search-term';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
@@ -19,7 +17,6 @@ const MANAGE_ROLES: Role[] = [Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MAN
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('search')
 export class ProductSearchController {
   private readonly logger = new Logger(ProductSearchController.name);

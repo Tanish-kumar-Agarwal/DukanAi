@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { CreateSupplierDto, RecordSupplierPaymentDto, UpdateSupplierDto } from './dto/supplier.dto';
 import { SupplierPayablesService } from '../ledger/supplier-payables.service';
+import { ListQueryDto, pageArgs, PagedResult } from '../common/pagination';
 
 /** Shape the suppliers page renders. */
 export interface SupplierView {
@@ -42,20 +43,28 @@ export class SuppliersService {
     private readonly payables: SupplierPayablesService,
   ) {}
 
-  async findAll(): Promise<SupplierView[]> {
+  /** By name, hard-capped page (roadmap 5.6). */
+  async findAll(query?: ListQueryDto): Promise<PagedResult<SupplierView>> {
     // shopId is injected by the tenant Prisma extension.
-    const suppliers = await this.prisma.supplier.findMany({
-      where: { isDeleted: false },
-      orderBy: { name: 'asc' },
-      include: {
-        purchaseOrders: {
-          orderBy: { updatedAt: 'desc' },
-          take: 1,
-          select: { updatedAt: true },
+    const { skip, take } = pageArgs(query);
+    const where = { isDeleted: false };
+    const [suppliers, total] = await Promise.all([
+      this.prisma.supplier.findMany({
+        where,
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
+        skip,
+        take,
+        include: {
+          purchaseOrders: {
+            orderBy: { updatedAt: 'desc' },
+            take: 1,
+            select: { updatedAt: true },
+          },
         },
-      },
-    });
-    return suppliers.map(toView);
+      }),
+      this.prisma.supplier.count({ where }),
+    ]);
+    return { items: suppliers.map(toView), total, skip, take };
   }
 
   async create(dto: CreateSupplierDto): Promise<SupplierView> {

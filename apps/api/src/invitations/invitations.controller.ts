@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, Delete, Param } from '@nestjs/common';
+import { Controller, Post, Body, Delete, Param } from '@nestjs/common';
 import { InvitationsService } from './invitations.service';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
 import { AcceptInvitationDto } from './dto/accept-invitation.dto';
@@ -7,9 +7,6 @@ import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
-import { RolesGuard } from '../auth/roles.guard';
 import { Public } from '../auth/public.decorator';
 import { AuthThrottle } from '../common/throttling/auth-throttle.decorator';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiResponse } from '@nestjs/swagger';
@@ -21,7 +18,6 @@ export class InvitationsController {
 
   @Post('generate')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
   @Roles(...MANAGEMENT_ROLES)
   @ApiOperation({ summary: 'Invite a new staff member (role below your own); the token is emailed to the invitee' })
   generate(
@@ -43,7 +39,6 @@ export class InvitationsController {
 
   @Delete(':id/revoke')
   @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
   @Roles(...MANAGEMENT_ROLES)
   @ApiOperation({ summary: 'Revoke a pending invitation (a MANAGER may revoke only their own)' })
   revoke(

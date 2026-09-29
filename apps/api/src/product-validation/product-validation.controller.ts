@@ -1,15 +1,12 @@
-import { Controller, Post, Get, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param } from '@nestjs/common';
 import { ProductValidationService } from './product-validation.service';
 import { ValidationRuleEngine } from './validation-rule.engine';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
 import { CurrentShop } from '../iam/decorators';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
 import { BulkValidationDto } from './dto/bulk-validation.dto';
 
 /** Product quality validation (roadmap 4.1): the shop comes from the verified session. */
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('products')
 export class ProductValidationController {
   constructor(

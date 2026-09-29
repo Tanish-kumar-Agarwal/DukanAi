@@ -3,6 +3,7 @@ import { rethrowUniqueViolation } from '../../common/db/unique-violation';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 import { CreateWarehouseDto } from '../dto/warehouse.dto';
+import { ListQueryDto, pageArgs } from '../../common/pagination';
 
 @Injectable()
 export class WarehouseService {
@@ -30,12 +31,15 @@ export class WarehouseService {
     }
   }
 
-  async findAll() {
+  async findAll(query?: ListQueryDto) {
     const shopId = this.tenantContext.getShopId();
-    return this.prisma.warehouse.findMany({
-      where: { shopId, isDeleted: false },
-      orderBy: { createdAt: 'desc' }
-    });
+    const { skip, take } = pageArgs(query);
+    const where = { shopId, isDeleted: false };
+    const [items, total] = await Promise.all([
+      this.prisma.warehouse.findMany({ where, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], skip, take }),
+      this.prisma.warehouse.count({ where }),
+    ]);
+    return { items, total, skip, take };
   }
 
   async findOne(id: string) {

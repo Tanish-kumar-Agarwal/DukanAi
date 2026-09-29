@@ -1,11 +1,9 @@
-import { Controller, Post, Get, Body, Param, UseGuards, BadRequestException, UseInterceptors, UploadedFile, NotFoundException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, BadRequestException, UseInterceptors, UploadedFile, NotFoundException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { FileStorageService } from './file-storage.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
 import { CurrentShop } from '../iam/decorators';
 import { ImportExportFeatureConfig } from '../config/domains/features/import-export-feature.config';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
@@ -15,7 +13,6 @@ import { IMPORT_JOB_QUEUE, ImportJobData, PROCESS_IMPORT_JOB } from './import.wo
 import { assertImportFileContent, importFormatOf } from './import-upload';
 
 /** Product imports (roadmap 4.1): the shop comes from the verified session, the job carries it to the worker. */
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('imports')
 export class ImportExportController {
   constructor(

@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ListQueryDto, PagedList } from '../common/pagination';
 import { ExpensesService } from './expenses.service';
 import { CreateExpenseDto, UpdateExpenseDto } from './dto/expense.dto';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
@@ -9,8 +10,9 @@ export class ExpensesController {
   constructor(private readonly expensesService: ExpensesService) {}
 
   @Get()
-  findAll() {
-    return this.expensesService.findAll();
+  @PagedList()
+  findAll(@Query() query: ListQueryDto) {
+    return this.expensesService.findAll(query);
   }
 
   @Roles(...MANAGEMENT_ROLES)

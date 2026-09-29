@@ -1,7 +1,5 @@
-import { Controller, Get, Post, Param, Body, UseGuards, NotFoundException, ConflictException, Query } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, NotFoundException, ConflictException, Query } from '@nestjs/common';
 import { IsOptional, IsString, MaxLength } from 'class-validator';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { SalesFeatureConfig } from '../config/domains/features/sales-feature.config';
@@ -27,7 +25,6 @@ export class ListOutboxEventsQueryDto {
  * retry. A retry only applies to a FAILED row and hands it back to whichever
  * relay owns its type under a fresh job id.
  */
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('sales/events')
 export class SalesEventsController {
   constructor(

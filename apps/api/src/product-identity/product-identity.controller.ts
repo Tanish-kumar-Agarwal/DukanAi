@@ -1,9 +1,7 @@
-import { Controller, Post, Get, Body, Param, UseGuards, Query, Res } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, Query, Res } from '@nestjs/common';
 import { ProductIdentityService } from './product-identity.service';
 import { BarcodeGeneratorService } from './barcode-generator.service';
 import { IdentityAuditService } from './identity-audit.service';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
 import { CurrentShop, CurrentUser } from '../iam/decorators';
 import type { Response } from 'express';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
@@ -12,7 +10,6 @@ import { AssignBarcodeDto } from './dto/assign-barcode.dto';
 import { RenderBarcodeQueryDto } from './dto/render-barcode.dto';
 
 /** Barcodes and SKU identities (roadmap 4.1): shop and user from the verified session. */
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('product-identity')
 export class ProductIdentityController {
   constructor(

@@ -1,7 +1,6 @@
-import { Controller, Get, Request, UseGuards, Param, Patch, Delete, Body, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Request, Param, Patch, Delete, Body, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { SocketSessionService } from '../iam/websockets/socket-session.service';
-import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { Role } from '@prisma/client';
 import { safeUserSelect } from './user.mapper';
@@ -15,7 +14,6 @@ export class UsersController {
   ) {}
 
   @Get('employees')
-  @UseGuards(RolesGuard)
   @Roles(Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER)
   async getEmployees(@Request() req: any) {
     return this.prisma.user.findMany({
@@ -35,7 +33,6 @@ export class UsersController {
   }
 
   @Patch(':id/suspend')
-  @UseGuards(RolesGuard)
   @Roles(Role.OWNER, Role.ADMIN)
   async suspendUser(@Param('id') id: string, @Request() req: any, @Body('isActive') isActive: boolean) {
     if (id === req.user.id) {
@@ -75,7 +72,6 @@ export class UsersController {
   }
 
   @Delete(':id')
-  @UseGuards(RolesGuard)
   @Roles(Role.OWNER, Role.ADMIN)
   async deleteUser(@Param('id') id: string, @Request() req: any) {
     if (id === req.user.id) {

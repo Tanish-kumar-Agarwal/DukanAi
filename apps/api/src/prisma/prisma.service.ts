@@ -11,18 +11,24 @@ import { PrismaConfig } from '../config/domains/prisma.config';
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
 
+  /**
+   * Production logs warnings and errors only. Elsewhere every query is
+   * logged only when `PRISMA_LOG_QUERIES` says so (roadmap 5.8: the flag
+   * used to be read into `PrismaConfig` and ignored, so a load test under
+   * `NODE_ENV=test` measured the log writer rather than the API).
+   */
+  static logLevelsFor(appConfig: Pick<AppConfig, 'nodeEnv'>, prismaConfig: Pick<PrismaConfig, 'logQueries' | 'logLevelProduction' | 'logLevelDevelopment'>): string[] {
+    if (appConfig.nodeEnv === Environment.Production) return prismaConfig.logLevelProduction;
+    return prismaConfig.logQueries ? prismaConfig.logLevelDevelopment : prismaConfig.logLevelDevelopment.filter((level) => level !== 'query');
+  }
+
   constructor(
     private readonly tenantContextService: TenantContextService,
     appConfig: AppConfig,
     prismaConfig: PrismaConfig,
   ) {
-    const isProduction = appConfig.nodeEnv === Environment.Production;
-    const logLevels = isProduction
-      ? (prismaConfig.logLevelProduction || ['warn', 'error'])
-      : (prismaConfig.logLevelDevelopment || ['query', 'info', 'warn', 'error']);
-
     super({
-      log: logLevels.map(level => ({ emit: 'stdout', level })) as any,
+      log: PrismaService.logLevelsFor(appConfig, prismaConfig).map((level) => ({ emit: 'stdout', level })) as any,
     });
 
     const extended = this.$extends(tenantExtension(this.tenantContextService)).$extends(softDeleteTokenExtension());

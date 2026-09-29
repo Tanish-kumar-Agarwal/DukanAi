@@ -6,15 +6,12 @@ import {
   Post,
   Request,
   UploadedFiles,
-  UseGuards,
   UseInterceptors,
   BadRequestException,
 } from '@nestjs/common';
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { Role } from '@prisma/client';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
-import { RolesGuard } from '../auth/roles.guard';
 import {
   MAX_CLOUD_UPLOAD_BYTES,
   MAX_BILLING_DOCUMENT_BYTES,
@@ -93,7 +90,6 @@ function parseJsonObject(rawJson: string | undefined): Record<string, unknown> {
  * Rate limiting recommendation: wire ThrottlerModule globally and apply a
  * stricter @Throttle policy here, especially for upload, backup, and delete.
  */
-@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('storage')
 export class StorageController {
   constructor(private readonly storageService: StorageService) {}

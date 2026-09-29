@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateBatchDto, AddBatchStockDto } from '../dto/batch.dto';
 import { BatchStatus } from '@prisma/client';
 import { assertOwned } from '../../prisma/tenant-ownership';
+import { ListQueryDto, pageArgs } from '../../common/pagination';
 
 @Injectable()
 export class BatchService {
@@ -14,17 +15,24 @@ export class BatchService {
    * Returns only batches that belong to the requesting shop. Batch quantities
    * are derived from their physical-bin allocations rather than client data.
    */
-  async listBatches(shopId: string) {
-    const batches = await this.prisma.batch.findMany({
-      where: { shopId },
-      include: {
-        product: { select: { name: true, sku: true } },
-        batchStocks: { select: { quantity: true, reservedQuantity: true } },
-      },
-      orderBy: [{ expiryDate: 'asc' }, { createdAt: 'desc' }],
-    });
+  async listBatches(shopId: string, query?: ListQueryDto) {
+    const { skip, take } = pageArgs(query);
+    const where = { shopId };
+    const [batches, total] = await Promise.all([
+      this.prisma.batch.findMany({
+        where,
+        include: {
+          product: { select: { name: true, sku: true } },
+          batchStocks: { select: { quantity: true, reservedQuantity: true } },
+        },
+        orderBy: [{ expiryDate: 'asc' }, { createdAt: 'desc' }, { id: 'asc' }],
+        skip,
+        take,
+      }),
+      this.prisma.batch.count({ where }),
+    ]);
 
-    return batches.map((batch) => ({
+    const items = batches.map((batch) => ({
       id: batch.id,
       product: batch.product.name,
       sku: batch.product.sku,
@@ -38,6 +46,7 @@ export class BatchService {
       supplierLotNumber: batch.supplierLotNumber,
       status: batch.status,
     }));
+    return { items, total, skip, take };
   }
 
   /**

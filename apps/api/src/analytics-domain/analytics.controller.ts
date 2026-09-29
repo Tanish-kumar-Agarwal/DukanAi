@@ -1,8 +1,6 @@
-import { Controller, Get, Logger, Query, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Logger, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { Role } from '@prisma/client';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
@@ -49,7 +47,6 @@ function responseSink(res: Response): CsvSink {
     });
 }
 
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('dashboard')
 export class AnalyticsController {
   private readonly logger = new Logger(AnalyticsController.name);

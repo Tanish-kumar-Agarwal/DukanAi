@@ -4,6 +4,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 import { CreateLocationDto } from '../dto/warehouse.dto';
 import { assertOwned } from '../../prisma/tenant-ownership';
+import { ListQueryDto, pageArgs } from '../../common/pagination';
 
 @Injectable()
 export class LocationHierarchyService {
@@ -55,17 +56,15 @@ export class LocationHierarchyService {
   /**
    * Finds all locations inside a specific parent via ultra-fast prefix matching
    */
-  async getSubtree(warehouseId: string, parentPath: string) {
+  async getSubtree(warehouseId: string, parentPath: string, query?: ListQueryDto) {
     const shopId = this.tenantContext.getShopId();
+    const { skip, take } = pageArgs(query);
     // Because path is indexed (shopId, path), a LIKE query with trailing wildcard uses the index perfectly.
-    return this.prisma.location.findMany({
-      where: {
-        shopId,
-        warehouseId,
-        path: { startsWith: parentPath },
-        isDeleted: false
-      },
-      orderBy: { path: 'asc' }
-    });
+    const where = { shopId, warehouseId, path: { startsWith: parentPath }, isDeleted: false };
+    const [items, total] = await Promise.all([
+      this.prisma.location.findMany({ where, orderBy: [{ path: 'asc' }, { id: 'asc' }], skip, take }),
+      this.prisma.location.count({ where }),
+    ]);
+    return { items, total, skip, take };
   }
 }

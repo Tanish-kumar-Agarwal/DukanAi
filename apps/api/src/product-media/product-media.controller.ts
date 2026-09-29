@@ -1,8 +1,6 @@
-import { Controller, Post, Get, Body, Param, UseGuards, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ProductMediaService } from './product-media.service';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
 import { CurrentShop, CurrentUser } from '../iam/decorators';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
@@ -14,7 +12,6 @@ import { ReorderMediaDto, TagMediaDto, UploadMediaDto } from './dto/tag-media.dt
  * former `bulk` and `search` stubs, which answered success without doing
  * anything, are gone; `tag` and `order` now do what they claim.
  */
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('media')
 export class ProductMediaController {
   constructor(private readonly productMediaService: ProductMediaService) {}

@@ -1,7 +1,9 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/create-category.dto';
+import { ListQueryDto, MAX_LIST_TAKE, pageArgs } from '../common/pagination';
 
 @Injectable()
 export class CategoriesService {
@@ -37,12 +39,16 @@ export class CategoriesService {
     });
   }
 
-  async findAll() {
+  /** Tree order (depth, sortOrder); the default page is the hard cap so a normal shop's tree arrives whole. */
+  async findAll(query?: ListQueryDto) {
     const shopId = this.tenantContext.getShopId();
-    return this.prisma.category.findMany({
-      where: { shopId, isDeleted: false },
-      orderBy: [{ depth: 'asc' }, { sortOrder: 'asc' }]
-    });
+    const { skip, take } = pageArgs(query, MAX_LIST_TAKE);
+    const where = { shopId, isDeleted: false };
+    const [items, total] = await Promise.all([
+      this.prisma.category.findMany({ where, orderBy: [{ depth: 'asc' }, { sortOrder: 'asc' }, { id: 'asc' }], skip, take }),
+      this.prisma.category.count({ where }),
+    ]);
+    return { items, total, skip, take };
   }
 
   async findOne(id: string) {
@@ -78,16 +84,15 @@ export class CategoriesService {
       path = `${parent.path}${parent.id}/`;
       depth = parent.depth + 1;
 
-      // Update the category
-      const updated = await this.prisma.category.update({
-        where: { id },
-        data: { ...dto, path, depth }
+      // The category and its whole subtree move in one transaction (roadmap 5.7).
+      return this.prisma.$transaction(async (tx) => {
+        const updated = await tx.category.update({
+          where: { id },
+          data: { ...dto, path, depth }
+        });
+        await this.updateDescendantsPath(tx, id, shopId, category.path, updated.path, category.depth, updated.depth);
+        return updated;
       });
-
-      // Update all descendants' paths
-      await this.updateDescendantsPath(id, shopId, category.path, updated.path, category.depth, updated.depth);
-      
-      return updated;
     }
 
     return this.prisma.category.update({
@@ -96,27 +101,37 @@ export class CategoriesService {
     });
   }
 
-  private async updateDescendantsPath(categoryId: string, shopId: string, oldParentPath: string, newParentPath: string, oldDepth: number, newDepth: number) {
-     const descendants = await this.prisma.category.findMany({
-         where: { 
-             shopId, 
-             path: { startsWith: `${oldParentPath}${categoryId}/` },
-             isDeleted: false
-         }
-     });
-
-     for (const child of descendants) {
-         const newChildPath = child.path.replace(oldParentPath, newParentPath);
-         const depthDiff = newDepth - oldDepth;
-         
-         await this.prisma.category.update({
-             where: { id: child.id },
-             data: { 
-                 path: newChildPath,
-                 depth: child.depth + depthDiff
-             }
-         });
-     }
+  /**
+   * Re-roots every descendant of a moved category with one UPDATE (roadmap
+   * 5.7): the old prefix `<oldParentPath><id>/` is swapped for the new one and
+   * the depth shifted by the same delta for the whole subtree, instead of one
+   * `update` per descendant. `path LIKE '<prefix>%'` walks the `(shopId, path)`
+   * index; the prefix is LIKE-escaped although ids never carry wildcards.
+   * Returns the number of descendants moved.
+   */
+  private async updateDescendantsPath(
+    tx: Prisma.TransactionClient,
+    categoryId: string,
+    shopId: string,
+    oldParentPath: string,
+    newParentPath: string,
+    oldDepth: number,
+    newDepth: number,
+  ): Promise<number> {
+    const oldPrefix = `${oldParentPath}${categoryId}/`;
+    const newPrefix = `${newParentPath}${categoryId}/`;
+    const depthDelta = newDepth - oldDepth;
+    if (oldPrefix === newPrefix && depthDelta === 0) return 0;
+    const pattern = `${oldPrefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    return tx.$executeRaw`
+      UPDATE \`Category\`
+      SET \`path\` = CONCAT(${newPrefix}, SUBSTRING(\`path\`, CHAR_LENGTH(${oldPrefix}) + 1)),
+          \`depth\` = \`depth\` + ${depthDelta},
+          \`updatedAt\` = NOW(3)
+      WHERE \`shopId\` = ${shopId}
+        AND \`isDeleted\` = 0
+        AND \`path\` LIKE ${pattern}
+    `;
   }
 
   async softDelete(id: string) {
