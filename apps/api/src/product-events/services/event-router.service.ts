@@ -3,18 +3,23 @@ import { Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
 
+/**
+ * Routes a product outbox event to the shop's subscribed webhooks through the
+ * `webhook-delivery` queue. The former `internal-events` fan-out is gone
+ * (roadmap 4.6): no processor ever consumed that queue, so every job it
+ * received sat in Redis for good.
+ */
 @Injectable()
 export class EventRouterService {
   private readonly logger = new Logger(EventRouterService.name);
 
   constructor(
     private readonly prisma: PrismaService,
-    @InjectQueue('internal-events') private readonly internalQueue: Queue,
     @InjectQueue('webhook-delivery') private readonly webhookQueue: Queue,
   ) {}
 
   /**
-   * Routes an event from the Outbox to all interested internal modules and external webhooks.
+   * Routes an event from the Outbox to all interested external webhooks.
    */
   async routeEvent(outboxEventId: string) {
     const event = await this.prisma.outboxEvent.findUnique({ where: { id: outboxEventId } });
@@ -23,12 +28,6 @@ export class EventRouterService {
     this.logger.debug(`Routing event: ${event.type} [${event.id}]`);
 
     try {
-      // 1. Dispatch to Internal Modules (Search, Analytics, Inventory)
-      await this.internalQueue.add(event.type, event.payload, {
-        jobId: `internal-${event.id}`
-      });
-
-      // 2. Dispatch to External Webhooks
       const endpoints = await this.prisma.webhookEndpoint.findMany({
         where: { shopId: event.shopId, isActive: true }
       });
@@ -47,7 +46,7 @@ export class EventRouterService {
         }
       }
 
-      // 3. Mark Outbox as Processed (or delete it to save space, but we mark DONE for now)
+      // Mark Outbox as Processed (or delete it to save space, but we mark DONE for now)
       await this.prisma.outboxEvent.update({
         where: { id: outboxEventId },
         data: { status: 'DONE', processedAt: new Date() }

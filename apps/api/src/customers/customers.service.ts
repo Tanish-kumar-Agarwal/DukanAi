@@ -6,7 +6,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { CustomerRepository } from './repositories/customer.repository';
 import { CustomerAuditService } from './services/customer-audit.service';
-import { EventPublisherService } from '../events-domain/services/event-publisher.service';
 import { CreateEnterpriseCustomerDto } from './dto/enterprise-customer.dto';
 import { CreateCustomerDto, PaginationDto, RecordPaymentDto, UpdateCustomerDto } from './dto/create-customer.dto';
 import { CustomerType, CustomerLifecycleStatus, KycStatus } from './domain/enums';
@@ -28,7 +27,6 @@ export class CustomersService {
     private readonly tenantContext: TenantContextService,
     private readonly customerRepository: CustomerRepository,
     private readonly auditService: CustomerAuditService,
-    private readonly eventPublisher: EventPublisherService,
     private readonly salesFeatureConfig: SalesFeatureConfig,
     private readonly ledger: LedgerPostingService,
     private readonly billingHelpers: BillingHelpers,
@@ -44,43 +42,40 @@ export class CustomersService {
       throw new ConflictException({ message: 'A customer with this phone number already exists.', code: 'CUSTOMER_PHONE_IN_USE', details: { customerId: duplicate.id } });
     }
 
-    let newCustomer;
     try {
-      newCustomer = await this.customerRepository.create({
-        name: data.name,
-        phone: data.phone,
-        // Scalar shopId (not shop.connect): the tenant Prisma extension injects
-        // shopId for tenant-owned models, and Prisma rejects both a relation
-        // connect and the scalar FK in the same create.
-        shopId,
-        email: data.email || null,
-        address: data.address || null,
-        city: data.city || null,
-        state: data.state || null,
-        notes: data.notes || null,
-        creditLimit: money(data.creditLimit ?? this.salesFeatureConfig.defaultCreditLimit),
-        outstandingBalance: 0,
-        type: data.type || CustomerType.RETAIL,
-        lifecycleStatus: data.lifecycleStatus || CustomerLifecycleStatus.LEAD,
-        kycStatus: KycStatus.PENDING,
-        profile: data.profile ? { create: data.profile } : undefined,
-        addresses: data.addresses?.length ? { create: data.addresses } : undefined,
-        contacts: data.contacts?.length ? { create: data.contacts } : undefined,
+      // The customer and its audit row commit together (audit P2-4): a crash
+      // between them cannot leave a customer without its CREATED entry.
+      return await this.prisma.$transaction(async (tx) => {
+        const newCustomer = await this.customerRepository.create(
+          {
+            name: data.name,
+            phone: data.phone,
+            // Scalar shopId (not shop.connect): the tenant Prisma extension injects
+            // shopId for tenant-owned models, and Prisma rejects both a relation
+            // connect and the scalar FK in the same create.
+            shopId,
+            email: data.email || null,
+            address: data.address || null,
+            city: data.city || null,
+            state: data.state || null,
+            notes: data.notes || null,
+            creditLimit: money(data.creditLimit ?? this.salesFeatureConfig.defaultCreditLimit),
+            outstandingBalance: 0,
+            type: data.type || CustomerType.RETAIL,
+            lifecycleStatus: data.lifecycleStatus || CustomerLifecycleStatus.LEAD,
+            kycStatus: KycStatus.PENDING,
+            profile: data.profile ? { create: data.profile } : undefined,
+            addresses: data.addresses?.length ? { create: data.addresses } : undefined,
+            contacts: data.contacts?.length ? { create: data.contacts } : undefined,
+          },
+          tx,
+        );
+        await this.auditService.logAction({ customerId: newCustomer.id, actorId: actor?.userId, ipAddress: actor?.ipAddress, action: 'CUSTOMER_CREATED', newPayload: newCustomer }, tx);
+        return newCustomer;
       });
     } catch (error) {
       rethrowUniqueViolation(error, [{ index: 'Customer_shopId_phone', code: 'CUSTOMER_PHONE_IN_USE', message: 'A customer with this phone number already exists.' }]);
     }
-
-    await this.auditService.logAction({ customerId: newCustomer.id, actorId: actor?.userId, ipAddress: actor?.ipAddress, action: 'CUSTOMER_CREATED', newPayload: newCustomer });
-
-    await this.eventPublisher.publish(this.prisma, shopId, {
-      type: 'customer.created',
-      entityType: 'Customer',
-      entityId: newCustomer.id,
-      payload: { customerId: newCustomer.id, shopId, timestamp: new Date().toISOString() },
-    });
-
-    return newCustomer;
   }
 
   async findAll(options: { q?: string; skip?: number; take?: number }) {
@@ -371,15 +366,11 @@ export class CustomersService {
           details: { outstandingBalance: outstandingBalance.toNumber() },
         });
       }
-      return tx.customer.update({ where: { id, shopId }, data: { isDeleted: true, deletedAt: new Date(), isActive: false } });
+      const row = await tx.customer.update({ where: { id, shopId }, data: { isDeleted: true, deletedAt: new Date(), isActive: false } });
+      // The audit row commits with the delete (audit P2-4): a crash in between cannot lose it.
+      await this.auditService.logAction({ customerId: id, actorId: actor?.userId, ipAddress: actor?.ipAddress, action: 'CUSTOMER_DELETED' }, tx);
+      return row;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
-    await this.auditService.logAction({ customerId: id, actorId: actor?.userId, ipAddress: actor?.ipAddress, action: 'CUSTOMER_DELETED' });
-    await this.eventPublisher.publish(this.prisma, shopId, {
-      type: 'customer.deleted',
-      entityType: 'Customer',
-      entityId: id,
-      payload: { customerId: id, shopId },
-    });
     return deleted;
   }
   /** Only MANAGER and above may set or change a credit limit (roadmap 3.4, audit P1-11). */

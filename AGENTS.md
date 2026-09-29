@@ -338,6 +338,25 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   at `OCR_MAX_ITEMS`. The web has no caller yet (the AI scanner page is a
   mock). `src/ocr/ocr.service.spec.ts` and
   `test/integration/ocr.integration-spec.ts` (stubbed `fetch`) cover it.
+- 4.5 / 4.6: the enterprise-invoice (`/invoices/generate`), returns-domain
+  (`/returns/initiate`), payment-domain (`/payments/capture`), sales-domain
+  (`/sales/orders`, `/sales/workflow`), pricing-domain (`/pricing/simulate`)
+  and events-domain (`/events/replay`, its duplicate `/events/webhooks`) stacks
+  are detached from `AppModule`: POS billing (`/billing/*`) is the one
+  invoice / return / payment path and product-events (`/webhooks`,
+  `/events`) the one webhook path. Customers and reservations no longer write
+  outbox rows nobody consumed (`customer.*`, `StockReserved`); a customer's
+  audit row commits in the same transaction as the create / delete. Every
+  BullMQ queue must have a worker and a producer: `QueueWiringAssertion`
+  (`src/common/queues`, boot) refuses a registered queue without a worker or
+  a worker without a registration, and `queue-wiring.spec.ts` walks the
+  import graph from `app.module.ts` (unreachable files do not count) and
+  also requires an `@InjectQueue` producer per queue. The 15 consumer-only
+  workers (`grn-jobs`, `purchase-returns`, `supplier-credits`, `vendor-bills`,
+  `purchase-attachments`, `workflow-engine`, `customer-queue`, `barcode-bulk`
+  and the seven of the detached stacks) and the producer-only
+  `internal-events` / `inventory-events` queues are gone from the modules.
+  A new queue needs both sides in the same change.
 
 ## Toolchain
 

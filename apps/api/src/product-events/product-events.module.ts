@@ -13,10 +13,8 @@ import { WebhookController } from './controllers/webhook/webhook.controller';
 @Module({
   imports: [
     PrismaModule,
-    BullModule.registerQueue(
-      { name: 'internal-events' },
-      { name: 'webhook-delivery' }
-    )
+    // `internal-events` had no consumer (roadmap 4.6): its jobs only piled up in Redis.
+    BullModule.registerQueue({ name: 'webhook-delivery' })
   ],
   controllers: [ProductEventsController, WebhookController],
   providers: [

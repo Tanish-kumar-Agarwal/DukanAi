@@ -3,7 +3,6 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { SalesEventsDomainModule } from '../sales-events-domain/sales-events-domain.module';
 import { StockLedgerModule } from '../stock-ledger-domain/stock-ledger.module';
 import { ProductEventsModule } from '../product-events/product-events.module';
-import { BullModule } from '@nestjs/bullmq';
 
 import { GrnController } from './grn.controller';
 import { GrnRepository } from './repositories/grn.repository';
@@ -12,7 +11,6 @@ import { GrnApprovalService } from './services/grn-approval.service';
 import { GrnInspectionService } from './services/grn-inspection.service';
 import { GrnVarianceService } from './services/grn-variance.service';
 import { GrnIntegrationService } from './services/grn-integration.service';
-import { GrnProcessorService } from './services/grn-processor.service';
 import { PurchaseEventsDomainModule } from '../purchase-events-domain/purchase-events-domain.module';
 import { StorageModule } from '../storage/storage.module';
 import { DocumentModule } from '../common/document/document.module';
@@ -29,8 +27,7 @@ import { PurchaseDomainModule } from '../purchase-domain/purchase-domain.module'
     StorageModule,
     DocumentModule,
     InventoryDomainModule,
-    PurchaseDomainModule,
-    BullModule.registerQueue({ name: 'grn-jobs' })
+    PurchaseDomainModule
   ],
   controllers: [GrnController],
   providers: [
@@ -39,8 +36,7 @@ import { PurchaseDomainModule } from '../purchase-domain/purchase-domain.module'
     GrnApprovalService,
     GrnInspectionService,
     GrnVarianceService,
-    GrnIntegrationService,
-    GrnProcessorService
+    GrnIntegrationService
   ],
   exports: [GrnRepository]
 })

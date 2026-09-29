@@ -151,17 +151,15 @@ describe('tenant isolation: foreign IDs on every write route', () => {
   });
 
   describe('documents', () => {
-    it('revision compare, customer returns and invoices refuse foreign rows', async () => {
+    it('revision compare refuses a foreign revision; the duplicate invoice and return stacks are gone (roadmap 4.5)', async () => {
       const versioning = app.get(ProductVersioningService);
       const revA = await run.as(A.shopId, A.ownerId, Role.OWNER, () => versioning.createDraft(a.product));
       const revB = await run.as(B.shopId, B.ownerId, Role.OWNER, () => versioning.createDraft(b.product));
       expect((await http.get(`/api/products/${a.product}/revisions/compare/${revA.id}/${revB.id}`)).status).toBe(404);
-      rejected((await http.post('/api/returns/initiate').send({ returnLines: [{ productId: b.product, quantity: 1 }] })).status);
-      const invoice = { customerId: b.customer, lines: [{ quantity: 1, unitPrice: 10 }], subTotal: 10, taxTotal: 0, grandTotal: 10 };
-      rejected((await http.post('/api/invoices/generate').send(invoice)).status);
-      rejected((await http.post('/api/invoices/generate').send({ ...invoice, customerId: undefined, lines: [{ productId: b.product, quantity: 1, unitPrice: 10 }] })).status);
-      expect(await run.system(() => prisma.returnOrder.count({ where: { shopId: A.shopId } }))).toBe(0);
-      expect(await run.system(() => prisma.enterpriseInvoice.count({ where: { shopId: A.shopId } }))).toBe(0);
+      // POS billing (`/billing/*`) is the only invoice, return and payment path; these routes no longer exist.
+      expect((await http.post('/api/returns/initiate').send({ returnLines: [{ productId: b.product, quantity: 1 }] })).status).toBe(404);
+      expect((await http.post('/api/invoices/generate').send({ customerId: b.customer, lines: [] })).status).toBe(404);
+      expect((await http.post('/api/payments/capture').send({ invoiceId: 'x', amount: 1 })).status).toBe(404);
     });
   });
 

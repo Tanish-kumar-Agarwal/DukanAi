@@ -4,7 +4,6 @@ import { CreateReservationDto } from '../dto/reservation.dto';
 import { ReservationValidationService } from './reservation-validation.service';
 import { AllocationService } from './allocation.service';
 import { ReservationStatus } from '@prisma/client';
-import { EventPublisherService } from '../../events-domain/services/event-publisher.service';
 import { assertOwnedMany } from '../../prisma/tenant-ownership';
 
 @Injectable()
@@ -14,8 +13,7 @@ export class ReservationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly validation: ReservationValidationService,
-    private readonly allocation: AllocationService,
-    private readonly eventPublisher: EventPublisherService
+    private readonly allocation: AllocationService
   ) {}
 
   /**
@@ -75,18 +73,7 @@ export class ReservationService {
         }
       }
 
-      // Publish Outbox Event
-      await this.eventPublisher.publish(tx, shopId, {
-        type: 'StockReserved',
-        entityType: 'StockReservation',
-        entityId: reservation.id,
-        payload: {
-          reservationId: reservation.id,
-          source: reservation.source,
-          items: dto.items
-        }
-      });
-
+      // No outbox row: nothing consumed the former `StockReserved` event (roadmap 4.5/4.6).
       return reservation;
     });
   }

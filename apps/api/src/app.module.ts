@@ -35,6 +35,7 @@ import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RolesGuard } from './auth/roles.guard';
 import { RouteAuthorizationAssertion } from './auth/route-authorization.assertion';
+import { QueueWiringAssertion } from './common/queues/queue-wiring.assertion';
 import { TenantGuard } from './iam/guards/tenant.guard';
 import { IamModule } from './iam/iam.module';
 import { CronLockModule } from './common/cron-lock/cron-lock.module';
@@ -58,13 +59,7 @@ import { StockLedgerModule } from './stock-ledger-domain/stock-ledger.module';
 import { ReservationModule } from './reservation-domain/reservation.module';
 import { StockCountModule } from './stock-count-domain/stock-count.module';
 import { BatchModule } from './batch-domain/batch.module';
-import { EventsModule } from './events-domain/events.module';
 import { ScheduleModule } from '@nestjs/schedule';
-import { SalesDomainModule } from './sales-domain/sales-domain.module';
-import { PricingDomainModule } from './pricing-domain/pricing-domain.module';
-import { InvoiceDomainModule } from './invoice-domain/invoice-domain.module';
-import { PaymentDomainModule } from './payment-domain/payment-domain.module';
-import { ReturnsDomainModule } from './returns-domain/returns-domain.module';
 import { AnalyticsDomainModule } from './analytics-domain/analytics-domain.module';
 import { SalesEventsDomainModule } from './sales-events-domain/sales-events-domain.module';
 import { PurchaseDomainModule } from './purchase-domain/purchase-domain.module';
@@ -150,12 +145,9 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     ReservationModule,
     StockCountModule,
     BatchModule,
-    EventsModule,
-    SalesDomainModule,
-    PricingDomainModule,
-    InvoiceDomainModule,
-    PaymentDomainModule,
-    ReturnsDomainModule,
+    // The enterprise invoice, returns, payment, sales-order, pricing and
+    // events-domain stacks are gone (roadmap 4.5): POS billing is the one
+    // invoice / return / payment path, product-events the one webhook path.
     AnalyticsDomainModule,
     SalesEventsDomainModule,
     PurchaseDomainModule,
@@ -188,6 +180,8 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     { provide: APP_GUARD, useClass: RolesGuard },
     // Refuses to boot while any write handler lacks @Roles / @AnyAuthenticated / @Public.
     RouteAuthorizationAssertion,
+    // Refuses to boot while a registered queue has no worker or a worker no queue (roadmap 4.6).
+    QueueWiringAssertion,
   ],
 })
 export class AppModule {}
