@@ -322,6 +322,22 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `LOCATION_CODE_IN_USE`, unique indexes with `deletedToken` behind the
   pre-check), `warehouseId` through `assertOwned`, a parent location must be
   in the same warehouse (404). Covered by the procurement spec above.
+- 4.4 OCR (`src/ocr`, `POST /ocr/scan-bill`, MANAGER+): multer limits and
+  the image-only filter come from `OcrModule`'s `MulterModule.registerAsync`
+  (`OCR_MAX_IMAGE_BYTES`, one file, JPEG/PNG/WebP by declared type and
+  extension); the bytes are then sniffed (`sniffImageMimeType`,
+  `ocr-upload.ts`) and that mimetype, not the client's, goes to Gemini with
+  the key in `x-goog-api-key` (never the URL) and `OCR_MODEL`. A placeholder
+  or missing `GEMINI_API_KEY` is 503 `OCR_NOT_CONFIGURED`; an unreadable
+  model answer is 502 `OCR_UNREADABLE_RESPONSE`, never an empty success.
+  Matching (`OcrService.matchProducts`) is per line with up to four keywords
+  as plain `contains` filters (MySQL collation is case-insensitive; Prisma's
+  `mode: 'insensitive'` is PostgreSQL-only and answered 500 here), five
+  candidates, four lookups in flight, and the Dice similarity against
+  `OCR_FUZZY_MATCH_THRESHOLD` is the reported `confidence`. Items are capped
+  at `OCR_MAX_ITEMS`. The web has no caller yet (the AI scanner page is a
+  mock). `src/ocr/ocr.service.spec.ts` and
+  `test/integration/ocr.integration-spec.ts` (stubbed `fetch`) cover it.
 
 ## Toolchain
 

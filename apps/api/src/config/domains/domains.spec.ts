@@ -109,6 +109,20 @@ describe('Configuration Domains', () => {
       expect(validateSync(hydrateFromEnv(OcrFeatureConfig, { OCR_FUZZY_MATCH_THRESHOLD: '0.85' }))).toEqual([]);
       expect(validateSync(hydrateFromEnv(OcrFeatureConfig, { OCR_FUZZY_MATCH_THRESHOLD: '1.5' })).map((e) => e.property)).toEqual(['fuzzyMatchThreshold']);
     });
+
+    it('bounds the OCR upload cap, item cap and model name (roadmap 4.4)', () => {
+      const defaults = hydrateFromEnv(OcrFeatureConfig, {});
+      expect(defaults.maxImageBytes).toBe(10 * 1024 * 1024);
+      expect(defaults.maxItems).toBe(100);
+      expect(defaults.model).toBe('gemini-2.0-flash');
+      const custom = hydrateFromEnv(OcrFeatureConfig, { OCR_MAX_IMAGE_BYTES: '2097152', OCR_MAX_ITEMS: '20', OCR_MODEL: 'gemini-2.5-flash' });
+      expect(validateSync(custom)).toEqual([]);
+      expect(custom.maxImageBytes).toBe(2097152);
+      expect(custom.maxItems).toBe(20);
+      expect(validateSync(hydrateFromEnv(OcrFeatureConfig, { OCR_MAX_IMAGE_BYTES: '1024' })).map((e) => e.property)).toEqual(['maxImageBytes']);
+      expect(validateSync(hydrateFromEnv(OcrFeatureConfig, { OCR_MAX_ITEMS: '0' })).map((e) => e.property)).toEqual(['maxItems']);
+      expect(validateSync(hydrateFromEnv(OcrFeatureConfig, { OCR_MODEL: 'models/x y' })).map((e) => e.property)).toEqual(['model']);
+    });
   });
 
   describe('CacheConfig (hydrateFromEnv)', () => {
