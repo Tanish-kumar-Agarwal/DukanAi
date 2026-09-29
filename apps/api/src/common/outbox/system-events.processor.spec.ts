@@ -97,7 +97,7 @@ describe('SystemEventsProcessor', () => {
     expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({ where: { id: 'evt-9' }, data: expect.objectContaining({ status: 'DONE', error: null }) });
   });
 
-  it('INVOICE_CREATED with a low-stock product creates one LOW_STOCK notification, invalidates the three cache keys and broadcasts', async () => {
+  it('INVOICE_CREATED with a low-stock product creates one LOW_STOCK notification, invalidates the four cache keys and broadcasts', async () => {
     let shopIdSeenInsideTransaction: string | undefined;
     tx.product.findFirst.mockImplementation(async () => {
       shopIdSeenInsideTransaction = tenantContext.getShopId();
@@ -114,11 +114,12 @@ describe('SystemEventsProcessor', () => {
 
     expect(shopIdSeenInsideTransaction).toBe('shop-1');
 
-    expect(cache.del).toHaveBeenCalledTimes(3);
+    expect(cache.del).toHaveBeenCalledTimes(4);
     expect(cache.del.mock.calls.map((c) => c[0])).toEqual([
       'shop:shop-1:analytics:dashboard',
       'shop:shop-1:analytics:kpis',
       'shop:shop-1:analytics:summary',
+      'shop:shop-1:analytics:allTime',
     ]);
 
     expect(tx.notification.findFirst).toHaveBeenCalledWith(
@@ -217,7 +218,7 @@ describe('SystemEventsProcessor', () => {
       }),
     });
     expect(tx.notification.create.mock.calls[0][0].data.message).toContain('Ramesh Kumar');
-    expect(cache.del).toHaveBeenCalledTimes(3);
+    expect(cache.del).toHaveBeenCalledTimes(4);
   });
 
   it('marks unknown job names processed without side effects', async () => {

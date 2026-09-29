@@ -353,7 +353,8 @@ Analytics cache keys, dropped right after every committed sale, return and
 cancellation (`BillingHelpers.afterStockChange`) and again by the event
 processor when the invoice event is relayed:
 `shop:{shopId}:analytics:dashboard`, `shop:{shopId}:analytics:kpis`,
-`shop:{shopId}:analytics:summary`.
+`shop:{shopId}:analytics:summary`, `shop:{shopId}:analytics:allTime` (the
+all-time totals of the summary, roadmap 5.5).
 
 The web dashboard polls summary, KPIs and trend every 30 s while the tab is
 visible (never overlapping a poll still in flight), times dashboard requests

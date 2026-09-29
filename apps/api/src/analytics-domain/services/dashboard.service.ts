@@ -3,12 +3,29 @@ import { InvoiceStatus, Prisma, ShiftStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { businessDateString, endOfBusinessDay, startOfBusinessDay } from '../../common/time/business-day';
 import { trailingBusinessDays } from '../analytics-range';
-import { RevenueEngine } from '../engines/revenue-engine';
+import { InvoiceTotals, RevenueEngine } from '../engines/revenue-engine';
 import { ProfitMarginEngine, TopProduct } from '../engines/profit-margin-engine';
 import { ForecastEngine, NetRevenueForecast } from '../engines/forecast-engine';
 import { toDecimal, toInt, toMoney } from '../engines/invoice-sql';
 import { AnalyticsCacheService } from './analytics-cache.service';
 import { ShopTimezoneService } from './shop-timezone.service';
+
+/** InvoiceTotals as stored in the cache: Decimals as strings, counts as numbers. */
+interface CachedTotals {
+  grossSales: string;
+  returns: string;
+  netSales: string;
+  orders: number;
+  returnCount: number;
+}
+
+function toCachedTotals(totals: InvoiceTotals): CachedTotals {
+  return { grossSales: totals.grossSales.toString(), returns: totals.returns.toString(), netSales: totals.netSales.toString(), orders: totals.orders, returnCount: totals.returnCount };
+}
+
+function fromCachedTotals(cached: CachedTotals): InvoiceTotals {
+  return { grossSales: toDecimal(cached.grossSales), returns: toDecimal(cached.returns), netSales: toDecimal(cached.netSales), orders: Number(cached.orders), returnCount: Number(cached.returnCount) };
+}
 
 export interface DashboardShift {
   id: string;
@@ -170,7 +187,7 @@ export class DashboardService {
       shift,
     ] = await Promise.all([
       section('today', () => this.revenueEngine.totals(shopId, start, end)),
-      section('allTime', () => this.revenueEngine.totals(shopId)),
+      section('allTime', () => this.allTimeTotals(shopId)),
       section('todayProfit', () => this.revenueEngine.profit(shopId, start, end)),
       section('customers', () => this.prisma.customer.count({ where: { shopId, isDeleted: false } })),
       section('products', () => this.prisma.product.count({ where: { shopId, isDeleted: false } })),
@@ -261,6 +278,22 @@ export class DashboardService {
           }
         : null,
     };
+  }
+
+  /**
+   * All-time sales totals, cached under `shop:{shopId}:analytics:allTime`
+   * (roadmap 5.5): the aggregate walks every invoice of the shop, and the
+   * web polls the summary every 30 s. Every committed sale, return and
+   * cancellation drops the key (`invalidateAnalyticsCache`), so a cached
+   * value is never older than the last invoice mutation. Decimals travel
+   * through the cache as strings.
+   */
+  private async allTimeTotals(shopId: string): Promise<InvoiceTotals> {
+    const cached = await this.cache.getAllTime<CachedTotals>(shopId);
+    if (cached) return fromCachedTotals(cached);
+    const totals = await this.revenueEngine.totals(shopId);
+    await this.cache.setAllTime(shopId, toCachedTotals(totals));
+    return totals;
   }
 
   /** Today's headline figures, cached under `shop:{shopId}:analytics:kpis`. */

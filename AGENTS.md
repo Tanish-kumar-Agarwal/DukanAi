@@ -453,6 +453,30 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `VARIANT_MATRIX_TOO_LARGE` / `VARIANT_MATRIX_INVALID`) so a direct caller
   cannot bypass the DTO. The Cartesian product is typed and built only after
   the check.
+- 5.3 search: `clampSearchQuery` (`product-search/search-term.ts`) normalises
+  and cuts `q` to `MAX_SEARCH_QUERY_LENGTH` (100) once in the controller;
+  `tokenizeForSynonyms` lower-cases, de-duplicates and caps the tokens (8),
+  and `SynonymEngineService.expandQuery` resolves them in ONE
+  `findMany({ term: { in } })`, capping the expansion at 24 terms. Every
+  `SearchHistory` insert goes through a per-shop, per-minute budget
+  (`SEARCH_HISTORY_MAX_PER_MINUTE`, default 120; Redis `INCR` on
+  `search-history:{shopId}:{minute}`, per-process counter when Redis is
+  down): a search past the budget is served but not recorded. Never add a
+  per-token query or an uncapped `q` consumer.
+- 5.4 reconciliation: `InventoryReconService.runReconciliation(now)` pages
+  products with keyset pagination (`inventory/recon-keyset.ts`: closed window
+  `updatedAt` in `[now - lookback, now]`, cursor `(updatedAt, id)` over the
+  `Product(updatedAt)` index), never `skip`; a product updated during the run
+  (including one the run repairs, which bumps `updatedAt`) waits for the next
+  run, so the loop terminates under continuous sales. It returns a summary
+  (`productsChecked`, `batches`, drift counters) for tests.
+- 5.5 dashboard: the all-time totals of the summary are cached under
+  `shop:{shopId}:analytics:allTime` (`AnalyticsCacheService.getAllTime` /
+  `setAllTime`, dashboard TTL) with Decimals as strings; the key is part of
+  `analyticsCacheKeys`, so `BillingHelpers.afterStockChange` and the
+  system-events worker drop it with the others after every committed sale,
+  return and cancellation. Add any new whole-history aggregate to that key
+  family rather than caching it on its own.
 
 ## Toolchain
 

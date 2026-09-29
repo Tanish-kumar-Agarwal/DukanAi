@@ -28,4 +28,11 @@ export class SearchFeatureConfig {
   @IntegerFromEnv()
   @EnvVariable('SEARCH_ANALYTICS_LIMIT')
   analyticsLimit: number = 10;
+
+  /** SearchHistory rows one shop may write per minute (roadmap 5.3); searches beyond it are served but not recorded. */
+  @IsInt()
+  @Min(1)
+  @IntegerFromEnv()
+  @EnvVariable('SEARCH_HISTORY_MAX_PER_MINUTE')
+  historyMaxPerMinute: number = 120;
 }

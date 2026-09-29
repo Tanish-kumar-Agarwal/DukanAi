@@ -13,12 +13,21 @@ import { CacheConfig } from '../config/domains/cache.config';
 import { REDIS_CLIENT } from '../common/redis/redis.module';
 import Redis from 'ioredis';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
+import { nextReconCursor, RECON_BATCH_ORDER, reconBatchWhere, ReconCursor } from './recon-keyset';
 
 interface ReconProduct {
   id: string;
   shopId: string;
   currentStock: Prisma.Decimal;
   stockVersion: number;
+  updatedAt: Date;
+}
+
+export interface ReconSummary {
+  productsChecked: number;
+  batches: number;
+  ledgerDrifts: DriftCounters;
+  redisDrifts: DriftCounters;
 }
 
 interface DriftCounters {
@@ -85,40 +94,43 @@ export class InventoryReconService implements OnApplicationBootstrap {
     );
   }
 
-  async runReconciliation() {
+  /**
+   * Walks every product updated inside the lookback window, in
+   * `(updatedAt, id)` keyset pages over the `Product(updatedAt)` index
+   * (roadmap 5.4, `recon-keyset.ts`), and repairs both invariants per page.
+   */
+  async runReconciliation(now: Date = new Date()): Promise<ReconSummary | null> {
     this.logger.log({ event: 'inventory_reconciliation_started' });
     const startTime = Date.now();
 
     if (!this.redis) {
       this.logger.warn('Redis client unavailable. Skipping reconciliation.');
-      return;
+      return null;
     }
 
     let productsChecked = 0;
+    let batches = 0;
     const ledgerDrifts: DriftCounters = { found: 0, fixed: 0 };
     const redisDrifts: DriftCounters = { found: 0, fixed: 0 };
 
-    const lookbackStart = new Date(Date.now() - this.inventoryConfig.reconLookbackMs);
+    const lookbackStart = new Date(now.getTime() - this.inventoryConfig.reconLookbackMs);
     const batchSize = this.inventoryConfig.reconBatchSize;
-    let skip = 0;
+    let cursor: ReconCursor | null = null;
 
     try {
       while (true) {
-        // Fetch from Prisma in batches
         const products: ReconProduct[] = await this.prisma.product.findMany({
-          where: {
-            updatedAt: { gte: lookbackStart },
-            isDeleted: false,
-          },
-          select: { id: true, shopId: true, currentStock: true, stockVersion: true },
+          where: reconBatchWhere(lookbackStart, now, cursor),
+          select: { id: true, shopId: true, currentStock: true, stockVersion: true, updatedAt: true },
           take: batchSize,
-          skip: skip,
-          orderBy: { id: 'asc' },
+          orderBy: RECON_BATCH_ORDER,
         });
 
         if (products.length === 0) break;
 
         productsChecked += products.length;
+        batches += 1;
+        cursor = nextReconCursor(products);
 
         // Invariant 1: ledger is the authority; repaired values are carried into invariant 2.
         const ledgerOutcome = await this.reconcileLedgerInvariant(products);
@@ -130,7 +142,7 @@ export class InventoryReconService implements OnApplicationBootstrap {
         redisDrifts.found += redisOutcome.found;
         redisDrifts.fixed += redisOutcome.fixed;
 
-        skip += batchSize;
+        if (products.length < batchSize) break;
       }
     } catch (error) {
       this.logger.error('Database or Redis unavailable. Aborting reconciliation cleanly.', error);
@@ -150,6 +162,7 @@ export class InventoryReconService implements OnApplicationBootstrap {
       driftsFixed: ledgerDrifts.fixed + redisDrifts.fixed,
       durationMs,
     });
+    return { productsChecked, batches, ledgerDrifts, redisDrifts };
   }
 
   /**

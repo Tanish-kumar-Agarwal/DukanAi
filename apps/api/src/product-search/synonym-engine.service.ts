@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { MAX_EXPANDED_TERMS, tokenizeForSynonyms } from './search-term';
 
 @Injectable()
 export class SynonymEngineService {
@@ -8,22 +9,31 @@ export class SynonymEngineService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Expands a search query by applying registered synonyms.
-   * e.g. "Soap" -> "Soap Detergent Cleaning Bar"
+   * Expands a search query with the shop's registered synonyms (roadmap 5.3,
+   * audit P2-14). The query is tokenised once (lower case, de-duplicated,
+   * capped at `MAX_SYNONYM_TOKENS`), every token is looked up in ONE
+   * `findMany({ term: { in } })`, and the expansion is capped at
+   * `MAX_EXPANDED_TERMS` terms so a synonym list can never blow up the
+   * `contains` query built from it.
+   * e.g. "Soap" -> "soap detergent cleaning bar"
    */
   async expandQuery(shopId: string, query: string): Promise<string> {
-    const tokens = query.toLowerCase().split(' ');
+    const tokens = tokenizeForSynonyms(query);
+    if (tokens.length === 0) return query;
+
+    const rows = await this.prisma.searchSynonym.findMany({
+      where: { shopId, isActive: true, term: { in: tokens } },
+      select: { term: true, synonyms: true },
+    });
+
     const expanded = new Set<string>(tokens);
-
-    for (const token of tokens) {
-      const syn = await this.prisma.searchSynonym.findUnique({
-        where: { shopId_term: { shopId, term: token } }
-      });
-
-      if (syn && syn.isActive) {
-        const synonyms = syn.synonyms.split(',').map(s => s.trim().toLowerCase());
-        synonyms.forEach(s => expanded.add(s));
+    for (const row of rows) {
+      for (const synonym of row.synonyms.split(',')) {
+        const term = synonym.trim().toLowerCase();
+        if (term) expanded.add(term);
+        if (expanded.size >= MAX_EXPANDED_TERMS) break;
       }
+      if (expanded.size >= MAX_EXPANDED_TERMS) break;
     }
 
     return Array.from(expanded).join(' ');
