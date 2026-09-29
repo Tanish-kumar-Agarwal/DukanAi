@@ -13,7 +13,6 @@ const SRC = path.resolve(__dirname, '..', '..');
 const CONTEXT_MARKERS = ['runWithContext(', 'runInShopOf(', 'runAsSuperAdmin(', 'sweepEveryShop('];
 /** Processors that never query the database (Redis broadcast, queue hand-off only), with the reason. */
 const NO_DATABASE = new Set<string>([
-  'sales-events-domain/workers/sales-event-router.worker.ts', // publishes to Redis and enqueues webhook jobs; no Prisma
 ]);
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -29,7 +28,8 @@ describe('BullMQ processors run under a tenant context', () => {
   const processors = walk(SRC).filter((file) => /@Processor\(/.test(fs.readFileSync(file, 'utf8')));
 
   it('finds the processors', () => {
-    expect(processors.length).toBeGreaterThan(10);
+    // Eight live processors after the 4.5-4.9 removals; a drop below this means a worker file went missing.
+    expect(processors.length).toBeGreaterThanOrEqual(8);
   });
 
   it.each(processors.map((file) => [path.relative(SRC, file)]))('%s establishes a context before touching the database', (rel) => {

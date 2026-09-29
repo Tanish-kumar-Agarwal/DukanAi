@@ -20,7 +20,7 @@ describe('Configuration Platform Integration', () => {
       SALES_DEFAULT_CREDIT_LIMIT: '50000',
       SECURITY_MAX_LOGIN_ATTEMPTS: '7',
       RATE_LIMIT_SHORT_TTL_MS: '5000',
-      CRON_SALES_OUTBOX_RELAY: '0 0 29 2 *',
+      CRON_OUTBOX_REAPER: '0 0 29 2 *',
       CRON_ENABLED: 'false',
       CACHE_CUSTOMER_SEARCH_TTL_MS: '15000',
       CACHE_TTL: '',
@@ -78,7 +78,7 @@ describe('Configuration Platform Integration', () => {
 
   it('hydrates CronConfig from the environment (schedulers read this, tests rely on it)', () => {
     const cron = module.get<CronConfig>(CronConfig);
-    expect(cron.salesOutboxRelayCron).toBe('0 0 29 2 *'); // from EnvVariable
+    expect(cron.outboxReaperCron).toBe('0 0 29 2 *'); // from EnvVariable
     expect(cron.enabled).toBe(false); // from EnvVariable
     expect(cron.analyticsJobCron).toBe('0 0 * * *'); // default
   });

@@ -52,12 +52,6 @@ export class CronConfig {
   @IsString()
   @IsCronExpression()
   @StringFromEnv()
-  @EnvVariable('CRON_SALES_OUTBOX_RELAY')
-  salesOutboxRelayCron: string = '* * * * * *'; // EVERY_SECOND
-
-  @IsString()
-  @IsCronExpression()
-  @StringFromEnv()
   @EnvVariable('CRON_PURCHASE_OUTBOX_RELAY')
   purchaseOutboxRelayCron: string = '* * * * * *'; // EVERY_SECOND
 

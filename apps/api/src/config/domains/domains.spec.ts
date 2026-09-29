@@ -145,8 +145,8 @@ describe('Configuration Domains', () => {
 
     it('rejects values that are not integers instead of silently using the default', () => {
       for (const bad of ['abc', '1.5', '10ms']) {
-        const errors = validateSync(hydrateFromEnv(CacheConfig, { CACHE_INVOICE_TTL_MS: bad }));
-        expect(errors.map((e) => e.property)).toEqual(['invoiceTtlMs']);
+        const errors = validateSync(hydrateFromEnv(CacheConfig, { CACHE_GRN_TTL_MS: bad }));
+        expect(errors.map((e) => e.property)).toEqual(['grnTtlMs']);
       }
       expect(validateSync(hydrateFromEnv(CacheConfig, { CACHE_TTL: '-1' })).map((e) => e.property)).toEqual(['ttl']);
     });
@@ -162,14 +162,14 @@ describe('Configuration Domains', () => {
     it('keeps the defaults when nothing is set', () => {
       const config = hydrateFromEnv(CronConfig, {});
       expect(validateSync(config)).toEqual([]);
-      expect(config.salesOutboxRelayCron).toBe('* * * * * *');
+      expect(config.outboxReaperCron).toBe('* * * * *');
       expect(config.analyticsJobCron).toBe('0 0 * * *');
     });
 
     it('reads schedules from the environment; blank keeps the default', () => {
-      const config = hydrateFromEnv(CronConfig, { CRON_SALES_OUTBOX_RELAY: ' 0 0 29 2 * ', CRON_ANALYTICS_JOB: '' });
+      const config = hydrateFromEnv(CronConfig, { CRON_OUTBOX_REAPER: ' 0 0 29 2 * ', CRON_ANALYTICS_JOB: '' });
       expect(validateSync(config)).toEqual([]);
-      expect(config.salesOutboxRelayCron).toBe('0 0 29 2 *');
+      expect(config.outboxReaperCron).toBe('0 0 29 2 *');
       expect(config.analyticsJobCron).toBe('0 0 * * *');
     });
 
@@ -182,8 +182,8 @@ describe('Configuration Domains', () => {
     });
 
     it('rejects a schedule that can never run (CronJob.start() would throw on it)', () => {
-      const errors = validateSync(hydrateFromEnv(CronConfig, { CRON_SALES_OUTBOX_RELAY: '0 0 31 2 *' }));
-      expect(errors.map((e) => e.property)).toEqual(['salesOutboxRelayCron']);
+      const errors = validateSync(hydrateFromEnv(CronConfig, { CRON_OUTBOX_REAPER: '0 0 31 2 *' }));
+      expect(errors.map((e) => e.property)).toEqual(['outboxReaperCron']);
     });
 
     it('rejects an invalid cron expression with the property named', () => {

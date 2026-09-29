@@ -45,7 +45,6 @@ import { InventoryFeatureConfig } from './domains/features/inventory-feature.con
 import { ImportExportFeatureConfig } from './domains/features/import-export-feature.config';
 import { OcrFeatureConfig } from './domains/features/ocr-feature.config';
 import { BillingFeatureConfig } from './domains/features/billing-feature.config';
-import { ProcurementFeatureConfig } from './domains/features/procurement-feature.config';
 
 function validateConfig<T extends object>(configClass: T): T {
   const errors = validateSync(configClass);
@@ -287,7 +286,6 @@ function validateConfig<T extends object>(configClass: T): T {
     { provide: ImportExportFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(ImportExportFeatureConfig)) },
     { provide: OcrFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(OcrFeatureConfig)) },
     { provide: BillingFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(BillingFeatureConfig)) },
-    { provide: ProcurementFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(ProcurementFeatureConfig)) },
   ],
   exports: [
     AppConfig,
@@ -330,7 +328,6 @@ function validateConfig<T extends object>(configClass: T): T {
     ImportExportFeatureConfig,
     OcrFeatureConfig,
     BillingFeatureConfig,
-    ProcurementFeatureConfig,
   ],
 })
 export class EnterpriseConfigModule {}

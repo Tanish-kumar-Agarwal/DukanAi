@@ -27,7 +27,6 @@ describe('background schedulers with CRON_ENABLED=true', () => {
   beforeAll(async () => {
     const config = Object.assign(new CronConfig(), {
       enabled: true,
-      salesOutboxRelayCron: FAR_AWAY,
       purchaseOutboxRelayCron: FAR_AWAY,
       eventsOutboxRelayCron: FAR_AWAY,
       productOutboxRelayCron: FAR_AWAY,
