@@ -92,7 +92,9 @@ describe('SystemEventsProcessor', () => {
 
     await expect(processor.process(job)).resolves.toEqual({ status: 'processed' });
     expect(cache.del.mock.calls.map((c) => c[0])).toEqual(analyticsCacheKeys('shop-9'));
-    expect(prisma.outboxEvent.updateMany).not.toHaveBeenCalled();
+    // Roadmap 4.7: the worker, not the relay, settles the row.
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({ where: { id: 'evt-9' }, data: expect.objectContaining({ status: 'DONE', error: null }) });
   });
 
   it('INVOICE_CREATED with a low-stock product creates one LOW_STOCK notification, invalidates the three cache keys and broadcasts', async () => {
@@ -147,7 +149,9 @@ describe('SystemEventsProcessor', () => {
         entityId: 'evt-1',
       }),
     });
-    expect(prisma.outboxEvent.updateMany).not.toHaveBeenCalled();
+    // Roadmap 4.7: a handled event is marked DONE by the worker after its transaction commits.
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({ where: { id: 'evt-1' }, data: expect.objectContaining({ status: 'DONE', error: null }) });
   });
 
   it('does not duplicate an unread LOW_STOCK notification and does not notify above the reorder point', async () => {

@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Delete, Param, Body, UseGuards, NotFoundException } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Param, Body, UseGuards, NotFoundException, BadRequestException } from '@nestjs/common';
+import { OutboundUrlBlockedError, OutboundUrlGuard } from '../../../common/net/outbound-url-guard';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { JwtAuthGuard } from '../../../auth/jwt-auth.guard';
 import { TenantGuard } from '../../../iam/guards/tenant.guard';
@@ -24,11 +25,23 @@ export class WebhookController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly eventsFeatureConfig: EventsFeatureConfig,
+    private readonly urlGuard: OutboundUrlGuard,
   ) {}
 
+  /**
+   * Registration vets the URL the same way a delivery does (scheme, no
+   * credentials, DNS-resolved public address; roadmap 4.8). The send-time
+   * check remains authoritative: a host can change what it resolves to.
+   */
   @Roles(...MANAGEMENT_ROLES)
   @Post()
   async createEndpoint(@Body() dto: CreateWebhookEndpointDto, @CurrentShop() shopId: string) {
+    try {
+      await this.urlGuard.resolve(dto.url, this.eventsFeatureConfig.webhookAllowHttp);
+    } catch (error) {
+      if (error instanceof OutboundUrlBlockedError) throw new BadRequestException({ message: error.message, code: error.code });
+      throw error;
+    }
     const generated = dto.secret === undefined;
     const secret = dto.secret ?? randomBytes(32).toString('hex');
     const endpoint = await this.prisma.webhookEndpoint.create({

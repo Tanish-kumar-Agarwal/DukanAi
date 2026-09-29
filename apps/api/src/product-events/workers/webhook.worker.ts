@@ -31,7 +31,7 @@ export class WebhookDeliveryWorker extends WorkerHost {
   async process(job: Job<WebhookDeliveryJobData, unknown, string>): Promise<void> {
     if (job.name !== 'deliver-webhook') return;
     this.logger.debug(`Processing webhook delivery job ${job.id}`);
-    const deliver = () => this.webhookDispatcher.dispatch(job.data.endpointId, job.data.eventId, job.data.payload);
+    const deliver = () => this.webhookDispatcher.dispatch(job.data.endpointId, job.data.eventId, job.data.payload, String(job.id));
     if (job.data.shopId) {
       await this.tenantContext.runWithContext(jobContext(job.data.shopId, job.id), deliver);
       return;

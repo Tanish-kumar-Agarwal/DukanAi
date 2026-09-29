@@ -73,6 +73,13 @@ export class CronConfig {
   @EnvVariable('CRON_PRODUCT_OUTBOX_RELAY')
   productOutboxRelayCron: string = '* * * * * *'; // EVERY_SECOND
 
+  /** Stale-claim reaper for every outbox relay (roadmap 4.7), under a cron lock. */
+  @IsString()
+  @IsCronExpression()
+  @StringFromEnv()
+  @EnvVariable('CRON_OUTBOX_REAPER')
+  outboxReaperCron: string = '* * * * *'; // EVERY_MINUTE
+
   @IsString()
   @IsCronExpression()
   @StringFromEnv()

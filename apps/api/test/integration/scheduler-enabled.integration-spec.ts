@@ -17,10 +17,10 @@ describe('background schedulers with CRON_ENABLED=true', () => {
     'BatchExpirySweep',
     'EventsOutboxRelayService',
     'InventoryRecon',
+    'OutboxReaper',
     'ProductOutboxProcessorWorker',
     'PurchaseOutboxRelayCron',
     'ReservationExpirySweep',
-    'SalesOutboxRelayCron',
   ];
   let app: INestApplication;
 
@@ -31,6 +31,7 @@ describe('background schedulers with CRON_ENABLED=true', () => {
       purchaseOutboxRelayCron: FAR_AWAY,
       eventsOutboxRelayCron: FAR_AWAY,
       productOutboxRelayCron: FAR_AWAY,
+      outboxReaperCron: FAR_AWAY,
       inventoryReconCron: FAR_AWAY,
       analyticsJobCron: FAR_AWAY,
       batchExpirySweepCron: FAR_AWAY,

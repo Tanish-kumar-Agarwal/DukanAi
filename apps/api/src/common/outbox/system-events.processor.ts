@@ -84,7 +84,8 @@ export class SystemEventsProcessor extends WorkerHost {
   }
 
   async process(job: Job<SystemEventJobData, unknown, string>): Promise<SystemEventOutcome> {
-    const eventId = job.opts.jobId ?? job.data?.eventId;
+    // The job id is `<OutboxEvent id>:<retryCount>` (roadmap 4.7); the row id itself travels in the data.
+    const eventId = asOptionalString(job.data?.eventId) ?? (job.opts.jobId ? String(job.opts.jobId).split('.')[0] : undefined);
     if (!eventId) {
       // Without the OutboxEvent id there is no row to mark; the job is dropped loudly.
       this.logger.error(`Job ${String(job.id)} (${job.name}) carries no OutboxEvent id; dropping it.`);
@@ -114,6 +115,8 @@ export class SystemEventsProcessor extends WorkerHost {
       const outcome = await this.tenantContext.runWithContext(context, () =>
         this.handle(job, eventId, shopId, payload, context),
       );
+      // The relay only claims the row (roadmap 4.7); the worker is what ends it.
+      await this.markDone(eventId);
       this.logger.log(`System event ${eventId} (${job.name}) for shop ${shopId}: ${outcome.status}`);
       return outcome;
     } catch (error) {
@@ -351,12 +354,29 @@ export class SystemEventsProcessor extends WorkerHost {
     return shop.ownerId;
   }
 
-  /** OutboxEvent is not tenant-scoped; updates run by id outside any tenant context. */
+  /**
+   * OutboxEvent is tenant-owned (it carries shopId), and the row is settled
+   * after the tenant context of `handle` has ended (or never existed, when
+   * the job names no shop), so the worker settles it as the system tenant by id.
+   */
+  private async markDone(eventId: string): Promise<void> {
+    try {
+      // Awaited inside the scope: a PrismaPromise is lazy and would run outside the bypass otherwise.
+      await this.tenantContext.runAsSuperAdmin(async () => {
+        await this.prisma.outboxEvent.updateMany({ where: { id: eventId }, data: { status: 'DONE', processedAt: new Date(), error: null } });
+      });
+    } catch (error) {
+      this.logger.error(`Could not mark OutboxEvent ${eventId} DONE: ${errorMessage(error)}`);
+    }
+  }
+
   private async markFailed(eventId: string, message: string): Promise<void> {
     try {
-      await this.prisma.outboxEvent.updateMany({
-        where: { id: eventId },
-        data: { status: 'FAILED', error: message.slice(0, MAX_ERROR_LENGTH), retryCount: { increment: 1 } },
+      await this.tenantContext.runAsSuperAdmin(async () => {
+        await this.prisma.outboxEvent.updateMany({
+          where: { id: eventId },
+          data: { status: 'FAILED', error: message.slice(0, MAX_ERROR_LENGTH), retryCount: { increment: 1 } },
+        });
       });
     } catch (error) {
       this.logger.error(`Could not mark OutboxEvent ${eventId} FAILED: ${errorMessage(error)}`);
@@ -365,9 +385,8 @@ export class SystemEventsProcessor extends WorkerHost {
 
   private async incrementRetryCount(eventId: string): Promise<void> {
     try {
-      await this.prisma.outboxEvent.updateMany({
-        where: { id: eventId },
-        data: { retryCount: { increment: 1 } },
+      await this.tenantContext.runAsSuperAdmin(async () => {
+        await this.prisma.outboxEvent.updateMany({ where: { id: eventId }, data: { retryCount: { increment: 1 } } });
       });
     } catch (error) {
       this.logger.error(`Could not increment retryCount of OutboxEvent ${eventId}: ${errorMessage(error)}`);

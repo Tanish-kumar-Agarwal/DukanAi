@@ -2817,11 +2817,15 @@ model OutboxEvent {
   actorId       String?
   entityId      String?
   entityType    String?
-  status        String    @default("PENDING") // PENDING, DONE, FAILED
+  status        String    @default("PENDING") // PENDING, CLAIMED, DONE, FAILED (PROCESSING: legacy claim)
   error         String?
   retryCount    Int       @default(0)
   createdAt     DateTime  @default(now())
   processedAt   DateTime?
+  /** Set when a relay claims the row; a claim older than the stale window is reaped back to PENDING. */
+  claimedAt     DateTime?
+  /** A retried row is not re-claimed before this instant (exponential backoff). */
+  nextAttemptAt DateTime?
 
   shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
@@ -4424,6 +4428,7 @@ model InventoryKpi {
   turnoverRate      Decimal @default(0) @db.Decimal(10, 4) // Sales / Avg Inventory
   daysOfInventory   Decimal @default(0) @db.Decimal(10, 2) // How long stock will last
   stockoutRiskScore Decimal @default(0) @db.Decimal(5, 2) // 0-100 risk score
+  avgDailyUnits     Decimal @default(0) @db.Decimal(10, 3) // Net units sold per day over the KPI window
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -4453,9 +4458,10 @@ model InventoryClassification {
 }
 
 model InventoryRecommendation {
-  id        String @id @default(cuid())
+  id        String   @id @default(cuid())
   shopId    String
   productId String
+  forDate   DateTime @db.Date // Business day the nightly run computed it for
 
   type       RecommendationType
   score      Decimal            @db.Decimal(5, 2) // 0-100 confidence score
@@ -4470,8 +4476,10 @@ model InventoryRecommendation {
   shop    Shop    @relation(fields: [shopId], references: [id], onDelete: Restrict)
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
+  @@unique([shopId, productId, forDate, type])
   @@index([shopId, status])
   @@index([shopId, type])
+  @@index([shopId, forDate])
 }
 
 // -----------------------------------------------------------------------------

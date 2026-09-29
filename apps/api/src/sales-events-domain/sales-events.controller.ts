@@ -1,97 +1,67 @@
-import { Controller, Get, Post, Param, Body, UseGuards, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, UseGuards, NotFoundException, ConflictException, Query } from '@nestjs/common';
+import { IsOptional, IsString, MaxLength } from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { PrismaService } from '../prisma/prisma.service';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
 import { SalesFeatureConfig } from '../config/domains/features/sales-feature.config';
-import { SALES_EVENT_JOB_ID_PREFIX } from './workers/sales-outbox-relay.cron';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
+import { OutboxClaimService } from '../common/outbox/outbox-claim.service';
 
+export class RetryOutboxEventDto {
+  @IsString()
+  @MaxLength(64)
+  eventId: string;
+}
+
+export class ListOutboxEventsQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(16)
+  status?: string;
+}
+
+/**
+ * Operator view of a shop's outbox rows (roadmap 4.7): list, inspect and
+ * retry. A retry only applies to a FAILED row and hands it back to whichever
+ * relay owns its type under a fresh job id.
+ */
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('sales/events')
 export class SalesEventsController {
-  private readonly logger = new Logger(SalesEventsController.name);
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly salesFeatureConfig: SalesFeatureConfig,
-    @InjectQueue('sales-events') private readonly salesEventsQueue: Queue
+    private readonly claims: OutboxClaimService,
   ) {}
 
   @Get()
-  async getEvents(@CurrentShop() shopId: string) {
+  async getEvents(@CurrentShop() shopId: string, @Query() query: ListOutboxEventsQueryDto) {
     return this.prisma.outboxEvent.findMany({
-      where: { shopId, type: { startsWith: 'Order' } }, // Simple filter for demo
+      where: { shopId, ...(query.status ? { status: query.status } : {}) },
       orderBy: { createdAt: 'desc' },
-      take: this.salesFeatureConfig.recentEventsLimit
+      take: this.salesFeatureConfig.recentEventsLimit,
     });
   }
 
   @Get(':id')
   async getEventById(@CurrentShop() shopId: string, @Param('id') id: string) {
-    const event = await this.prisma.outboxEvent.findUnique({
-      where: { id }
-    });
-
-    if (!event || event.shopId !== shopId) {
-      throw new NotFoundException('Event not found');
-    }
-
+    const event = await this.prisma.outboxEvent.findFirst({ where: { id, shopId } });
+    if (!event) throw new NotFoundException({ message: 'Event not found', code: 'OUTBOX_EVENT_NOT_FOUND' });
     return event;
   }
 
-  /**
-   * Re-queues an event by flipping the row back to PENDING. The relay cron then
-   * re-enqueues it under its deterministic jobId, so exactly one job exists per
-   * event. A stale BullMQ job under that id (failed, or completed and retained)
-   * would make the relay's addBulk a silent no-op, so it is removed first.
-   */
   @Roles(...MANAGEMENT_ROLES)
   @Post('retry')
-  async retryEvent(@CurrentShop() shopId: string, @Body('eventId') eventId: string) {
-    const event = await this.prisma.outboxEvent.findUnique({
-      where: { id: eventId }
-    });
-
-    if (!event || event.shopId !== shopId) {
-      throw new NotFoundException('Event not found');
+  async retryEvent(@CurrentShop() shopId: string, @Body() body: RetryOutboxEventDto) {
+    const event = await this.prisma.outboxEvent.findFirst({ where: { id: body.eventId, shopId }, select: { id: true, status: true } });
+    if (!event) throw new NotFoundException({ message: 'Event not found', code: 'OUTBOX_EVENT_NOT_FOUND' });
+    if (event.status !== 'FAILED') {
+      throw new ConflictException({ message: `Only a FAILED event can be retried; this one is ${event.status}.`, code: 'OUTBOX_EVENT_NOT_FAILED', details: { status: event.status } });
     }
-
-    if (event.status === 'DONE') {
-      throw new BadRequestException('Event is already processed successfully.');
-    }
-
-    const jobId = `${SALES_EVENT_JOB_ID_PREFIX}${event.id}`;
-    try {
-      const removed = await this.salesEventsQueue.remove(jobId);
-      if (removed) {
-        this.logger.debug(`Removed stale BullMQ job ${jobId} before retry`);
-      }
-    } catch (error: any) {
-      // Best-effort: an active job cannot be removed; the relay will then skip the duplicate.
-      this.logger.warn(`Could not remove BullMQ job ${jobId} before retry: ${error.message}`);
-    }
-
-    await this.prisma.outboxEvent.update({
-      where: { id: eventId },
-      data: { status: 'PENDING', error: null, retryCount: 0 }
-    });
-
-    return { message: 'Event reset to PENDING; the relay will re-enqueue it.' };
-  }
-
-  @Get('status/queue')
-  async getQueueStatus() {
-    const waiting = await this.salesEventsQueue.getWaitingCount();
-    const active = await this.salesEventsQueue.getActiveCount();
-    const failed = await this.salesEventsQueue.getFailedCount();
-
-    return {
-      queue: 'sales-events',
-      metrics: { waiting, active, failed }
-    };
+    const retried = await this.claims.retryFailed(shopId, event.id);
+    if (!retried) throw new ConflictException({ message: 'The event changed state before it could be retried.', code: 'OUTBOX_EVENT_NOT_FAILED' });
+    return { message: 'Event reset to PENDING; its relay will pick it up.' };
   }
 }

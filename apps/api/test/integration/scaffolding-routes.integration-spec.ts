@@ -15,6 +15,7 @@ import request from 'supertest';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { bearerToken, createUser, httpAs, ownerOf } from '../security/security-fixtures';
 import { bootApp, createProduct, createShop, tenantRunner, TestShop } from './pos-fixtures';
+import { OUTBOUND_RESOLVER } from '../../src/common/net/outbound-url-guard';
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
 
@@ -36,7 +37,8 @@ describe('scaffolding routes (roadmap 4.1): media, validation, identity, imports
   const notFoundOrForbidden = (status: number) => expect([400, 403, 404]).toContain(status);
 
   beforeAll(async () => {
-    app = await bootApp();
+    // Webhook registration resolves the host (roadmap 4.8); the test hosts have no DNS here.
+    app = await bootApp((b) => b.overrideProvider(OUTBOUND_RESOLVER).useValue(async () => [{ address: '93.184.216.34', family: 4 }]));
     prisma = app.get(PrismaService);
     run = tenantRunner(app);
     A = await createShop(app, 'scafA');

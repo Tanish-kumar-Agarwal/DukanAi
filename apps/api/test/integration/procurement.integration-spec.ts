@@ -542,7 +542,7 @@ describe('procurement workflow (roadmap 4.2 / 4.3)', () => {
   async function drainOutbox(timeoutMs = 20_000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const processing = await run.system(() => prisma.outboxEvent.count({ where: { status: 'PROCESSING', retryCount: 0 } }));
+      const processing = await run.system(() => prisma.outboxEvent.count({ where: { status: { in: ['CLAIMED', 'PROCESSING'] }, retryCount: 0 } }));
       if (processing === 0) return;
       await new Promise((resolve) => setTimeout(resolve, 250));
     }

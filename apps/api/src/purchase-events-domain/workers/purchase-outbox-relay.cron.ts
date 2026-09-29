@@ -1,13 +1,11 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
-import { EventsFeatureConfig } from '../../config/domains/features/events-feature.config';
 import { CronConfig } from '../../config/domains/cron.config';
 import { buildPurchaseEventsTypePredicate } from '../../common/outbox/outbox-routing';
+import { OutboxClaimService } from '../../common/outbox/outbox-claim.service';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 
 @Injectable()
@@ -16,9 +14,8 @@ export class PurchaseOutboxRelayCron implements OnApplicationBootstrap {
   private isProcessing = false;
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly claims: OutboxClaimService,
     @InjectQueue('purchase-events') private readonly purchaseEventsQueue: Queue,
-    private readonly eventsConfig: EventsFeatureConfig,
     private readonly cronConfig: CronConfig,
     private readonly schedulerRegistry: SchedulerRegistry,
     private readonly tenantContext: TenantContextService,
@@ -37,10 +34,10 @@ export class PurchaseOutboxRelayCron implements OnApplicationBootstrap {
   }
 
   /**
-   * Sweeps the OutboxEvent table for PENDING purchase events (the
-   * `PURCHASE_RELAY_TYPE_PREFIXES` family, oldest first, one batch per tick)
-   * and relays them to BullMQ. The outbox spans shops, so the sweep runs as
-   * the system tenant.
+   * Claims a batch of PENDING purchase events (the `PURCHASE_RELAY_TYPE_PREFIXES`
+   * family, oldest first) and enqueues them after the claim committed
+   * (roadmap 4.7). The `purchase-events` worker sets DONE / FAILED. The outbox
+   * spans shops, so the sweep runs as the system tenant.
    */
   relayPendingEvents(): Promise<void> {
     return this.tenantContext.runAsSuperAdmin(() => this.relayPendingEventsAsSystem());
@@ -50,54 +47,23 @@ export class PurchaseOutboxRelayCron implements OnApplicationBootstrap {
     if (this.isProcessing) return;
     this.isProcessing = true;
 
-    const batchSize = this.eventsConfig.outboxProcessorBatchSize;
-
     try {
-      await this.prisma.$transaction(async (tx) => {
-        // 1. Fetch pending events with SKIP LOCKED
-        const events: any[] = await tx.$queryRaw`
-          SELECT id, type, payload, status, retryCount
-          FROM OutboxEvent
-          WHERE status = 'PENDING'
-            AND ${buildPurchaseEventsTypePredicate()}
-          ORDER BY createdAt ASC
-          LIMIT ${batchSize}
-          FOR UPDATE SKIP LOCKED
-        `;
+      const rows = await this.claims.claim(buildPurchaseEventsTypePredicate());
+      if (rows.length === 0) return;
+      this.logger.debug(`Found ${rows.length} PENDING purchase events to relay.`);
 
-        if (events.length === 0) return;
+      const jobs = rows.map((row) => ({
+        name: row.type,
+        data: { outboxEventId: row.id, shopId: row.shopId, type: row.type, retryCount: row.retryCount },
+        opts: { jobId: this.claims.jobIdFor(row) },
+      }));
 
-        this.logger.debug(`Found ${events.length} PENDING purchase events to relay.`);
-
-        // 2. Enqueue into BullMQ
-        const jobs = events.map(event => {
-          return {
-            name: event.type,
-            data: {
-              outboxEventId: event.id,
-              ...event
-            },
-            opts: {
-              jobId: event.id, // BullMQ deduplication key ensures exactly-once enqueue
-            }
-          };
-        });
-
-        // If BullMQ fails or Redis is down, this throws and the transaction rolls back safely
+      try {
         await this.purchaseEventsQueue.addBulk(jobs);
-
-        // 3. Hand the rows over: PROCESSING until the worker delivers them and
-        //    sets DONE / FAILED (roadmap 4.2, audit P2-7). Marking them DONE here
-        //    made the worker skip every event. (A dynamic `import('@prisma/client')`
-        //    used to sit here: it threw under jest, rolled the hand-over back
-        //    after the jobs were already queued, and left the rows PENDING.)
-        const eventIds = events.map(e => e.id);
-        await tx.$executeRaw`
-          UPDATE OutboxEvent
-          SET status = 'PROCESSING'
-          WHERE id IN (${Prisma.join(eventIds)})
-        `;
-      });
+      } catch (error) {
+        await this.claims.release(rows.map((r) => r.id));
+        throw error;
+      }
     } catch (err) {
       this.logger.error(`Outbox Processor encountered an error: ${(err as Error).message}`);
     } finally {

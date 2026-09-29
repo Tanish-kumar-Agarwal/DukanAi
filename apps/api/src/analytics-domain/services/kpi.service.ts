@@ -86,14 +86,16 @@ export class KpiService {
       const avgDailyUnits = unitsSold.div(SALES_WINDOW_DAYS);
       const daysOfInventory = minDecimal(onHand.div(maxDecimal(avgDailyUnits, MIN_AVG_DAILY_UNITS)), MAX_DAYS_OF_INVENTORY).toDecimalPlaces(2);
       const risk = stockoutRiskScore(daysOfInventory);
+      const figures = { totalValue, turnoverRate, daysOfInventory, stockoutRiskScore: risk, avgDailyUnits: avgDailyUnits.toDecimalPlaces(3) };
 
       await this.prisma.inventoryKpi.upsert({
         where: { shopId_productId_date: { shopId, productId: product.id, date } },
-        update: { totalValue, turnoverRate, daysOfInventory, stockoutRiskScore: risk },
-        create: { shopId, productId: product.id, date, totalValue, turnoverRate, daysOfInventory, stockoutRiskScore: risk },
+        update: figures,
+        create: { shopId, productId: product.id, date, ...figures },
       });
     }
 
     this.logger.log(`Completed KPI calculations for ${products.length} products.`);
+    return products.length;
   }
 }

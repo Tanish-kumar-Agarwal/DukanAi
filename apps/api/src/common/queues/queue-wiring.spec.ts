@@ -83,8 +83,9 @@ describe('BullMQ queue wiring (roadmap 4.6)', () => {
   const wiring = inventory();
 
   it('finds the application queues', () => {
-    expect(wiring.registered.size).toBeGreaterThanOrEqual(10);
-    for (const name of ['system-events', 'sales-events', 'purchase-events', 'webhook-delivery', 'import-job', 'search-indexing']) {
+    // 4.5/4.6 removed the dead consumer-only queues and 4.7 the sales relay pair.
+    expect(wiring.registered.size).toBeGreaterThanOrEqual(8);
+    for (const name of ['system-events', 'purchase-events', 'webhook-delivery', 'import-job', 'search-indexing']) {
       expect([...wiring.registered.keys()]).toContain(name);
     }
   });
@@ -105,7 +106,7 @@ describe('BullMQ queue wiring (roadmap 4.6)', () => {
   });
 
   it('the former dead queues are not registered anywhere reachable', () => {
-    for (const name of ['internal-events', 'inventory-events', 'customer-queue', 'grn-jobs', 'purchase-returns', 'supplier-credits', 'vendor-bills', 'purchase-attachments', 'workflow-engine', 'barcode-bulk', 'invoice-pdf-queue', 'payment-reconciliation-queue', 'pricing-scheduler-queue', 'return-inspection-queue', 'return-refund-queue', 'sales-order-bulk-queue', 'sales-workflow-queue']) {
+    for (const name of ['internal-events', 'inventory-events', 'customer-queue', 'grn-jobs', 'purchase-returns', 'supplier-credits', 'vendor-bills', 'purchase-attachments', 'workflow-engine', 'barcode-bulk', 'invoice-pdf-queue', 'payment-reconciliation-queue', 'pricing-scheduler-queue', 'return-inspection-queue', 'return-refund-queue', 'sales-order-bulk-queue', 'sales-workflow-queue', 'sales-events', 'sales-webhooks']) {
       expect(wiring.registered.has(name)).toBe(false);
       expect(wiring.consumers.has(name)).toBe(false);
       expect(wiring.producers.has(name)).toBe(false);

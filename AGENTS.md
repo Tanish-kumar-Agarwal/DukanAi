@@ -309,7 +309,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
     worker skip everything). The relay's family is
     `PURCHASE_RELAY_TYPE_PREFIXES` (`src/common/outbox/outbox-routing.ts`,
     incl. `Goods*`, `Inspection*`, `Outstanding*`); `Inventory*`/`Product*`
-    rows still wait for the product-events relay (4.7). Listeners receive one
+    rows (with `Category*`/`Brand*`) belong to the product-events relay
+    (`PRODUCT_RELAY_TYPE_PREFIXES`, 4.7). Listeners receive one
     envelope `{ shopId, outboxEventId, aggregateId, correlationId, payload }`;
     the order approval event is `PurchaseOrderApproved`. Analytics SQL is MySQL
     (`TIMESTAMPDIFF`), not PostgreSQL.
@@ -357,6 +358,66 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   and the seven of the detached stacks) and the producer-only
   `internal-events` / `inventory-events` queues are gone from the modules.
   A new queue needs both sides in the same change.
+- 4.7 outbox: every relay goes through `OutboxClaimService`
+  (`src/common/outbox/outbox-claim.service.ts`): `claim(predicate)` runs one
+  READ COMMITTED transaction (`SELECT ... FOR UPDATE SKIP LOCKED` on PENDING
+  rows whose `nextAttemptAt` has passed, then `status = 'CLAIMED'`,
+  `claimedAt`), the relay enqueues after the commit (`release` on an enqueue
+  failure) and the worker settles the row: `markDone`, or `scheduleRetry`
+  (PENDING again with `nextAttemptAt` = exponential backoff from
+  `EVENTS_OUTBOX_RETRY_BACKOFF_MS`, FAILED once `EVENTS_OUTBOX_MAX_RETRIES`
+  attempts are spent). Job ids are `<outboxEventId>.<retryCount>`
+  (`jobIdFor`; BullMQ refuses a custom id containing `:`) so a retry never
+  collides with a retained job. The
+  `OutboxReaper` cron (`CRON_OUTBOX_REAPER`, lock `cron:outbox-reaper`) puts
+  claims older than `EVENTS_OUTBOX_STALE_CLAIM_MS` (CLAIMED, or legacy
+  PROCESSING) back to PENDING with the same backoff, or FAILED. Three relays
+  share the semantic: system events (`OutboxRelayService` -> `system-events`
+  worker; every type no other family owns), purchase
+  (`PurchaseOutboxRelayCron` -> `purchase-events`), product
+  (`OutboxProcessorWorker` routes inline to `webhook-delivery`). The sales
+  relay pair (`sales-events`/`sales-webhooks`) is gone: nothing stages its
+  types since 4.5. `POST /sales/events/retry` (MANAGER+) resets a FAILED row
+  of the shop to PENDING (409 `OUTBOX_EVENT_NOT_FAILED` otherwise);
+  `GET /sales/events[?status=]` lists them. Never mark a row DONE at enqueue
+  time and never poll a row's status from a relay: claim, hand over, let the
+  worker end it. A test that relays product rows drains the family first
+  (other suites leave PENDING rows; the relay claims the oldest batch).
+- 4.8 webhooks: one delivery path, `ProductWebhookDispatcherService` over
+  `WebhookHttpClient` (axios, `maxRedirects: 0`, response capped at
+  `EVENTS_WEBHOOK_MAX_RESPONSE_BYTES`, only 2xx counts). `OutboundUrlGuard`
+  (`src/common/net/outbound-url-guard.ts`) vets the URL at registration
+  (`POST /webhooks`, MANAGER+, 400 with `WEBHOOK_URL_SCHEME|CREDENTIALS|
+  PRIVATE|UNRESOLVABLE|INVALID`) and again at send time: https only unless
+  `EVENTS_WEBHOOK_ALLOW_HTTP`, no credentials, no localhost/`.local`/
+  `.internal` names, and every DNS answer must be public (loopback, RFC1918,
+  link-local incl. 169.254.169.254, CGNAT, mapped/NAT64/6to4 IPv6 are
+  blocked); the connection is then pinned to the vetted address (`lookup`
+  override), so a host cannot rebind between check and connect. A blocked
+  target is a WebhookDelivery FAILED row and `UnrecoverableError` (no
+  retry). Signature: `x-dukanai-signature: t=<ms>,v1=<hex HMAC-SHA256(secret,
+  "<ms>.<body>")>` with `x-dukanai-timestamp`, `x-dukanai-event`,
+  `x-dukanai-delivery` (`signWebhookPayload`). The resolver is the
+  `OUTBOUND_RESOLVER` provider (ProductEventsModule); tests override it and
+  `WebhookHttpClient` (`test/integration/outbox-webhooks.integration-spec.ts`).
+- 4.9 nightly analytics (`AnalyticsJobScheduler`, `CRON_ANALYTICS_JOB`, lock
+  `cron:analytics-job`, every open shop through `sweepEveryShop`, which pages
+  shops by id): per shop `KpiService.calculateDailyKpis` (now also
+  `avgDailyUnits`), `ClassificationService.classifyInventory` (ABC by
+  cumulative net pre-tax revenue 80 / 95 %, XYZ by the coefficient of
+  variation of weekly net units over 13 business weeks,
+  `engines/classification-engine.ts`; no sales = UNCLASSIFIED; one row per
+  live product, deleted products pruned) and
+  `RecommendationEngineService.generateRecommendations` (REORDER when the
+  stockout risk is above 80 with `suggestedQuantity` = 14 days of demand,
+  LIQUIDATE above 180 days of inventory). Recommendations are keyed by
+  `(shopId, productId, forDate, type)` (migration `20260929170000`, forDate =
+  business day): a re-run upserts score/reason/actionData and keeps the
+  `status` a user set; rows older than 90 days and KPI rows older than 400
+  days are pruned in LIMIT batches. All writes are multi-row
+  `INSERT ... ON DUPLICATE KEY UPDATE` (`engines/batch-write.ts`, 500 rows);
+  never write these tables one upsert per product. The forecast stub is out
+  of the chain (dashboard insights compute their own forecast live).
 
 ## Toolchain
 

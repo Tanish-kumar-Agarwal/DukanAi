@@ -41,8 +41,11 @@ describe('outbox routing', () => {
       for (const prefix of DOMAIN_RELAY_TYPE_PREFIXES) {
         expect(isDomainRelayOwnedType(`${prefix}Created`)).toBe(true);
       }
-      expect(isDomainRelayOwnedType('InvoiceIssued')).toBe(true);
-      expect(isDomainRelayOwnedType('OrderConfirmed')).toBe(true);
+      // The sales family has no relay any more (roadmap 4.7): its stray rows reach the system-events worker.
+      expect(isDomainRelayOwnedType('InvoiceIssued')).toBe(false);
+      expect(isDomainRelayOwnedType('OrderConfirmed')).toBe(false);
+      expect(isDomainRelayOwnedType('ProductCreated')).toBe(true);
+      expect(isDomainRelayOwnedType('InventoryReversed')).toBe(true);
     });
   });
 
