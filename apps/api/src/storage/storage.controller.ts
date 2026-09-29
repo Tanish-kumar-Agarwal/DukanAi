@@ -41,11 +41,15 @@ import {
 
 import { StorageService } from './storage.service';
 
+// Roadmap 5.1: hard limits on every part of the request, not only the file size.
 const billingUploadInterceptor = AnyFilesInterceptor({
   fileFilter: secureFileFilter,
   limits: {
     fileSize: MAX_BILLING_DOCUMENT_BYTES,
     files: MAX_FILES_PER_REQUEST,
+    fields: 8,
+    parts: MAX_FILES_PER_REQUEST + 8,
+    fieldSize: 16 * 1024,
   },
 });
 
@@ -54,6 +58,9 @@ const cloudUploadInterceptor = AnyFilesInterceptor({
   limits: {
     fileSize: MAX_CLOUD_UPLOAD_BYTES,
     files: 1,
+    fields: 8,
+    parts: 9,
+    fieldSize: 16 * 1024,
   },
 });
 

@@ -419,6 +419,41 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   never write these tables one upsert per product. The forecast stub is out
   of the chain (dashboard insights compute their own forecast live).
 
+## Denial of service and performance (roadmap phase 5)
+
+- 5.1 uploads: every multipart route goes through `src/common/upload`:
+  `buildUploadOptions(policy, tempDir)` gives multer hard `limits` (file
+  size from `UploadConfig`: `UPLOAD_MAX_MEDIA_BYTES`, `UPLOAD_MAX_IMPORT_BYTES`;
+  file, part and field counts), a `fileFilter` on the declared type and
+  extension (400 with the route's code before a byte is stored) and disk
+  storage into `UPLOAD_TEMP_DIR` under a random name; a file over the cap is
+  multer `LIMIT_FILE_SIZE`, which Nest answers as 413 while the rest of the
+  body is drained. The handler then calls `assertUploadContent` (media) or
+  `assertImportFileContent` (imports): the magic bytes must match the
+  declared type (`file-signature.ts`: JPEG, PNG, WebP, GIF, AVIF, MP4,
+  QuickTime, WebM, Matroska, PDF, OLE, ZIP-based docx, glTF; CSV/JSON must
+  be readable UTF-8 with no control bytes) or the file is unlinked and the
+  request is 400. A temp file never outlives its request
+  (`ProductMediaService.uploadMedia` unlinks in `finally`; the CDN move
+  renames it away first; imports rename it into `uploads/imports`). SVG is
+  not a media type. The storage routes keep their constants
+  (`storage-security.constants.ts`) and memory storage (documents are
+  written to `STORAGE_ROOT` from the buffer) but now check the bytes in
+  `validateUploadedFile` (`STORAGE_CONTENT_MISMATCH`) and cap parts and
+  fields; OCR keeps its own limits and delegates sniffing to the shared
+  sniffer. Roles: media and imports MANAGER+, storage per route, OCR
+  MANAGER+. `test/integration/upload-limits.integration-spec.ts` overrides
+  `UploadConfig` with small caps and asserts 413 / 400 / discarded temp
+  files / roles per route.
+- 5.2 variants: `GenerateVariantsDto` bounds the matrix before it is expanded
+  (`attributeMatrixProblem`: at most 8 attributes, 100 values each, labels
+  1-50 characters with letters or digits, no duplicate slugs, and the product
+  of the value counts at most `MAX_VARIANT_COMBINATIONS` = 1000);
+  `ProductVariantsService.generateVariants` re-checks it (400
+  `VARIANT_MATRIX_TOO_LARGE` / `VARIANT_MATRIX_INVALID`) so a direct caller
+  cannot bypass the DTO. The Cartesian product is typed and built only after
+  the check.
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and

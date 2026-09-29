@@ -1,6 +1,6 @@
 /**
  * Authentication hardening and resource limits (audit P1-4, P1-5, P1-6,
- * P2-10, P1-9). Findings that are still open use `it.failing`; see README.md.
+ * P2-10, P1-9; all fixed). Findings that are still open use `it.failing`; see README.md.
  * P1-4, P1-5, P1-6, P1-7 and P2-10 were fixed in roadmap phase 2 and run as
  * plain `it`.
  */
@@ -117,7 +117,7 @@ describe('security: authentication and limits', () => {
     expect(Object.keys(deleted.body)).not.toEqual(expect.arrayContaining(['password', 'failedAttempts', 'lockedUntil']));
   });
 
-  it.failing('P1-9: a 30 MB upload is refused with 413 instead of being buffered', async () => {
+  it('P1-9: a 30 MB upload is refused with 413 instead of being buffered', async () => {
     const res = await (await httpAs(app, shop, ownerOf(shop)))
       .post('/api/imports/products/upload')
       .attach('file', Buffer.alloc(30 * 1024 * 1024, 0x41), 'big.csv');

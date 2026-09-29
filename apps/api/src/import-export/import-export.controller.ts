@@ -12,6 +12,7 @@ import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
 import { UploadImportDto } from './dto/upload-import.dto';
 import { IMPORT_JOB_QUEUE, ImportJobData, PROCESS_IMPORT_JOB } from './import.worker';
+import { assertImportFileContent, importFormatOf } from './import-upload';
 
 /** Product imports (roadmap 4.1): the shop comes from the verified session, the job carries it to the worker. */
 @UseGuards(JwtAuthGuard, TenantGuard)
@@ -29,6 +30,8 @@ export class ImportExportController {
   @UseInterceptors(FileInterceptor('file'))
   async uploadImportFile(@UploadedFile() file: Express.Multer.File | undefined, @Body() body: UploadImportDto, @CurrentShop() shopId: string) {
     if (!file) throw new BadRequestException('No file uploaded');
+    // The bytes must be text the parser can read (a binary renamed .csv is refused and discarded).
+    await assertImportFileContent(file);
 
     const filePath = await this.storageService.saveImportFile(shopId, file);
 
@@ -38,7 +41,7 @@ export class ImportExportController {
         fileName: file.originalname,
         fileSize: file.size,
         fileUrl: filePath,
-        format: file.originalname.toLowerCase().endsWith('.csv') ? 'CSV' : 'JSON',
+        format: importFormatOf(file.originalname),
         mode: body.mode ?? 'UPSERT',
         status: 'PENDING',
       },

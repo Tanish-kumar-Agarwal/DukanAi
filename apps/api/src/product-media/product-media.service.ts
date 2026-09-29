@@ -5,6 +5,7 @@ import { UploadEngineService, UploadedFile } from './upload-engine.service';
 import { DeduplicationService } from './deduplication.service';
 import { CdnManagerService } from './cdn-manager.service';
 import { CompressionEngineService } from './compression-engine.service';
+import * as fs from 'fs';
 import * as path from 'path';
 
 @Injectable()
@@ -36,12 +37,20 @@ export class ProductMediaService {
     await assertOwned(this.prisma, 'product', productId, shopId, { isDeleted: false });
     await assertOwned(this.prisma, 'productVariant', variantId, shopId, { isDeleted: false });
 
-    // 1. Validate constraints
-    this.uploadEngine.validateFile(file);
+    // 1. Validate constraints (size, declared type, magic bytes); a rejected file is discarded.
+    await this.uploadEngine.validateFile(file);
 
-    // 2. Temporarily write file to disk
+    // 2. The upload is on disk (multer temp storage); a memory upload is written there.
     const tempPath = await this.uploadEngine.storeLocalTemporarily(file);
+    try {
+      return await this.persistUpload(shopId, userId, file, tempPath, productId, variantId, isPrimary);
+    } finally {
+      // Whatever happened, the temp file never outlives the request (the CDN move renames it away on success).
+      await fs.promises.unlink(tempPath).catch(() => undefined);
+    }
+  }
 
+  private async persistUpload(shopId: string, userId: string, file: UploadedFile, tempPath: string, productId: string | undefined, variantId: string | undefined, isPrimary: boolean) {
     // 3. Calculate Deduplication Hash
     const hash = await this.dedup.calculateFileHash(tempPath);
 
@@ -90,8 +99,6 @@ export class ProductMediaService {
       }
     } else {
       this.logger.log(`Asset ${hash} deduplicated. Proceeding to create references.`);
-      // If it's a deduplicated file, the temporary file is no longer needed, but typically we'd delete it.
-      // E.g., await fs.promises.unlink(tempPath);
     }
 
     // 9. Bind Reference if applicable

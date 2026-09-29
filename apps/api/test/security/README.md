@@ -35,5 +35,5 @@ Never delete or skip a failing test to get green. Fix the behaviour and flip it.
 | `../integration/sessions.integration-spec.ts` | P2-13/P2-14 refresh rotation without reuse detection, no logout, access tokens outliving the session | 2.6 (fixed) |
 | `../integration/invitations.integration-spec.ts` | P1-8 a MANAGER could invite an ADMIN and the token was returned to the caller | 2.8 (fixed) |
 | `../integration/infrastructure.integration-spec.ts` | P2-17 the `/inventory` WebSocket namespace accepted unauthenticated connections; correlation ids were echoed raw | 2.13, 2.14 (fixed) |
-| `authentication.security-spec.ts` | P1-9 uploads buffered without a size limit | 5 |
+| `authentication.security-spec.ts` | P1-9 uploads buffered without a size limit | 5.1 (fixed: multer limits, disk storage, declared-type filter and magic-byte check on every upload route) |
 | `../integration/rate-limit.integration-spec.ts` | P1-3 rate limiting off (second/millisecond mix-up, no auth limits), P2-16 trust proxy | 2.1 (fixed) |
