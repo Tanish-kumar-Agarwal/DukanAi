@@ -143,7 +143,7 @@ export class PurchaseReturnRepository {
     return this.prisma.purchaseReturn.findMany({
       where: { shopId, isDeleted: false },
       include: { supplier: true, warehouse: true },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       take: limit,
       skip: offset
     });

@@ -1,4 +1,5 @@
 import { Controller, Post, Get, Body, Param, Query, Res } from '@nestjs/common';
+import { ListQueryDto, PagedList, pageArgs } from '../common/pagination';
 import { ProductIdentityService } from './product-identity.service';
 import { BarcodeGeneratorService } from './barcode-generator.service';
 import { IdentityAuditService } from './identity-audit.service';
@@ -37,10 +38,11 @@ export class ProductIdentityController {
 
   /** Change history of a barcode; a SKU (variant identity) has no barcode history and answers an empty list. */
   @Get('barcode/:code/history')
-  async getBarcodeHistory(@Param('code') code: string, @CurrentShop() shopId: string) {
+  @PagedList()
+  async getBarcodeHistory(@Param('code') code: string, @CurrentShop() shopId: string, @Query() query: ListQueryDto) {
     const identity = await this.productIdentityService.searchIdentity(shopId, code);
-    if (!('code' in identity)) return [];
-    return this.identityAudit.getBarcodeHistory(shopId, identity.id);
+    if (!('code' in identity)) return { items: [], total: 0, ...pageArgs(query) };
+    return this.identityAudit.getBarcodeHistory(shopId, identity.id, query);
   }
 
   @Get('barcode/:code/render')

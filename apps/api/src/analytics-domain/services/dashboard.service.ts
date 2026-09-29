@@ -23,6 +23,13 @@ function toCachedTotals(totals: InvoiceTotals): CachedTotals {
   return { grossSales: totals.grossSales.toString(), returns: totals.returns.toString(), netSales: totals.netSales.toString(), orders: totals.orders, returnCount: totals.returnCount };
 }
 
+/** A cached entry is used only when it has the full shape; anything else is recomputed. */
+function isCachedTotals(value: unknown): value is CachedTotals {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return ['grossSales', 'returns', 'netSales'].every((k) => typeof v[k] === 'string' && v[k] !== '') && ['orders', 'returnCount'].every((k) => typeof v[k] === 'number' && Number.isFinite(v[k]));
+}
+
 function fromCachedTotals(cached: CachedTotals): InvoiceTotals {
   return { grossSales: toDecimal(cached.grossSales), returns: toDecimal(cached.returns), netSales: toDecimal(cached.netSales), orders: Number(cached.orders), returnCount: Number(cached.returnCount) };
 }
@@ -284,13 +291,14 @@ export class DashboardService {
    * All-time sales totals, cached under `shop:{shopId}:analytics:allTime`
    * (roadmap 5.5): the aggregate walks every invoice of the shop, and the
    * web polls the summary every 30 s. Every committed sale, return and
-   * cancellation drops the key (`invalidateAnalyticsCache`), so a cached
-   * value is never older than the last invoice mutation. Decimals travel
-   * through the cache as strings.
+   * cancellation drops the key (`invalidateAnalyticsCache`) and the entry
+   * lives at most the KPI TTL, so a cached value is at most a minute behind
+   * a sale whose invalidation raced the aggregate. Decimals travel through
+   * the cache as strings.
    */
   private async allTimeTotals(shopId: string): Promise<InvoiceTotals> {
-    const cached = await this.cache.getAllTime<CachedTotals>(shopId);
-    if (cached) return fromCachedTotals(cached);
+    const cached = await this.cache.getAllTime<unknown>(shopId);
+    if (isCachedTotals(cached)) return fromCachedTotals(cached);
     const totals = await this.revenueEngine.totals(shopId);
     await this.cache.setAllTime(shopId, toCachedTotals(totals));
     return totals;

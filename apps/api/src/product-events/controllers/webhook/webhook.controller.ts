@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Delete, Param, Body, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Param, Body, NotFoundException, BadRequestException, Query } from '@nestjs/common';
+import { ListQueryDto, PagedList, pageArgs } from '../../../common/pagination';
 import { OutboundUrlBlockedError, OutboundUrlGuard } from '../../../common/net/outbound-url-guard';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { CurrentShop } from '../../../iam/decorators';
@@ -50,8 +51,14 @@ export class WebhookController {
 
   @Roles(...MANAGEMENT_ROLES)
   @Get()
-  async getEndpoints(@CurrentShop() shopId: string) {
-    return this.prisma.webhookEndpoint.findMany({ where: { shopId }, select: ENDPOINT_SELECT, orderBy: { createdAt: 'desc' } });
+  @PagedList()
+  async getEndpoints(@CurrentShop() shopId: string, @Query() query: ListQueryDto) {
+    const { skip, take } = pageArgs(query);
+    const [items, total] = await Promise.all([
+      this.prisma.webhookEndpoint.findMany({ where: { shopId }, select: ENDPOINT_SELECT, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], skip, take }),
+      this.prisma.webhookEndpoint.count({ where: { shopId } }),
+    ]);
+    return { items, total, skip, take };
   }
 
   @Roles(...MANAGEMENT_ROLES)

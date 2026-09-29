@@ -18,8 +18,11 @@ import { contentMatchesDeclaredType, SNIFF_BYTES, sniffMimeType } from './file-s
  *   2. The handler then calls `assertUploadContent`, which sniffs the magic
  *      bytes and refuses a file whose bytes do not match its declared type
  *      (a PDF renamed `.png`, an executable named `.csv`).
- *   3. Whatever rejects a stored file calls `discardUpload`; a temp file never
- *      outlives its request.
+ *   3. Whatever rejects a stored file calls `discardUpload`, and the
+ *      `UploadCleanupInterceptor` (listed before the FileInterceptor) unlinks
+ *      whatever is still on disk when the request ends by any other path
+ *      (body-validation 400, ownership 404): a temp file never outlives its
+ *      request.
  *
  * A file over `fileSize` surfaces as multer `LIMIT_FILE_SIZE`, which Nest
  * turns into 413; the remaining request bytes are drained, not buffered.

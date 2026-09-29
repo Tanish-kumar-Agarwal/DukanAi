@@ -1,4 +1,5 @@
-import { Controller, Get, Request, Param, Patch, Delete, Body, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Request, Param, Patch, Delete, Body, ForbiddenException, BadRequestException, Query } from '@nestjs/common';
+import { ListQueryDto, PagedList, pageArgs } from '../common/pagination';
 import { PrismaService } from '../prisma/prisma.service';
 import { SocketSessionService } from '../iam/websockets/socket-session.service';
 import { Roles } from '../auth/roles.decorator';
@@ -14,22 +15,31 @@ export class UsersController {
   ) {}
 
   @Get('employees')
+  @PagedList()
   @Roles(Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER)
-  async getEmployees(@Request() req: any) {
-    return this.prisma.user.findMany({
-      where: { shopId: req.user.shopId, isDeleted: false },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        phone: true,
-        role: true,
-        isActive: true,
-        isLocked: true,
-        createdAt: true,
-      },
-      orderBy: { name: 'asc' },
-    });
+  async getEmployees(@Request() req: any, @Query() query: ListQueryDto) {
+    const { skip, take } = pageArgs(query);
+    const where = { shopId: req.user.shopId, isDeleted: false };
+    const [items, total] = await Promise.all([
+      this.prisma.user.findMany({
+        where,
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          phone: true,
+          role: true,
+          isActive: true,
+          isLocked: true,
+          createdAt: true,
+        },
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
+        skip,
+        take,
+      }),
+      this.prisma.user.count({ where }),
+    ]);
+    return { items, total, skip, take };
   }
 
   @Patch(':id/suspend')

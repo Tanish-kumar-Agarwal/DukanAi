@@ -13,5 +13,6 @@ describe('PrismaService.logLevelsFor (roadmap 5.8)', () => {
     expect(PrismaService.logLevelsFor({ nodeEnv: Environment.Test }, config(true))).toEqual(['query', 'info', 'warn', 'error']);
     expect(PrismaService.logLevelsFor({ nodeEnv: Environment.Test }, config(false))).toEqual(['info', 'warn', 'error']);
     expect(PrismaService.logLevelsFor({ nodeEnv: Environment.Development }, config(false))).not.toContain('query');
+    expect(PrismaService.logLevelsFor({ nodeEnv: Environment.Development }, config(true))).toContain('query');
   });
 });

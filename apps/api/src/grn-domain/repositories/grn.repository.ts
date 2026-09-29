@@ -143,7 +143,7 @@ export class GrnRepository {
     return this.prisma.goodsReceipt.findMany({
       where: { shopId, isDeleted: false },
       include: { supplier: true, warehouse: true },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       take: limit,
       skip: offset
     });

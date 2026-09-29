@@ -6,9 +6,10 @@ import { IntegerFromEnv, StringFromEnv } from '../hydrate-from-env';
 const MiB = 1024 * 1024;
 
 /**
- * Multipart upload limits (roadmap 5.1, audit P1-9). Every `FileInterceptor`
- * in the API takes its size cap from here, so the memory and disk a single
- * request can consume is bounded by configuration, never by the client.
+ * Multipart upload limits (roadmap 5.1, audit P1-9) for the disk-stored
+ * routes (product media, product imports). The storage documents keep their
+ * caps in `storage-security.constants.ts` and OCR in `OcrFeatureConfig`;
+ * every route is bounded by the server, never by the client.
  * Hydrated with `hydrateFromEnv`: blank keeps the default, garbage fails boot.
  */
 @Injectable()

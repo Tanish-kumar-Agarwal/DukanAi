@@ -6,7 +6,7 @@ import { GstRate, Prisma, ProductType, ProductUnit } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SearchFeatureConfig } from '../config/domains/features/search-feature.config';
 import { CacheConfig } from '../config/domains/cache.config';
-import { normalizeSearchQuery, sanitizeFulltextTerm } from './search-term';
+import { clampSearchQuery, normalizeSearchQuery, sanitizeFulltextTerm } from './search-term';
 
 /** Lean POS product shape (contract §5). Money and quantities are plain numbers. */
 export interface LeanProduct {
@@ -120,7 +120,8 @@ export class SearchEngineService {
    * sale; product rows are always re-read fresh before returning.
    */
   async search(shopId: string, rawQuery: string, options: SearchOptions = {}): Promise<LeanProduct[]> {
-    const query = normalizeSearchQuery(rawQuery);
+    // The controller clamps already; a direct caller gets the same cap (roadmap 5.3).
+    const query = clampSearchQuery(rawQuery);
     if (!query) return [];
     const limit = Math.min(Math.max(options.limit ?? DEFAULT_SEARCH_LIMIT, 1), MAX_SEARCH_LIMIT);
     const expanded = normalizeSearchQuery(options.expandedQuery) || query;
@@ -211,7 +212,7 @@ export class SearchEngineService {
 
   /** Fast autocomplete on name prefix; active, non-deleted products only. */
   async autocomplete(shopId: string, rawQuery: string): Promise<SuggestionRow[]> {
-    const query = normalizeSearchQuery(rawQuery);
+    const query = clampSearchQuery(rawQuery);
     if (query.length < 2) return [];
 
     const cacheKey = `autocomplete:${shopId}:${query.toLowerCase()}`;

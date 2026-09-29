@@ -8,6 +8,7 @@ import * as crypto from 'crypto';
 import { SocketSessionService } from '../iam/websockets/socket-session.service';
 import { JwtConfig } from '../config/domains/jwt.config';
 import { durationToMs } from '../common/time/duration';
+import { ListQueryDto, pageArgs } from '../common/pagination';
 
 export interface LoginResponseDto {
   access_token: string;
@@ -157,13 +158,21 @@ export class AuthService {
   }
 
   /** One row per live session family, for the sessions page. */
-  async getSessions(userId: string) {
+  async getSessions(userId: string, query?: ListQueryDto) {
     const now = new Date();
-    return this.prisma.refreshToken.findMany({
-      where: { userId, isRevoked: false, expiresAt: { gt: now }, absoluteExpiresAt: { gt: now } },
-      select: { id: true, familyId: true, ipAddress: true, userAgent: true, createdAt: true, expiresAt: true, absoluteExpiresAt: true },
-      orderBy: { createdAt: 'desc' },
-    });
+    const { skip, take } = pageArgs(query);
+    const where = { userId, isRevoked: false, expiresAt: { gt: now }, absoluteExpiresAt: { gt: now } };
+    const [items, total] = await Promise.all([
+      this.prisma.refreshToken.findMany({
+        where,
+        select: { id: true, familyId: true, ipAddress: true, userAgent: true, createdAt: true, expiresAt: true, absoluteExpiresAt: true },
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        skip,
+        take,
+      }),
+      this.prisma.refreshToken.count({ where }),
+    ]);
+    return { items, total, skip, take };
   }
 
   /** Revokes the whole family the given token belongs to (a session, not just its current token). */

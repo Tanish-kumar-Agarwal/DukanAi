@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Param, Body } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Query } from '@nestjs/common';
+import { ListQueryDto, PagedList } from '../common/pagination';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { WorkflowRepository } from './repositories/workflow.repository';
@@ -17,8 +18,9 @@ export class ProcurementWorkflowController {
   ) {}
 
   @Get('tasks/pending')
-  async getPendingTasks(@CurrentShop() shopId: string, @CurrentUser('id') actorId: string) {
-    return this.repository.getUserTasks(shopId, actorId);
+  @PagedList()
+  async getPendingTasks(@CurrentShop() shopId: string, @CurrentUser('id') actorId: string, @Query() query: ListQueryDto) {
+    return this.repository.getUserTasks(shopId, actorId, query);
   }
 
   @Roles(...MANAGEMENT_ROLES)
@@ -40,8 +42,9 @@ export class ProcurementWorkflowController {
   }
 
   @Get('definitions')
-  async listDefinitions(@CurrentShop() shopId: string) {
-    return this.repository.listDefinitions(shopId);
+  @PagedList()
+  async listDefinitions(@CurrentShop() shopId: string, @Query() query: ListQueryDto) {
+    return this.repository.listDefinitions(shopId, query);
   }
 
   @Roles(...ADMIN_ROLES)

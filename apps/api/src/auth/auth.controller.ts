@@ -1,4 +1,5 @@
-import { Body, Controller, Get, HttpCode, Post, Request, UseGuards, Delete, Param, Ip, Headers } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Post, Request, UseGuards, Delete, Param, Ip, Headers, Query } from '@nestjs/common';
+import { ListQueryDto, PagedList } from '../common/pagination';
 import { LocalAuthGuard } from './local-auth.guard';
 import { AuthService, LoginResponseDto } from './auth.service';
 import { Public } from './public.decorator';
@@ -36,11 +37,11 @@ export class AuthController {
   @Public()
   @AuthThrottle()
   @Post('register')
-  @ApiOperation({ summary: 'Register a new user (defaults to CASHIER role for security)' })
+  @ApiOperation({ summary: 'Register a new shop and its OWNER account (staff join a shop through invitations)' })
   @ApiBody({ type: CreateUserDto })
   @ApiResponse({ status: 201, type: SafeUserDto })
   async register(@Body() body: CreateUserDto): Promise<SafeUserDto> {
-    // Security: force default role to CASHIER (least privilege) inside usersService.
+    // Registration creates a shop and its OWNER (UsersService.create); every other role arrives through an invitation.
     // DTO mass assignment protection strips unknown fields.
     const safeBody: CreateUserDto = {
       email: body.email,
@@ -101,10 +102,11 @@ export class AuthController {
   }
 
   @Get('sessions')
+  @PagedList()
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get all active sessions for the current user' })
-  getSessions(@Request() req: AuthenticatedRequest) {
-    return this.authService.getSessions(req.user.id);
+  getSessions(@Request() req: AuthenticatedRequest, @Query() query: ListQueryDto) {
+    return this.authService.getSessions(req.user.id, query);
   }
 
   @AnyAuthenticated()

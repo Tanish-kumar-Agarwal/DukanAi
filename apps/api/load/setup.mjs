@@ -1,21 +1,19 @@
 // Prepares LOAD_SHOPS shops (default 16) for load/pos-peak.yml (roadmap 5.8)
-// against a running API. Per shop: registers a user, promotes it to OWNER
-// (there is no route for that on a fresh shop), logs in, creates a ZERO-GST
-// product, stocks it through the same inventory-domain routes the web uses
-// and opens a shift. The result goes to .state.json for processor.js, which
-// spreads the virtual users over the shops: a checkout takes the shop's shift,
-// number-sequence and product row locks, so one shop bills serially by design
-// and the peak is a fleet figure. Needs LOAD_TARGET (API origin) and
-// DATABASE_URL (the database that API runs on).
+// against a running API, through public routes only. Per shop: registers a
+// user (registration creates the shop and its OWNER), logs in, creates a
+// ZERO-GST product, stocks it through the same inventory-domain routes the
+// web uses and opens a shift. The result goes to .state.json for
+// processor.js, which spreads the virtual users over the shops: a checkout
+// takes the shop's shift, number-sequence and product row locks, so one shop
+// bills serially by design and the peak is a fleet figure. Needs LOAD_TARGET
+// (API origin).
 import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PrismaClient } from '@prisma/client';
 
 const target = process.env.LOAD_TARGET;
 if (!target) throw new Error('LOAD_TARGET is required (e.g. http://127.0.0.1:3019)');
-if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required (the database the API under test uses)');
 const base = `${target.replace(/\/$/, '')}/api`;
 const unitPrice = 20;
 const openingStock = Number(process.env.LOAD_OPENING_STOCK ?? 1_000_000);
@@ -38,16 +36,15 @@ async function call(method, path, body, token) {
 }
 
 const shopCount = Number(process.env.LOAD_SHOPS ?? 16);
-const prisma = new PrismaClient();
 const shops = [];
-try {
+{
   for (let i = 0; i < shopCount; i++) {
     const suffix = randomUUID().slice(0, 8);
     const email = `load-${suffix}@load.local`;
     const password = `Load-${suffix}-Passw0rd!`;
 
-    await call('POST', '/auth/register', { email, password, name: 'Load Owner', shopName: `Load shop ${suffix}` });
-    await prisma.user.updateMany({ where: { email }, data: { role: 'OWNER' } });
+    const registered = await call('POST', '/auth/register', { email, password, name: 'Load Owner', shopName: `Load shop ${suffix}` });
+    if (registered?.role !== 'OWNER') throw new Error(`registration did not create an OWNER (got ${registered?.role})`);
 
     const login = await call('POST', '/auth/login', { email, password });
     const token = login.access_token;
@@ -68,8 +65,6 @@ try {
     await call('POST', '/shifts/open', { openingCash: 0 }, token);
     shops.push({ suffix, email, password, token, productId: product.id });
   }
-} finally {
-  await prisma.$disconnect();
 }
 
 const state = { target, unitPrice, shops, preparedAt: new Date().toISOString() };

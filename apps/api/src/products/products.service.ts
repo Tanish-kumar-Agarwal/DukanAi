@@ -6,6 +6,8 @@ import { TenantContextService } from '../iam/tenant-context/tenant-context.servi
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/create-product.dto';
 import { ProductEventPublisher } from '../product-events/services/product-event-publisher.service';
+import { clampSearchQuery } from '../product-search/search-term';
+import { MAX_LIST_TAKE } from '../common/pagination';
 
 export const PRODUCT_LIST_DEFAULT_LIMIT = 50;
 export const PRODUCT_LIST_MAX_LIMIT = 200;
@@ -115,7 +117,8 @@ export class ProductsService {
       PRODUCT_LIST_MAX_LIMIT,
     );
     const skip = Math.max(Number.isFinite(query.offset) ? Math.floor(query.offset as number) : 0, 0);
-    const q = query.q?.trim();
+    // Same cap as the search box (roadmap 5.3): a repeated or over-long `q` is cut, never a 500 or an unbounded contains.
+    const q = clampSearchQuery(query.q);
 
     const where: Prisma.ProductWhereInput = { shopId, isDeleted: false, isActive: true };
     if (q) {
@@ -135,7 +138,8 @@ export class ProductsService {
     const shopId = this.tenantContext.getShopId();
     const product = await this.prisma.product.findFirst({
       where: { id, shopId, isDeleted: false },
-      include: { category: true, brand: true, variants: true, images: true, attributes: true }
+      // Nested lists are capped too (roadmap 5.6); variants are bounded by the matrix cap (5.2).
+      include: { category: true, brand: true, variants: true, images: { take: MAX_LIST_TAKE }, attributes: { take: MAX_LIST_TAKE } }
     });
     if (!product) throw new NotFoundException('Product not found');
     return product;

@@ -435,7 +435,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   be readable UTF-8 with no control bytes) or the file is unlinked and the
   request is 400. A temp file never outlives its request
   (`ProductMediaService.uploadMedia` unlinks in `finally`; the CDN move
-  renames it away first; imports rename it into `uploads/imports`). SVG is
+  renames it away first; imports rename it into `uploads/imports`), and
+  `UploadCleanupInterceptor` (`src/common/upload`, listed BEFORE the
+  `FileInterceptor` on every disk-stored route) unlinks whatever is still
+  there when the request ends by any other path: the global ValidationPipe
+  runs after multer, so a body-validation 400 or an ownership 404 used to
+  leave the file behind. A new disk-stored upload route must carry it. SVG is
   not a media type. The storage routes keep their constants
   (`storage-security.constants.ts`) and memory storage (documents are
   written to `STORAGE_ROOT` from the buffer) but now check the bytes in
@@ -453,16 +458,20 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `VARIANT_MATRIX_TOO_LARGE` / `VARIANT_MATRIX_INVALID`) so a direct caller
   cannot bypass the DTO. The Cartesian product is typed and built only after
   the check.
-- 5.3 search: `clampSearchQuery` (`product-search/search-term.ts`) normalises
-  and cuts `q` to `MAX_SEARCH_QUERY_LENGTH` (100) once in the controller;
-  `tokenizeForSynonyms` lower-cases, de-duplicates and caps the tokens (8),
-  and `SynonymEngineService.expandQuery` resolves them in ONE
-  `findMany({ term: { in } })`, capping the expansion at 24 terms. Every
-  `SearchHistory` insert goes through a per-shop, per-minute budget
-  (`SEARCH_HISTORY_MAX_PER_MINUTE`, default 120; Redis `INCR` on
-  `search-history:{shopId}:{minute}`, per-process counter when Redis is
-  down): a search past the budget is served but not recorded. Never add a
-  per-token query or an uncapped `q` consumer.
+- 5.3 search: `clampSearchQuery` (`product-search/search-term.ts`) takes any
+  query value (`queryString`: a repeated `?q=a&q=b` arrives as an array and
+  reads as its first string, a non-string is absent), normalises it and cuts
+  it to `MAX_SEARCH_QUERY_LENGTH` (100); the controller, `SearchEngineService`
+  and `GET /products?q` all apply it. `tokenizeForSynonyms` lower-cases,
+  de-duplicates and caps the tokens looked up (8), while `queryTokens` keeps
+  every typed token in the expansion; `SynonymEngineService.expandQuery`
+  resolves them in ONE `findMany({ term: { in } })`, capping the expansion
+  at 24 terms (a synonym list is at most 191 characters, the column width).
+  Every `SearchHistory` insert goes through a per-shop, per-minute budget
+  (`SEARCH_HISTORY_MAX_PER_MINUTE`, default 120; one Redis MULTI of `INCR`
+  + `PEXPIRE NX` on `search-history:{shopId}:{minute}`, per-process counter
+  when Redis is down): a search past the budget is served but not recorded.
+  Never add a per-token query or an uncapped `q` consumer.
 - 5.4 reconciliation: `InventoryReconService.runReconciliation(now)` pages
   products with keyset pagination (`inventory/recon-keyset.ts`: closed window
   `updatedAt` in `[now - lookback, now]`, cursor `(updatedAt, id)` over the
@@ -472,11 +481,14 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (`productsChecked`, `batches`, drift counters) for tests.
 - 5.5 dashboard: the all-time totals of the summary are cached under
   `shop:{shopId}:analytics:allTime` (`AnalyticsCacheService.getAllTime` /
-  `setAllTime`, dashboard TTL) with Decimals as strings; the key is part of
-  `analyticsCacheKeys`, so `BillingHelpers.afterStockChange` and the
-  system-events worker drop it with the others after every committed sale,
-  return and cancellation. Add any new whole-history aggregate to that key
-  family rather than caching it on its own.
+  `setAllTime`, the KPI TTL of 60 s, not the dashboard hour: an aggregate
+  that started before a sale committed can be written after that sale's
+  invalidation, and the short TTL bounds the stale figure to a minute) with
+  Decimals as strings and a shape check on read (`isCachedTotals`); the key
+  is part of `analyticsCacheKeys`, so `BillingHelpers.afterStockChange` and
+  the system-events worker drop it with the others after every committed
+  sale, return and cancellation. Add any new whole-history aggregate to that
+  key family rather than caching it on its own.
 - 5.6 lists: every list route is a capped page. `src/common/pagination`:
   `ListQueryDto` (`skip >= 0`, `take 1..MAX_LIST_TAKE` = 200, default
   `DEFAULT_LIST_TAKE` = 100; a bad value is 400 under the global
@@ -489,38 +501,55 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   to expenses, suppliers, batches, categories (default = cap, tree order),
   warehouses, the location subtree (`SubtreeQueryDto`, `path` required),
   inventory-domain items and alerts, notifications, `/inventory/products`,
-  purchases / grn / vendor-bills / purchase-returns / supplier-credit-notes
-  and the purchase-events dead letter; shifts, customers, invoices, products
-  and search had their own caps already. A new list route takes
-  `@Query() query: ListQueryDto` and never a bare `@Query('limit')`. Every
-  paged `orderBy` ends in `id` so pages are stable.
-  `test/integration/list-caps.integration-spec.ts` walks every route.
+  purchases / grn / vendor-bills / purchase-returns / supplier-credit-notes,
+  the purchase-events dead letter, `/users/employees`, `/webhooks`, the
+  workflow task and definition lists, media galleries, `/auth/sessions` and
+  the barcode history; shifts (own `{ items, total }` envelope), customers,
+  invoices, products and search had their own caps already, and nested
+  includes (`subCategories`, product `images`/`attributes`, media
+  thumbnails/tags, duplicate candidates) carry `take: MAX_LIST_TAKE`. CORS
+  exposes the page headers. A new list route takes `@Query() query:
+  ListQueryDto` and never a bare `@Query('limit')`; every paged `orderBy`
+  ends in `id` so pages are stable.
+  `test/integration/list-caps.integration-spec.ts` walks the named lists,
+  the legacy `limit` routes, the extra lists above and the `q` routes.
 - 5.7 guards: `JwtAuthGuard`, `TenantGuard` and `RolesGuard` run once as
   `APP_GUARD`s (`app.module.ts`); no controller repeats them with
   `@UseGuards` (the only local guards left are `LocalAuthGuard` on login and
   the socket guards on `InventoryGateway`). `raiseLowStockNotifications`
   (system-events worker) is three statements per sale: products `in`,
   unread LOW_STOCK notifications `in`, one `createMany`. A category move
-  (`CategoriesService.update`) runs in one transaction and re-roots the
-  subtree with one `UPDATE ... SET path = CONCAT(new, SUBSTRING(path, ...)),
-  depth = depth + delta WHERE shopId = ? AND path LIKE 'old%'`
+  (`CategoriesService.update`; `parentId: null` moves to the root, an absent
+  `parentId` is a plain update) runs in one transaction that reads the
+  category and the new parent `FOR UPDATE` (two concurrent moves can neither
+  build a cycle nor re-root from a stale prefix) and re-roots the subtree
+  with one `UPDATE ... SET path = CONCAT(new, SUBSTRING(path, ...)), depth =
+  depth + delta WHERE shopId = ? AND path LIKE 'old%'`
   (`updateDescendantsPath`, LIKE-escaped prefix), never one update per
-  descendant.
+  descendant. `Category.path` is VARCHAR(191): about seven levels of ids.
 - 5.8 load test: `apps/api/load/` (`pos-peak.yml`, `processor.js`,
-  `setup.mjs`, `summarize.mjs`, `run.sh`, README) drives checkout, dashboard
-  summary and login at 3x the assumed peak (15 / 30 / 3 per second) with
-  artillery (`npx artillery@2`, not a workspace dependency) against a built
-  API on a disposable database; `summarize.mjs` prints the table and fails
-  on the gate (checkout p95 < 500 ms, zero 5xx). The load is spread over
+  `setup.mjs`, `summarize.mjs`, `run.sh`, `upload-gate.sh`, README) drives
+  checkout, dashboard summary and login at 3x the assumed peak (15 / 30 / 3
+  per second) with artillery (`npx artillery@2.0.34`, not a workspace
+  dependency) against a built API on a disposable database, through public
+  routes only (registration creates the shop OWNER). `summarize.mjs` is the
+  one gate (artillery's expect/ensure plugins are not loaded, so a check in
+  the yml would be ignored): checkout p95 < 500 ms, zero 5xx, zero
+  transport errors, every response 2xx, and the load delivered (users
+  created = completed, requests = responses). `upload-gate.sh` is the other
+  half of the phase gate: N x 300 MB uploads answer 413 with the RSS
+  sampled and the temp directory empty. The load is spread over
   `LOAD_SHOPS` shops (16): a checkout holds the shop's shift, number-sequence
-  and product row locks, so one shop bills serially by design. The runner
-  boots with `PRISMA_LOG_QUERIES=false`; `PrismaService.logLevelsFor` now
-  honours that flag outside production (it used to log every query under
-  any non-production `NODE_ENV`, so `.env.test`/`.env.development` keep
-  `true` and a measurement must set it to `false`). The recorded baseline
-  and the environment it was taken on are in `docs/LOAD_TEST_BASELINE.md`;
-  re-run and update it after a change to the checkout transaction or the
-  dashboard queries.
+  and product row locks, so one shop bills serially by design. Both scripts
+  boot with `NODE_ENV=test` (so `.env.test` applies: rate limits open,
+  billing timeouts wide) and `PRISMA_LOG_QUERIES=false`;
+  `PrismaService.logLevelsFor` honours that flag outside production (it used
+  to log every query under any non-production `NODE_ENV`; `.env.test` and
+  `.env.development` still say `true`, and `test/jest-integration.setup.ts`
+  forces `false`, so integration runs print no query log). The recorded
+  baseline, the environment and the code version it was taken on are in
+  `docs/LOAD_TEST_BASELINE.md`; re-run and update it after a change to the
+  checkout transaction, the dashboard queries or the upload path.
 
 ## Toolchain
 

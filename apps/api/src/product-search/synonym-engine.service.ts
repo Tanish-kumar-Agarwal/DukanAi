@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { MAX_EXPANDED_TERMS, tokenizeForSynonyms } from './search-term';
+import { MAX_EXPANDED_TERMS, queryTokens, tokenizeForSynonyms } from './search-term';
 
 @Injectable()
 export class SynonymEngineService {
@@ -26,12 +26,13 @@ export class SynonymEngineService {
       select: { term: true, synonyms: true },
     });
 
-    const expanded = new Set<string>(tokens);
+    // Every typed token stays in the expansion (only the lookup is capped); synonyms fill the rest.
+    const expanded = new Set<string>(queryTokens(query).slice(0, MAX_EXPANDED_TERMS));
     for (const row of rows) {
       for (const synonym of row.synonyms.split(',')) {
+        if (expanded.size >= MAX_EXPANDED_TERMS) break;
         const term = synonym.trim().toLowerCase();
         if (term) expanded.add(term);
-        if (expanded.size >= MAX_EXPANDED_TERMS) break;
       }
       if (expanded.size >= MAX_EXPANDED_TERMS) break;
     }

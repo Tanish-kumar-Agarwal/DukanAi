@@ -1,5 +1,7 @@
-import { Controller, Post, Get, Body, Param, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, UseInterceptors, UploadedFile, BadRequestException, Query } from '@nestjs/common';
+import { ListQueryDto, PagedList } from '../common/pagination';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { UploadCleanupInterceptor } from '../common/upload/upload-cleanup.interceptor';
 import { ProductMediaService } from './product-media.service';
 import { CurrentShop, CurrentUser } from '../iam/decorators';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
@@ -18,7 +20,7 @@ export class ProductMediaController {
 
   @Roles(...MANAGEMENT_ROLES)
   @Post('upload/product/:id')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(UploadCleanupInterceptor, FileInterceptor('file'))
   async uploadProductMedia(
     @Param('id') productId: string,
     @UploadedFile() file: Express.Multer.File | undefined,
@@ -32,7 +34,7 @@ export class ProductMediaController {
 
   @Roles(...MANAGEMENT_ROLES)
   @Post('upload/variant/:id')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(UploadCleanupInterceptor, FileInterceptor('file'))
   async uploadVariantMedia(
     @Param('id') variantId: string,
     @UploadedFile() file: Express.Multer.File | undefined,
@@ -45,13 +47,15 @@ export class ProductMediaController {
   }
 
   @Get('product/:id')
-  async getProductGallery(@Param('id') productId: string, @CurrentShop() shopId: string) {
-    return this.productMediaService.getGallery(shopId, productId, undefined);
+  @PagedList()
+  async getProductGallery(@Param('id') productId: string, @CurrentShop() shopId: string, @Query() query: ListQueryDto) {
+    return this.productMediaService.getGallery(shopId, productId, undefined, query);
   }
 
   @Get('variant/:id')
-  async getVariantGallery(@Param('id') variantId: string, @CurrentShop() shopId: string) {
-    return this.productMediaService.getGallery(shopId, undefined, variantId);
+  @PagedList()
+  async getVariantGallery(@Param('id') variantId: string, @CurrentShop() shopId: string, @Query() query: ListQueryDto) {
+    return this.productMediaService.getGallery(shopId, undefined, variantId, query);
   }
 
   @Roles(...MANAGEMENT_ROLES)

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Roadmap 5.8 load test runner. Boots the built API against LOAD_DATABASE_URL /
-# LOAD_REDIS_URL, prepares a shop (setup.mjs), runs load/pos-peak.yml with
+# LOAD_REDIS_URL, prepares LOAD_SHOPS shops (setup.mjs), runs load/pos-peak.yml with
 # artillery and prints the baseline table (summarize.mjs). Never point it at a
-# production database: it writes users, products, stock and ~1,000 invoices.
+# production database: it writes users, shops, products, stock and ~1,000 invoices.
 #
 #   LOAD_DATABASE_URL=mysql://... LOAD_REDIS_URL=redis://127.0.0.1:6379/2 load/run.sh
 #
-# Optional: LOAD_PORT (3019), ARTILLERY (command, default `npx artillery@2`),
+# Optional: LOAD_PORT (3019), LOAD_SHOPS (16), ARTILLERY (command, default `npx artillery@2.0.34`),
 # LOAD_SKIP_BUILD=1 to reuse dist/, LOAD_REPORT_DIR (load/reports).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 : "${LOAD_REDIS_URL:?set LOAD_REDIS_URL (a Redis db index no other process uses)}"
 PORT="${LOAD_PORT:-3019}"
 TARGET="http://127.0.0.1:${PORT}"
-ARTILLERY="${ARTILLERY:-npx artillery@2}"
+ARTILLERY="${ARTILLERY:-npx artillery@2.0.34}"
 REPORT_DIR="${LOAD_REPORT_DIR:-load/reports}"
 mkdir -p "$REPORT_DIR"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -35,10 +35,14 @@ for _ in $(seq 1 90); do curl -sf "$TARGET/api/health" >/dev/null 2>&1 && break;
 curl -sf "$TARGET/api/health" >/dev/null || { echo "API did not come up; see $REPORT_DIR/api-$STAMP.log"; exit 1; }
 
 echo "== setup"
-LOAD_TARGET="$TARGET" DATABASE_URL="$LOAD_DATABASE_URL" node load/setup.mjs
+LOAD_TARGET="$TARGET" node load/setup.mjs
 
 echo "== artillery"
-LOAD_TARGET="$TARGET" $ARTILLERY run --output "$REPORT" load/pos-peak.yml | tail -40 || true
+set +e
+LOAD_TARGET="$TARGET" $ARTILLERY run --output "$REPORT" load/pos-peak.yml | tail -40
+set -e
+[ -s "$REPORT" ] || { echo "artillery wrote no report"; exit 1; }
+echo "== code version: $(git rev-parse --short HEAD 2>/dev/null || echo unknown)$(git diff --quiet 2>/dev/null || echo ' (with uncommitted changes)')"
 
 echo "== summary ($REPORT)"
 node load/summarize.mjs "$REPORT"

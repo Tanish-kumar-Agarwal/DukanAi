@@ -47,6 +47,8 @@ async function bootstrap() {
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-correlation-id'],
+    // Paged lists describe their page in these headers (roadmap 5.6); a browser client may read them.
+    exposedHeaders: ['X-Total-Count', 'X-Page-Skip', 'X-Page-Take', 'x-correlation-id'],
   });
 
   // Global Validation Pipe

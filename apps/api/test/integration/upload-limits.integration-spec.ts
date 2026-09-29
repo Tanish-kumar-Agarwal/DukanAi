@@ -97,6 +97,18 @@ describe('Upload limits and variant matrix (roadmap 5.1 / 5.2)', () => {
       expect(await run.system(() => prisma.mediaAsset.count({ where: { shopId: A.shopId } }))).toBe(1);
     });
 
+    it('a temp file never outlives a request that fails outside the handler: foreign product (404) and a bad body field (400)', async () => {
+      const foreign = await request(app.getHttpServer())
+        .post('/api/media/upload/product/does-not-exist')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .attach('file', png(4096), { filename: 'x.png', contentType: 'image/png' });
+      expect(foreign.status).toBe(404);
+      const badField = await upload(`/api/media/upload/product/${productId}`, 'file', png(4096), 'x.png', 'image/png', { unknownField: 'yes' });
+      expect(badField.status).toBe(400);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(tempFiles()).toEqual([]);
+    });
+
     it('a VIEWER cannot upload', async () => {
       const viewer = await bearerToken(app, A, await createUser(app, A, Role.VIEWER));
       const res = await request(app.getHttpServer()).post(`/api/media/upload/product/${productId}`).set('Authorization', `Bearer ${viewer}`).attach('file', png(1024), { filename: 'a.png', contentType: 'image/png' });
@@ -123,6 +135,13 @@ describe('Upload limits and variant matrix (roadmap 5.1 / 5.2)', () => {
       expect(notJson.status).toBe(400);
       expect(tempFiles()).toEqual([]);
       expect(await run.system(() => prisma.importJob.count({ where: { shopId: A.shopId } }))).toBe(0);
+    });
+
+    it('an import whose body fails validation is refused with 400 and its temp file discarded', async () => {
+      const res = await upload('/api/imports/products/upload', 'file', csv(3), 'ok.csv', 'text/csv', { mode: 'BOGUS' });
+      expect(res.status).toBe(400);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(tempFiles()).toEqual([]);
     });
 
     it('a readable CSV (with a byte-order mark) and a JSON array are accepted and moved out of the temp directory', async () => {

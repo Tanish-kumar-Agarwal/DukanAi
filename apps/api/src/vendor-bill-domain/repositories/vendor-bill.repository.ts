@@ -133,7 +133,7 @@ export class VendorBillRepository {
     return this.prisma.vendorBill.findMany({
       where: { shopId, isDeleted: false },
       include: { supplier: true },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       take: limit,
       skip: offset
     });

@@ -286,7 +286,11 @@ Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
 - `GET /search?q&limit` returns lean results `{ id, name, sku, barcode,
   sellingPrice, mrp, gstRate, cessRate, unit, currentStock, type, isActive,
   imageUrl, categoryName }` ranked by relevance (exact barcode/SKU first,
-  then name).
+  then name). `q` (here, on `/search/suggestions` and on `/products`) is
+  normalised and cut to 100 characters, never rejected for length; a
+  repeated `q` reads as its first value. Search history is recorded up to
+  `SEARCH_HISTORY_MAX_PER_MINUTE` searches per shop and minute; a search past
+  that budget is answered but not recorded.
 - `GET /search/barcode/:code` returns exactly one product or
   `404 BARCODE_NOT_FOUND`; `409 BARCODE_AMBIGUOUS` with `details.candidates`.
 - Barcodes are unique per shop: `409 BARCODE_IN_USE` on create/update.

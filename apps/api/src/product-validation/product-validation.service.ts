@@ -6,6 +6,7 @@ import { QualityScoreEngine } from './quality-score.engine';
 import { DuplicateDetectionEngine } from './duplicate-detection.engine';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { MAX_LIST_TAKE } from '../common/pagination';
 
 @Injectable()
 export class ProductValidationService {
@@ -103,9 +104,12 @@ export class ProductValidationService {
   async getValidationState(shopId: string, productId: string) {
     await assertOwned(this.prisma, 'product', productId, shopId);
     const score = await this.prisma.productQualityScore.findFirst({ where: { productId, shopId } });
-    const issues = await this.prisma.productValidationIssue.findMany({ where: { productId, shopId } });
+    // Issues are bounded by the rule set; duplicate candidates grow with the catalogue, so they are capped (roadmap 5.6).
+    const issues = await this.prisma.productValidationIssue.findMany({ where: { productId, shopId }, take: MAX_LIST_TAKE });
     const duplicates = await this.prisma.duplicateCandidate.findMany({
-      where: { shopId, sourceId: productId }
+      where: { shopId, sourceId: productId },
+      orderBy: [{ score: 'desc' }, { id: 'asc' }],
+      take: MAX_LIST_TAKE,
     });
 
     return {

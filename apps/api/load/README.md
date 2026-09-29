@@ -29,18 +29,34 @@ load/run.sh
 ```
 
 - The database must be migrated (`DATABASE_URL=... npx prisma migrate deploy`)
-  and disposable: the run writes a user, a product, stock and about a
-  thousand invoices.
+  and disposable: the run writes `LOAD_SHOPS` shops with an owner, a product,
+  stock and a shift each, and about a thousand invoices. Give the URL the
+  pool the deployment uses (the baseline ran with
+  `?connection_limit=25&pool_timeout=120`, the integration setting).
 - `run.sh` builds `dist/`, boots `node dist/main` under `NODE_ENV=test` on
-  `LOAD_PORT` (3019) with crons off and the production logging profile
-  (`PRISMA_LOG_QUERIES=false`: per-query logging measures
-  the log writer, not the API), runs `load/setup.mjs` (per shop: register,
-  promote to OWNER, log in, create and stock the product, open a shift; the
-  result lands in the untracked `load/.state.json`), runs artillery and
-  prints the table with `load/summarize.mjs`, which exits non-zero when the
-  roadmap gate fails: **checkout p95 < 500 ms, zero 5xx and zero transport
-  errors (a request that times out is a failure too)**.
-- `ARTILLERY` names the artillery command (`npx artillery@2` by default;
+  `LOAD_PORT` (3019) with crons off (so the outbox relay and the nightly
+  jobs do not run during the measurement) and the production logging
+  profile (`PRISMA_LOG_QUERIES=false`: per-query logging measures the log
+  writer, not the API), runs `load/setup.mjs` (per shop, public routes only:
+  register, which creates the shop and its OWNER; log in; create and stock
+  the product; open a shift; the result lands in the untracked
+  `load/.state.json`), runs artillery and prints the table with
+  `load/summarize.mjs`, which is the one gate and exits non-zero when it
+  fails: **checkout p95 < 500 ms, zero 5xx, zero transport errors (a request
+  that times out is a failure), every response 2xx (a stale token answering
+  401 is a failure, not a fast success) and the load delivered (users created
+  = completed, requests = responses)**. The yml carries no artillery
+  `expect`/`ensure` checks: those plugins are not loaded and would be
+  ignored silently.
+- `NODE_ENV=test` means `.env.test` applies: rate limits effectively off,
+  `BILLING_TRANSACTION_MAX_WAIT_MS` and the gateway timeout wide. A
+  measurement of the limiter itself needs another profile.
+- `upload-gate.sh` is the upload half of the phase gate: it boots the API the
+  same way, registers an owner, sends `UPLOAD_GATE_ROUNDS` (12) uploads of
+  `UPLOAD_GATE_MB` (300) MB to the media route, samples the API's RSS and
+  fails on anything but 413, a temp file left behind, a failed control
+  upload, or RSS growth above `UPLOAD_GATE_MAX_GROWTH_MB` (64).
+- `ARTILLERY` names the artillery command (`npx artillery@2.0.34` by default;
   artillery is not a dependency of the workspace).
 - Reports go to `load/reports/` (untracked): the artillery JSON and the API
   log of each run.

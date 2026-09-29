@@ -7,6 +7,7 @@ import { CdnManagerService } from './cdn-manager.service';
 import { CompressionEngineService } from './compression-engine.service';
 import * as fs from 'fs';
 import * as path from 'path';
+import { ListQueryDto, MAX_LIST_TAKE, pageArgs } from '../common/pagination';
 
 @Injectable()
 export class ProductMediaService {
@@ -130,27 +131,30 @@ export class ProductMediaService {
   /**
    * Retrieves full gallery for a given product/variant.
    */
-  async getGallery(shopId: string, productId?: string, variantId?: string) {
+  async getGallery(shopId: string, productId?: string, variantId?: string, query?: ListQueryDto) {
     if (!productId && !variantId) throw new NotFoundException('Must provide productId or variantId');
-    
-    return this.prisma.mediaReference.findMany({
-      where: {
-        shopId,
-        productId,
-        variantId,
-      },
-      include: {
-        asset: {
-          include: {
-            metadata: true,
-            storage: true,
-            thumbanils: true, // Note spelling
-            tags: true,
+    const { skip, take } = pageArgs(query);
+    const where = { shopId, productId, variantId };
+    const [items, total] = await Promise.all([
+      this.prisma.mediaReference.findMany({
+        where,
+        include: {
+          asset: {
+            include: {
+              metadata: true,
+              storage: true,
+              thumbanils: { take: MAX_LIST_TAKE }, // Note spelling
+              tags: { take: MAX_LIST_TAKE },
+            },
           },
         },
-      },
-      orderBy: { sortOrder: 'asc' },
-    });
+        orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+        skip,
+        take,
+      }),
+      this.prisma.mediaReference.count({ where }),
+    ]);
+    return { items, total, skip, take };
   }
 
   /** Attaches a named tag (created on first use, unique per shop) to one of the shop's assets. */

@@ -49,8 +49,10 @@ export class SearchAnalyticsService {
     if (this.redis) {
       try {
         const key = `search-history:${shopId}:${bucket}`;
-        const hits = await this.redis.incr(key);
-        if (hits === 1) await this.redis.pexpire(key, WINDOW_MS * 2);
+        // One round trip, and the TTL is set in the same MULTI as the first INCR (PEXPIRE NX: only when the key has none).
+        const replies = await this.redis.multi().incr(key).pexpire(key, WINDOW_MS * 2, 'NX').exec();
+        const hits = Number(replies?.[0]?.[1] ?? Number.NaN);
+        if (!Number.isFinite(hits)) throw new Error('unexpected INCR reply');
         if (this.degraded) {
           this.degraded = false;
           this.logger.log('Redis search-history counters are back in use');

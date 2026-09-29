@@ -59,9 +59,15 @@ export class AnalyticsCacheService {
     return this.get<T>(shopId, 'kpis');
   }
 
-  /** All-time totals (roadmap 5.5): a full-table aggregate the summary poll would otherwise repeat every 30 s. */
+  /**
+   * All-time totals (roadmap 5.5): a full-table aggregate the summary poll
+   * would otherwise repeat every 30 s. Cached with the KPI TTL (60 s), not
+   * the dashboard hour: every committed sale drops the key, but an aggregate
+   * that started before a sale committed can still be written after that
+   * invalidation, and the short TTL bounds such a stale figure to a minute.
+   */
   async setAllTime(shopId: string, data: unknown): Promise<void> {
-    await this.set(shopId, 'allTime', data, this.cacheConfig.analyticsDashboardTtlMs);
+    await this.set(shopId, 'allTime', data, this.cacheConfig.analyticsKpiTtlMs);
   }
 
   async getAllTime<T = unknown>(shopId: string): Promise<T | undefined> {

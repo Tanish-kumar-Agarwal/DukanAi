@@ -1,5 +1,6 @@
 import { Controller, Post, Get, Body, Param, BadRequestException, UseInterceptors, UploadedFile, NotFoundException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { UploadCleanupInterceptor } from '../common/upload/upload-cleanup.interceptor';
 import { FileStorageService } from './file-storage.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -24,7 +25,7 @@ export class ImportExportController {
 
   @Roles(...MANAGEMENT_ROLES)
   @Post('products/upload')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(UploadCleanupInterceptor, FileInterceptor('file'))
   async uploadImportFile(@UploadedFile() file: Express.Multer.File | undefined, @Body() body: UploadImportDto, @CurrentShop() shopId: string) {
     if (!file) throw new BadRequestException('No file uploaded');
     // The bytes must be text the parser can read (a binary renamed .csv is refused and discarded).

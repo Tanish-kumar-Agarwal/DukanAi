@@ -21,12 +21,9 @@ config:
     metrics-by-endpoint:
       useOnlyRequestNames: true
       stripQueryString: true
-  ensure:
-    thresholds:
-      - "plugins.metrics-by-endpoint.response_time.checkout": { p95: 500 }
-    conditions:
-      - expression: "http.codes.500 == undefined && http.codes.502 == undefined && http.codes.503 == undefined && http.codes.504 == undefined"
-        strict: true
+  # The gate (status codes, transport errors, p95, delivered load) is applied by
+  # summarize.mjs on the JSON report: artillery's expect/ensure plugins are not
+  # loaded here, so a check written in this file would be silently ignored.
 
 scenarios:
   - name: checkout
@@ -48,8 +45,6 @@ scenarios:
             payments:
               - tender: CASH
                 amount: "{{ amount }}"
-          expect:
-            - statusCode: 201
 
   - name: dashboard
     weight: 30
@@ -60,8 +55,6 @@ scenarios:
           url: /api/dashboard/summary
           headers:
             authorization: "Bearer {{ token }}"
-          expect:
-            - statusCode: 200
 
   - name: login
     weight: 3
@@ -75,5 +68,3 @@ scenarios:
           json:
             email: "{{ email }}"
             password: "{{ password }}"
-          expect:
-            - statusCode: 201

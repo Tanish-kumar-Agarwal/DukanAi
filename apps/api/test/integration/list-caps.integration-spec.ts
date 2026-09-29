@@ -92,6 +92,44 @@ describe('List caps, guard dedupe and subtree moves (roadmap 5.6, 5.7)', () => {
       expect(products.body[0]).toHaveProperty('name');
     });
 
+    it('the lists outside the roadmap row are capped too: employees, webhooks, workflow tasks and definitions, media galleries, sessions, barcode history, shifts', async () => {
+      const product = await createProduct(app, A, { key: 'CAPS2' });
+      const routes = [
+        '/api/users/employees',
+        '/api/webhooks',
+        '/api/procurement-workflows/tasks/pending',
+        '/api/procurement-workflows/definitions',
+        `/api/media/product/${product}`,
+        '/api/auth/sessions',
+        '/api/shifts',
+      ];
+      for (const route of routes) {
+        const res = await owner.get(route);
+        expect([route, res.status]).toEqual([route, 200]);
+        expect([route, (await owner.get(`${route}?take=5000`)).status]).toEqual([route, 400]);
+        expect([route, (await owner.get(`${route}?take=1`)).status]).toEqual([route, 200]);
+      }
+      // Array bodies with page headers for the ones on the shared layer; shifts keeps its own `{ items, total }` envelope.
+      const employees = await owner.get('/api/users/employees?take=1');
+      expect(Array.isArray(employees.body)).toBe(true);
+      expect(employees.body).toHaveLength(1);
+      expect(Number(employees.headers[PAGE_HEADERS.total.toLowerCase()])).toBeGreaterThanOrEqual(2);
+      const shifts = await owner.get('/api/shifts?take=1');
+      expect(shifts.body).toMatchObject({ take: 1, skip: 0 });
+      expect(Array.isArray(shifts.body.items)).toBe(true);
+      // A barcode nobody knows answers an empty page, not a 500.
+      const history = await owner.get(`/api/product-identity/barcode/NOPE-${A.suffix}/history?take=1`);
+      expect([200, 404]).toContain(history.status);
+      if (history.status === 200) expect(history.body).toEqual([]);
+    });
+
+    it('a repeated or over-long q on the search and product lists is cut, never a 500', async () => {
+      for (const route of ['/api/search', '/api/search/suggestions', '/api/products']) {
+        expect([route, (await owner.get(`${route}?q=tea&q=coffee`)).status]).toEqual([route, 200]);
+        expect([route, (await owner.get(`${route}?q=${encodeURIComponent('x'.repeat(5000))}`)).status]).toEqual([route, 200]);
+      }
+    });
+
     it('the procurement lists keep their limit/offset names under the same cap', async () => {
       for (const route of ['/api/purchases', '/api/grn', '/api/vendor-bills', '/api/purchase-returns', '/api/supplier-credit-notes', '/api/purchase-events/dead-letter']) {
         expect([route, (await owner.get(`${route}?limit=5000`)).status]).toEqual([route, 400]);
@@ -158,6 +196,19 @@ describe('List caps, guard dedupe and subtree moves (roadmap 5.6, 5.7)', () => {
 
       // Moving under its own descendant is refused.
       expect((await owner.patch(`/api/categories/${mid.id}`).send({ name: `Mid ${A.suffix}`, parentId: leaf.id })).status).toBe(400);
+
+      // A move to the root (parentId null) re-roots the subtree the same way, with a real depth change.
+      const toRoot = await owner.patch(`/api/categories/${mid.id}`).send({ name: `Mid ${A.suffix}`, parentId: null });
+      expect(toRoot.status).toBe(200);
+      expect(toRoot.body).toMatchObject({ path: '/', depth: 0, parentId: null });
+      const rooted = await run.system(() => prisma.category.findMany({ where: { id: { in: [leaf.id, leaf2.id] } }, select: { id: true, path: true, depth: true } }));
+      for (const row of rooted) expect(row).toMatchObject({ path: `/${mid.id}/`, depth: 1 });
+      // And back under a parent two levels deep: depth + 2 for the whole subtree.
+      const deep = await owner.patch(`/api/categories/${mid.id}`).send({ name: `Mid ${A.suffix}`, parentId: otherChild.id });
+      expect(deep.status).toBe(200);
+      expect(deep.body).toMatchObject({ path: `/${other.id}/${otherChild.id}/`, depth: 2 });
+      const deepRows = await run.system(() => prisma.category.findMany({ where: { id: { in: [leaf.id, leaf2.id] } }, select: { path: true, depth: true } }));
+      for (const row of deepRows) expect(row).toEqual({ path: `/${other.id}/${otherChild.id}/${mid.id}/`, depth: 3 });
     });
   });
 });

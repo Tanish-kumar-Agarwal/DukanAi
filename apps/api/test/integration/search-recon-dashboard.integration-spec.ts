@@ -49,6 +49,9 @@ describe('Search limits, reconciliation paging, dashboard totals cache (roadmap 
     it('a query is cut to the cap, the history row stores the cut value, and inserts stop at the per-minute budget', async () => {
       const product = await createProduct(app, A, { key: 'DETERGENT' });
       await receiveStock(app, A, product, 5);
+      // The budget is per clock minute: do not start within the last seconds of one.
+      const intoMinute = Date.now() % 60_000;
+      if (intoMinute > 54_000) await new Promise((r) => setTimeout(r, 60_000 - intoMinute + 200));
       const long = `Detergent ${A.suffix} ${'padding '.repeat(60)}`.trim();
       const first = await owner.get(`/api/search?q=${encodeURIComponent(long)}`);
       expect(first.status).toBe(200);

@@ -81,4 +81,14 @@ describe('tokenizeForSynonyms (roadmap 5.3)', () => {
     expect(tokenizeForSynonyms(Array.from({ length: 30 }, (_, i) => `t${i}`).join(' '))).toHaveLength(MAX_SYNONYM_TOKENS);
     expect(tokenizeForSynonyms('')).toEqual([]);
   });
+
+  describe('queryString / repeated parameters (roadmap 5.3 hardening)', () => {
+    it('a repeated q arrives as an array and is read as its first string; anything else is absent', () => {
+      expect(clampSearchQuery(['tea', 'coffee'])).toBe('tea');
+      expect(clampSearchQuery([42, 'sugar'] as never)).toBe('sugar');
+      expect(clampSearchQuery({ q: 'x' } as never)).toBe('');
+      expect(clampSearchQuery(undefined)).toBe('');
+      expect(tokenizeForSynonyms(['Rice Rice bag'])).toEqual(['rice', 'bag']);
+    });
+  });
 });
