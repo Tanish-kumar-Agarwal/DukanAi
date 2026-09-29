@@ -83,4 +83,20 @@ export class PayVendorBillDto {
   @IsNumber()
   @IsPositive()
   paymentAmount: number;
+
+  /** CASH leaves the drawer (CR CASH); anything else credits BANK. */
+  @IsOptional()
+  @IsIn(['CASH', 'UPI', 'CARD', 'BANK_TRANSFER'])
+  tender?: 'CASH' | 'UPI' | 'CARD' | 'BANK_TRANSFER';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(191)
+  reference?: string;
+
+  /** Replaying the same key returns the bill as already paid instead of paying twice. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(191)
+  idempotencyKey?: string;
 }

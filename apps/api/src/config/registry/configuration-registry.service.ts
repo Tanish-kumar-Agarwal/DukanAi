@@ -60,8 +60,8 @@ export class ConfigurationRegistryService implements OnModuleInit {
               this.logger.error(`Claimed by: ${domainName}`);
               this.logger.error(`Already owned by: ${existingOwner}`);
               this.logger.error(`================================================================================`);
-              this.logger.error(`Application cannot safely start. Halting process.`);
-              process.exit(1);
+              this.logger.error(`Application cannot safely start.`);
+              throw new Error(`Configuration registry: variable ${v} is claimed by both ${existingOwner} and ${domainName}`);
             }
           }
           this.data.variableOwnership.set(v, domainName);
@@ -98,7 +98,7 @@ export class ConfigurationRegistryService implements OnModuleInit {
             domain.validatedBy.push(ruleName);
           } else {
             this.logger.error(`Validation Rule ${ruleName} depends on unknown domain ${depName}.`);
-            process.exit(1);
+            throw new Error(`Configuration registry: validation rule ${ruleName} depends on unknown domain ${depName}`);
           }
         }
       }

@@ -19,8 +19,8 @@ function makeJob(
 describe('SystemEventsProcessor', () => {
   const tx = {
     auditLog: { findFirst: jest.fn(), create: jest.fn() },
-    product: { findFirst: jest.fn() },
-    notification: { findFirst: jest.fn(), create: jest.fn() },
+    product: { findMany: jest.fn() },
+    notification: { findMany: jest.fn(), createMany: jest.fn(), create: jest.fn() },
     customer: { findFirst: jest.fn() },
     shop: { findUnique: jest.fn() },
   };
@@ -40,7 +40,8 @@ describe('SystemEventsProcessor', () => {
     cache.del.mockResolvedValue(true);
     tx.auditLog.findFirst.mockResolvedValue(null);
     tx.auditLog.create.mockResolvedValue({ id: 'audit-1' });
-    tx.notification.findFirst.mockResolvedValue(null);
+    tx.notification.findMany.mockResolvedValue([]);
+    tx.notification.createMany.mockResolvedValue({ count: 1 });
     tx.notification.create.mockResolvedValue({ id: 'notif-1' });
     tx.shop.findUnique.mockResolvedValue({ ownerId: 'owner-1' });
     processor = new SystemEventsProcessor(prisma as any, tenantContext, cache as any, gateway as any);
@@ -83,7 +84,7 @@ describe('SystemEventsProcessor', () => {
   });
 
   it('falls back to payload.shopId when the job-level shopId is absent', async () => {
-    tx.product.findFirst.mockResolvedValue(null);
+    tx.product.findMany.mockResolvedValue([]);
     const job = makeJob('INVOICE_RETURNED', {
       eventId: 'evt-9',
       correlationId: 'corr-9',
@@ -92,47 +93,53 @@ describe('SystemEventsProcessor', () => {
 
     await expect(processor.process(job)).resolves.toEqual({ status: 'processed' });
     expect(cache.del.mock.calls.map((c) => c[0])).toEqual(analyticsCacheKeys('shop-9'));
-    expect(prisma.outboxEvent.updateMany).not.toHaveBeenCalled();
+    // Roadmap 4.7: the worker, not the relay, settles the row.
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({ where: { id: 'evt-9' }, data: expect.objectContaining({ status: 'DONE', error: null }) });
   });
 
-  it('INVOICE_CREATED with a low-stock product creates one LOW_STOCK notification, invalidates the three cache keys and broadcasts', async () => {
+  it('INVOICE_CREATED with a low-stock product creates one LOW_STOCK notification, invalidates the four cache keys and broadcasts', async () => {
     let shopIdSeenInsideTransaction: string | undefined;
-    tx.product.findFirst.mockImplementation(async () => {
+    tx.product.findMany.mockImplementation(async () => {
       shopIdSeenInsideTransaction = tenantContext.getShopId();
-      return {
-        id: 'prod-1',
-        name: 'Basmati Rice 5kg',
-        currentStock: new Prisma.Decimal('3'),
-        reorderPoint: new Prisma.Decimal('10'),
-        isDeleted: false,
-      };
+      return [
+        {
+          id: 'prod-1',
+          name: 'Basmati Rice 5kg',
+          currentStock: new Prisma.Decimal('3'),
+          reorderPoint: new Prisma.Decimal('10'),
+        },
+      ];
     });
 
     await expect(processor.process(invoiceCreated())).resolves.toEqual({ status: 'processed' });
 
     expect(shopIdSeenInsideTransaction).toBe('shop-1');
 
-    expect(cache.del).toHaveBeenCalledTimes(3);
+    expect(cache.del).toHaveBeenCalledTimes(4);
     expect(cache.del.mock.calls.map((c) => c[0])).toEqual([
       'shop:shop-1:analytics:dashboard',
       'shop:shop-1:analytics:kpis',
       'shop:shop-1:analytics:summary',
+      'shop:shop-1:analytics:allTime',
     ]);
 
-    expect(tx.notification.findFirst).toHaveBeenCalledWith(
+    expect(tx.notification.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ shopId: 'shop-1', type: NotificationType.LOW_STOCK, entityId: 'prod-1', isRead: false }),
+        where: expect.objectContaining({ shopId: 'shop-1', type: NotificationType.LOW_STOCK, entityId: { in: ['prod-1'] }, isRead: false }),
       }),
     );
-    expect(tx.notification.create).toHaveBeenCalledTimes(1);
-    expect(tx.notification.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        shopId: 'shop-1',
-        type: NotificationType.LOW_STOCK,
-        title: 'Low Stock Alert',
-        entityId: 'prod-1',
-        message: expect.stringContaining('Basmati Rice 5kg'),
-      }),
+    expect(tx.notification.createMany).toHaveBeenCalledTimes(1);
+    expect(tx.notification.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          shopId: 'shop-1',
+          type: NotificationType.LOW_STOCK,
+          title: 'Low Stock Alert',
+          entityId: 'prod-1',
+          message: expect.stringContaining('Basmati Rice 5kg'),
+        }),
+      ],
     });
 
     expect(gateway.broadcastLowStockAlert).toHaveBeenCalledTimes(1);
@@ -147,37 +154,64 @@ describe('SystemEventsProcessor', () => {
         entityId: 'evt-1',
       }),
     });
-    expect(prisma.outboxEvent.updateMany).not.toHaveBeenCalled();
+    // Roadmap 4.7: a handled event is marked DONE by the worker after its transaction commits.
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({ where: { id: 'evt-1' }, data: expect.objectContaining({ status: 'DONE', error: null }) });
   });
 
   it('does not duplicate an unread LOW_STOCK notification and does not notify above the reorder point', async () => {
-    tx.product.findFirst.mockResolvedValue({
-      id: 'prod-1',
-      name: 'Sugar 1kg',
-      currentStock: new Prisma.Decimal('1'),
-      reorderPoint: new Prisma.Decimal('5'),
-      isDeleted: false,
-    });
-    tx.notification.findFirst.mockResolvedValue({ id: 'notif-existing' });
+    tx.product.findMany.mockResolvedValue([
+      { id: 'prod-1', name: 'Sugar 1kg', currentStock: new Prisma.Decimal('1'), reorderPoint: new Prisma.Decimal('5') },
+    ]);
+    tx.notification.findMany.mockResolvedValue([{ id: 'notif-existing', entityId: 'prod-1' }]);
 
     await processor.process(invoiceCreated());
-    expect(tx.notification.create).not.toHaveBeenCalled();
+    expect(tx.notification.createMany).not.toHaveBeenCalled();
     expect(gateway.broadcastLowStockAlert).not.toHaveBeenCalled();
 
     jest.clearAllMocks();
     tx.auditLog.findFirst.mockResolvedValue(null);
-    tx.notification.findFirst.mockResolvedValue(null);
-    tx.product.findFirst.mockResolvedValue({
-      id: 'prod-1',
-      name: 'Sugar 1kg',
-      currentStock: new Prisma.Decimal('50'),
-      reorderPoint: new Prisma.Decimal('5'),
-      isDeleted: false,
-    });
+    tx.notification.findMany.mockResolvedValue([]);
+    tx.product.findMany.mockResolvedValue([
+      { id: 'prod-1', name: 'Sugar 1kg', currentStock: new Prisma.Decimal('50'), reorderPoint: new Prisma.Decimal('5') },
+    ]);
 
     await processor.process(invoiceCreated());
-    expect(tx.notification.findFirst).not.toHaveBeenCalled();
-    expect(tx.notification.create).not.toHaveBeenCalled();
+    expect(tx.notification.findMany).not.toHaveBeenCalled();
+    expect(tx.notification.createMany).not.toHaveBeenCalled();
+  });
+
+  it('raises the notifications of a multi-line sale with three statements (roadmap 5.7), skipping unknown and already-notified products', async () => {
+    tx.product.findMany.mockResolvedValue([
+      { id: 'prod-1', name: 'Rice', currentStock: new Prisma.Decimal('2'), reorderPoint: new Prisma.Decimal('10') },
+      { id: 'prod-2', name: 'Sugar', currentStock: new Prisma.Decimal('0'), reorderPoint: new Prisma.Decimal('5') },
+      { id: 'prod-3', name: 'Salt', currentStock: new Prisma.Decimal('40'), reorderPoint: new Prisma.Decimal('5') },
+    ]);
+    tx.notification.findMany.mockResolvedValue([{ id: 'notif-existing', entityId: 'prod-2' }]);
+
+    const job = invoiceCreated({
+      payload: {
+        shopId: 'shop-1',
+        invoiceId: 'inv-1',
+        items: [
+          { productId: 'prod-1', quantity: 1 },
+          { productId: 'prod-2', quantity: 1 },
+          { productId: 'prod-3', quantity: 1 },
+          { productId: 'prod-gone', quantity: 1 },
+          { productId: 'prod-1', quantity: 2 },
+        ],
+      },
+    });
+    await expect(processor.process(job)).resolves.toEqual({ status: 'processed' });
+
+    expect(tx.product.findMany).toHaveBeenCalledTimes(1);
+    expect(tx.product.findMany.mock.calls[0][0].where.id).toEqual({ in: ['prod-1', 'prod-2', 'prod-3', 'prod-gone'] });
+    expect(tx.notification.findMany).toHaveBeenCalledTimes(1);
+    expect(tx.notification.findMany.mock.calls[0][0].where.entityId).toEqual({ in: ['prod-1', 'prod-2'] });
+    expect(tx.notification.createMany).toHaveBeenCalledTimes(1);
+    expect(tx.notification.createMany.mock.calls[0][0].data.map((d: { entityId: string }) => d.entityId)).toEqual(['prod-1']);
+    expect(gateway.broadcastLowStockAlert).toHaveBeenCalledTimes(1);
+    expect(gateway.broadcastLowStockAlert).toHaveBeenCalledWith({ productId: 'prod-1', productName: 'Rice', currentStock: 2 });
   });
 
   it('skips already-processed events without touching the cache or notifications', async () => {
@@ -186,7 +220,7 @@ describe('SystemEventsProcessor', () => {
     await expect(processor.process(invoiceCreated())).resolves.toEqual({ status: 'skipped-duplicate' });
 
     expect(cache.del).not.toHaveBeenCalled();
-    expect(tx.product.findFirst).not.toHaveBeenCalled();
+    expect(tx.product.findMany).not.toHaveBeenCalled();
     expect(tx.auditLog.create).not.toHaveBeenCalled();
   });
 
@@ -213,7 +247,7 @@ describe('SystemEventsProcessor', () => {
       }),
     });
     expect(tx.notification.create.mock.calls[0][0].data.message).toContain('Ramesh Kumar');
-    expect(cache.del).toHaveBeenCalledTimes(3);
+    expect(cache.del).toHaveBeenCalledTimes(4);
   });
 
   it('marks unknown job names processed without side effects', async () => {

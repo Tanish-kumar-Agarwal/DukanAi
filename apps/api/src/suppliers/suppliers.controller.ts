@@ -1,4 +1,7 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ListQueryDto, PagedList } from '../common/pagination';
+import { CurrentUser } from '../iam/decorators/current-user.decorator';
+import { SafeUserDto } from '../users/dto/safe-user.dto';
 import { SuppliersService } from './suppliers.service';
 import { CreateSupplierDto, RecordSupplierPaymentDto, UpdateSupplierDto } from './dto/supplier.dto';
 import { ADMIN_ROLES, MANAGEMENT_ROLES } from '../auth/role-sets';
@@ -9,8 +12,9 @@ export class SuppliersController {
   constructor(private readonly suppliersService: SuppliersService) {}
 
   @Get()
-  findAll() {
-    return this.suppliersService.findAll();
+  @PagedList()
+  findAll(@Query() query: ListQueryDto) {
+    return this.suppliersService.findAll(query);
   }
 
   @Roles(...MANAGEMENT_ROLES)
@@ -27,8 +31,8 @@ export class SuppliersController {
 
   @Roles(...MANAGEMENT_ROLES)
   @Post(':id/payments')
-  recordPayment(@Param('id') id: string, @Body() dto: RecordSupplierPaymentDto) {
-    return this.suppliersService.recordPayment(id, dto.amount);
+  recordPayment(@Param('id') id: string, @Body() dto: RecordSupplierPaymentDto, @CurrentUser() user: SafeUserDto) {
+    return this.suppliersService.recordPayment(id, dto, user.id);
   }
 
   @Roles(...ADMIN_ROLES)

@@ -1,10 +1,9 @@
-import { Controller, Get, Post, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query } from '@nestjs/common';
+import { ListQueryDto, PagedList } from '../common/pagination';
 import { BatchService } from './services/batch.service';
 import { ExpiryService } from './services/expiry.service';
 import { RecallService } from './services/recall.service';
 import { CreateBatchDto, AddBatchStockDto } from './dto/batch.dto';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
@@ -12,7 +11,6 @@ import { Roles } from '../auth/roles.decorator';
 import { Role } from '@prisma/client';
 import { ADMIN_ROLES, MANAGEMENT_ROLES } from '../auth/role-sets';
 
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('batches')
 export class BatchController {
   constructor(
@@ -23,9 +21,10 @@ export class BatchController {
   ) {}
 
   @Get()
+  @PagedList()
   @Roles(Role.ADMIN, Role.MANAGER, Role.OWNER, Role.CASHIER, Role.VIEWER)
-  async listBatches() {
-    return this.batchService.listBatches(this.tenantContext.getShopId());
+  async listBatches(@Query() query: ListQueryDto) {
+    return this.batchService.listBatches(this.tenantContext.getShopId(), query);
   }
 
   @Roles(...MANAGEMENT_ROLES)

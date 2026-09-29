@@ -43,3 +43,21 @@ export const INVOICE_INCLUDE = {
 } satisfies Prisma.InvoiceInclude;
 
 export type InvoiceWithRelations = Prisma.InvoiceGetPayload<{ include: typeof INVOICE_INCLUDE }>;
+
+/**
+ * Splits what a sale (or its reversal) posts to SALES_REVENUE and GST_PAYABLE.
+ * Revenue carries the round-off; a document under ₹0.50 rounds to ₹0, so its
+ * negative round-off can exceed the taxable amount. The ledger drops negative
+ * entries (which used to unbalance the posting: audit P3 money edge cases), so
+ * the shortfall moves onto the GST entry. Both parts stay >= 0 and add up to
+ * `taxable + tax + roundOff` = the amount actually settled.
+ */
+export function splitRevenue(taxable: Prisma.Decimal | { toString(): string }, tax: Prisma.Decimal | { toString(): string }, roundOff: Prisma.Decimal | { toString(): string }): { revenue: Prisma.Decimal; gst: Prisma.Decimal } {
+  let revenue = money(new Prisma.Decimal(taxable.toString()).plus(roundOff.toString()));
+  let gst = money(tax.toString());
+  if (revenue.isNegative()) {
+    gst = Prisma.Decimal.max(gst.plus(revenue), 0);
+    revenue = new Prisma.Decimal(0);
+  }
+  return { revenue, gst };
+}

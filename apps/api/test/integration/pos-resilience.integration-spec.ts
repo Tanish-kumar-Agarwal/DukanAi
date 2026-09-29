@@ -9,8 +9,8 @@ import { Job } from 'bullmq';
 import { randomUUID } from 'crypto';
 import type Redis from 'ioredis';
 import request from 'supertest';
-import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../src/prisma/prisma.service';
+import { issueTokens } from '../security/security-fixtures';
 import { BillingService } from '../../src/billing/billing.service';
 import { InvoiceReversalService } from '../../src/billing/services/invoice-reversal.service';
 import { CustomersService } from '../../src/customers/customers.service';
@@ -56,7 +56,6 @@ describe('POS resilience, accounting and custom items', () => {
   let dashboard: DashboardService;
   let exporter: ReportExportService;
   let redis: Redis;
-  let jwt: JwtService;
   let shop: TestShop;
   let run: ReturnType<typeof tenantRunner>;
   let readers: ReturnType<typeof makeReaders>;
@@ -84,7 +83,6 @@ describe('POS resilience, accounting and custom items', () => {
     dashboard = app.get(DashboardService);
     exporter = app.get(ReportExportService);
     redis = app.get<Redis>(REDIS_CLIENT);
-    jwt = app.get(JwtService);
     run = tenantRunner(app);
     shop = await createShop(app, 'rs', { creditLimit: 100000 });
     readers = makeReaders(app, shop);
@@ -348,7 +346,8 @@ describe('POS resilience, accounting and custom items', () => {
     const ledgerRowsBefore = await run.system(() => prisma.stockLedgerEntry.count({ where: { shopId: shop.shopId } }));
     const ret = await asCashier(() => reversal.processReturn({ idempotencyKey: randomUUID(), invoiceId: result.invoice.id, items: [{ invoiceItemId: custom.id, quantity: 2 }], refund: { tender: TenderType.CASH } }, cashier()));
     expect(ret.stock).toHaveLength(0);
-    expect(num(ret.invoice.totalAmount)).toBe(expected.lines[1].lineTotal.toDecimalPlaces(0).toNumber());
+    // A partial return refunds its exact line amount; only the return that completes the sale carries the round-off (roadmap 3.1).
+    expect(num(ret.invoice.totalAmount)).toBe(expected.lines[1].lineTotal.toNumber());
     expect(await run.system(() => prisma.stockLedgerEntry.count({ where: { shopId: shop.shopId } }))).toBe(ledgerRowsBefore);
 
     // Reporting includes it.
@@ -431,7 +430,7 @@ describe('POS resilience, accounting and custom items', () => {
   });
 
   it('HTTP: custom items and the DTO guard on the wire', async () => {
-    const token = jwt.sign({ sub: shop.cashierId, email: `cashier-${shop.suffix}@test.local`, role: 'CASHIER', shopId: shop.shopId, tokenVersion: 0 });
+    const token = (await issueTokens(app, { id: shop.cashierId })).access_token;
     const server = app.getHttpServer();
     const ok = await request(server)
       .post('/api/billing/invoice')

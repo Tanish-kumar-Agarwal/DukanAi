@@ -634,6 +634,7 @@ model Shop {
   dailySalesAggregations   DailySalesAggregation[]
   productSalesAggregations ProductSalesAggregation[]
   analyticsExportJobs      AnalyticsExportJob[]
+  supplierPayments         SupplierPayment[]
 }
 
 model User {
@@ -677,26 +678,37 @@ model User {
   @@index([shopId])
 }
 
+/// One row per refresh token; a login opens a session family (familyId = the
+/// first token's id) and every rotation adds a row to it. `rotatedAt` marks a
+/// token consumed by rotation: presenting it again is reuse and revokes the
+/// family. `absoluteExpiresAt` bounds the family whatever the rotation count.
 model RefreshToken {
-  id        String   @id @default(cuid())
-  token     String   @unique
-  userId    String
-  expiresAt DateTime
-  isRevoked Boolean  @default(false)
-  ipAddress String?
-  userAgent String?
-  createdAt DateTime @default(now())
+  id                String    @id @default(cuid())
+  token             String    @unique
+  userId            String
+  familyId          String
+  expiresAt         DateTime
+  absoluteExpiresAt DateTime
+  isRevoked         Boolean   @default(false)
+  rotatedAt         DateTime?
+  ipAddress         String?
+  userAgent         String?
+  createdAt         DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([familyId])
 }
 
+/// `inviterId` is the user who issued the invitation (null on rows from
+/// before roadmap 2.8); a MANAGER may revoke only their own invitations.
 model Invitation {
   id        String   @id @default(cuid())
   email     String
   role      Role
   shopId    String
+  inviterId String?
   token     String   @unique
   expiresAt DateTime
   isUsed    Boolean  @default(false)
@@ -706,6 +718,7 @@ model Invitation {
 
   @@index([shopId])
   @@index([email])
+  @@index([inviterId])
 }
 
 model LoginAttempt {
@@ -740,13 +753,15 @@ model Category {
   updatedAt    DateTime  @updatedAt
   isDeleted    Boolean   @default(false)
   deletedAt    DateTime?
+  /// '' while the row is live, the row's own id once soft-deleted: makes the soft-delete unique keys enforceable (MySQL treats NULLs as distinct).
+  deletedToken String    @default("") @db.VarChar(191)
 
   shop          Shop       @relation(fields: [shopId], references: [id], onDelete: Restrict)
   parent        Category?  @relation("SubCategories", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   subCategories Category[] @relation("SubCategories")
   products      Product[]
 
-  @@unique([shopId, name, deletedAt])
+  @@unique([shopId, name, deletedToken])
   @@index([shopId])
   @@index([parentId])
   @@index([shopId, path])
@@ -807,10 +822,12 @@ model Product {
   approvedBy String?
   approvedAt DateTime?
 
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  isDeleted Boolean   @default(false)
-  deletedAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  isDeleted    Boolean   @default(false)
+  deletedAt    DateTime?
+  /// '' while the row is live, the row's own id once soft-deleted: makes the soft-delete unique keys enforceable (MySQL treats NULLs as distinct).
+  deletedToken String    @default("") @db.VarChar(191)
 
   shop         Shop          @relation(fields: [shopId], references: [id], onDelete: Restrict)
   category     Category?     @relation(fields: [categoryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -854,7 +871,9 @@ model Product {
   inventoryItems           InventoryItem[]
   productSalesAggregations ProductSalesAggregation[]
 
-  @@unique([shopId, sku, deletedAt])
+  @@unique([shopId, sku, deletedToken])
+  @@unique([shopId, barcode, deletedToken])
+  @@index([updatedAt])
   @@index([shopId, status])
   @@index([shopId, categoryId])
   @@index([shopId, brandId])
@@ -886,7 +905,7 @@ model ProductBatch {
 }
 
 model Supplier {
-  id              String    @id @default(cuid())
+  id              String            @id @default(cuid())
   name            String
   contactPerson   String?
   phone           String
@@ -898,12 +917,17 @@ model Supplier {
   shopId          String
   // Running payable balance owed to this supplier (opening balance + purchases
   // on credit - payments). Kept denormalized for the suppliers dashboard.
-  pendingPayables Decimal   @default(0) @db.Decimal(12, 2)
-  isActive        Boolean   @default(true)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  isDeleted       Boolean   @default(false)
+  pendingPayables Decimal           @default(0) @db.Decimal(12, 2)
+  /// Balance owed before the ledger existed (roadmap 3.11): pendingPayables == openingPayables + Σ GRN − Σ purchase returns − Σ payments, all read from the ledger.
+  openingPayables Decimal           @default(0) @db.Decimal(12, 2)
+  payments        SupplierPayment[]
+  isActive        Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  isDeleted       Boolean           @default(false)
   deletedAt       DateTime?
+  /// '' while the row is live, the row's own id once soft-deleted: makes the soft-delete unique keys enforceable (MySQL treats NULLs as distinct).
+  deletedToken    String            @default("") @db.VarChar(191)
 
   shop            Shop                 @relation(fields: [shopId], references: [id], onDelete: Restrict)
   products        Product[]
@@ -913,8 +937,32 @@ model Supplier {
   purchaseReturns PurchaseReturn[]
   supplierCredits SupplierCreditNote[]
 
-  @@unique([shopId, phone, deletedAt])
+  @@unique([shopId, phone, deletedToken])
   @@index([shopId])
+}
+
+/// A payment made to a supplier (roadmap 3.11, audit P2-24): the ledger source of the
+/// DR ACCOUNTS_PAYABLE / CR CASH|BANK posting, idempotent per (shopId, idempotencyKey).
+model SupplierPayment {
+  id             String     @id @default(cuid())
+  shopId         String
+  supplierId     String
+  vendorBillId   String?
+  amount         Decimal    @db.Decimal(12, 2)
+  tender         TenderType @default(CASH)
+  reference      String?
+  idempotencyKey String?
+  notes          String?
+  recordedById   String?
+  createdAt      DateTime   @default(now())
+
+  shop       Shop        @relation(fields: [shopId], references: [id], onDelete: Restrict)
+  supplier   Supplier    @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  vendorBill VendorBill? @relation(fields: [vendorBillId], references: [id], onDelete: Restrict)
+
+  @@unique([shopId, idempotencyKey])
+  @@index([shopId, supplierId, createdAt])
+  @@index([vendorBillId])
 }
 
 /// Day-to-day shop overheads (rent, utilities, salaries, supplies...).
@@ -950,8 +998,8 @@ model Customer {
   shopId             String
   creditLimit        Decimal   @default(5000) @db.Decimal(10, 2)
   outstandingBalance Decimal   @default(0) @db.Decimal(10, 2)
-  totalPurchases     Decimal   @default(0) @db.Decimal(10, 2)
-  totalPaid          Decimal   @default(0) @db.Decimal(10, 2)
+  totalPurchases     Decimal   @default(0) @db.Decimal(14, 2)
+  totalPaid          Decimal   @default(0) @db.Decimal(14, 2)
   lastPurchaseAt     DateTime?
   lastPaymentAt      DateTime?
   tags               String?
@@ -961,6 +1009,8 @@ model Customer {
   updatedAt          DateTime  @updatedAt
   isDeleted          Boolean   @default(false)
   deletedAt          DateTime?
+  /// '' while the row is live, the row's own id once soft-deleted: makes the soft-delete unique keys enforceable (MySQL treats NULLs as distinct).
+  deletedToken       String    @default("") @db.VarChar(191)
 
   // Enterprise Extensions
   type            CustomerType            @default(RETAIL)
@@ -981,7 +1031,7 @@ model Customer {
   audits        CustomerAudit[]
   statusHistory CustomerStatusHistory[]
 
-  @@unique([shopId, phone, deletedAt])
+  @@unique([shopId, phone, deletedToken])
   @@index([shopId])
   @@index([shopId, lifecycleStatus])
   @@index([shopId, type])
@@ -1049,19 +1099,21 @@ model CustomerContact {
 }
 
 model CustomerGroup {
-  id          String    @id @default(cuid())
-  shopId      String
-  name        String
-  description String?
-  isActive    Boolean   @default(true)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  isDeleted   Boolean   @default(false)
-  deletedAt   DateTime?
+  id           String    @id @default(cuid())
+  shopId       String
+  name         String
+  description  String?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  isDeleted    Boolean   @default(false)
+  deletedAt    DateTime?
+  /// '' while the row is live, the row's own id once soft-deleted: makes the soft-delete unique keys enforceable (MySQL treats NULLs as distinct).
+  deletedToken String    @default("") @db.VarChar(191)
 
   members CustomerGroupMember[]
 
-  @@unique([shopId, name, deletedAt])
+  @@unique([shopId, name, deletedToken])
 }
 
 model CustomerGroupMember {
@@ -1077,24 +1129,26 @@ model CustomerGroupMember {
 }
 
 model CustomerCategory {
-  id          String    @id @default(cuid())
-  shopId      String
-  parentId    String?
-  name        String
-  description String?
-  path        String    @default("/")
-  depth       Int       @default(0)
-  isActive    Boolean   @default(true)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  isDeleted   Boolean   @default(false)
-  deletedAt   DateTime?
+  id           String    @id @default(cuid())
+  shopId       String
+  parentId     String?
+  name         String
+  description  String?
+  path         String    @default("/")
+  depth        Int       @default(0)
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  isDeleted    Boolean   @default(false)
+  deletedAt    DateTime?
+  /// '' while the row is live, the row's own id once soft-deleted: makes the soft-delete unique keys enforceable (MySQL treats NULLs as distinct).
+  deletedToken String    @default("") @db.VarChar(191)
 
   parent        CustomerCategory?        @relation("SubCategories", fields: [parentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   subCategories CustomerCategory[]       @relation("SubCategories")
   members       CustomerCategoryMember[]
 
-  @@unique([shopId, name, deletedAt])
+  @@unique([shopId, name, deletedToken])
   @@index([parentId])
 }
 
@@ -1423,20 +1477,23 @@ model AuditLog {
   @@index([shopId, entity])
   @@index([userId, createdAt])
   @@index([shopId, createdAt])
+  @@index([shopId, entity, entityId])
 }
 
 model PurchaseOrder {
-  id          String              @id @default(cuid())
-  shopId      String
-  supplierId  String
-  orderNumber String
-  status      PurchaseOrderStatus @default(DRAFT)
-  totalAmount Decimal             @db.Decimal(10, 2)
-  notes       String?
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
-  isDeleted   Boolean             @default(false)
-  deletedAt   DateTime?
+  id           String              @id @default(cuid())
+  shopId       String
+  supplierId   String
+  orderNumber  String
+  status       PurchaseOrderStatus @default(DRAFT)
+  totalAmount  Decimal             @db.Decimal(10, 2)
+  notes        String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  isDeleted    Boolean             @default(false)
+  deletedAt    DateTime?
+  /// '' while the row is live, the row's own id once soft-deleted: makes the soft-delete unique keys enforceable (MySQL treats NULLs as distinct).
+  deletedToken String              @default("") @db.VarChar(191)
 
   shop     Shop                @relation(fields: [shopId], references: [id], onDelete: Restrict)
   supplier Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
@@ -1473,7 +1530,7 @@ model PurchaseOrder {
   purchaseReturns   PurchaseReturn[]
   workflowInstances WorkflowInstance[]
 
-  @@unique([shopId, orderNumber, deletedAt])
+  @@unique([shopId, orderNumber, deletedToken])
   @@index([shopId, status])
   @@index([supplierId])
 }
@@ -1494,8 +1551,9 @@ model PurchaseOrderItem {
   isDeleted       Boolean   @default(false)
   deletedAt       DateTime?
 
-  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
-  product       Product       @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  purchaseOrder PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product       Product            @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  receiptLines  GoodsReceiptLine[]
 
   // Enterprise Extensions
   variantId   String?
@@ -1667,6 +1725,8 @@ model GoodsReceipt {
   updatedAt       DateTime           @updatedAt
   isDeleted       Boolean            @default(false)
   deletedAt       DateTime?
+  /// '' while the row is live, the row's own id once soft-deleted: makes the soft-delete unique keys enforceable (MySQL treats NULLs as distinct).
+  deletedToken    String             @default("") @db.VarChar(191)
 
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
   supplier      Supplier      @relation(fields: [supplierId], references: [id], onDelete: Restrict)
@@ -1684,7 +1744,7 @@ model GoodsReceipt {
   purchaseReturns   PurchaseReturn[]
   workflowInstances WorkflowInstance[]
 
-  @@unique([shopId, grnNumber, deletedAt])
+  @@unique([shopId, grnNumber, deletedToken])
   @@index([shopId, status])
   @@index([purchaseOrderId])
   @@index([supplierId])
@@ -1692,26 +1752,29 @@ model GoodsReceipt {
 }
 
 model GoodsReceiptLine {
-  id               String  @id @default(cuid())
-  shopId           String // owning shop, copied from the parent document (roadmap 1.6)
-  goodsReceiptId   String
-  productId        String
-  variantId        String?
-  batchId          String?
-  serialId         String?
-  orderedQuantity  Decimal @default(0) @db.Decimal(10, 3)
-  receivedQuantity Decimal @default(0) @db.Decimal(10, 3)
-  acceptedQuantity Decimal @default(0) @db.Decimal(10, 3)
-  rejectedQuantity Decimal @default(0) @db.Decimal(10, 3)
-  damagedQuantity  Decimal @default(0) @db.Decimal(10, 3)
-  pendingQuantity  Decimal @default(0) @db.Decimal(10, 3)
-  unit             String?
-  unitPrice        Decimal @default(0) @db.Decimal(10, 2)
-  remarks          String? @db.Text
-  binId            String?
-  isDeleted        Boolean @default(false)
+  id                  String  @id @default(cuid())
+  shopId              String // owning shop, copied from the parent document (roadmap 1.6)
+  goodsReceiptId      String
+  /// The purchase-order line this receipt line fulfils (roadmap 4.2): ordered quantity and price come from it.
+  purchaseOrderItemId String?
+  productId           String
+  variantId           String?
+  batchId             String?
+  serialId            String?
+  orderedQuantity     Decimal @default(0) @db.Decimal(10, 3)
+  receivedQuantity    Decimal @default(0) @db.Decimal(10, 3)
+  acceptedQuantity    Decimal @default(0) @db.Decimal(10, 3)
+  rejectedQuantity    Decimal @default(0) @db.Decimal(10, 3)
+  damagedQuantity     Decimal @default(0) @db.Decimal(10, 3)
+  pendingQuantity     Decimal @default(0) @db.Decimal(10, 3)
+  unit                String?
+  unitPrice           Decimal @default(0) @db.Decimal(10, 2)
+  remarks             String? @db.Text
+  binId               String?
+  isDeleted           Boolean @default(false)
 
-  goodsReceipt GoodsReceipt @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  goodsReceipt      GoodsReceipt       @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  purchaseOrderItem PurchaseOrderItem? @relation(fields: [purchaseOrderItemId], references: [id], onDelete: SetNull)
 
   @@index([shopId])
   @@index([goodsReceiptId])
@@ -1873,6 +1936,8 @@ model VendorBill {
   updatedAt         DateTime         @updatedAt
   isDeleted         Boolean          @default(false)
   deletedAt         DateTime?
+  /// '' while the row is live, the row's own id once soft-deleted: makes the soft-delete unique keys enforceable (MySQL treats NULLs as distinct).
+  deletedToken      String           @default("") @db.VarChar(191)
 
   supplier      Supplier       @relation(fields: [supplierId], references: [id], onDelete: Restrict)
   purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
@@ -1890,8 +1955,9 @@ model VendorBill {
   supplierCredits   SupplierCreditNote[]
   creditAllocations SupplierCreditAllocation[]
   workflowInstances WorkflowInstance[]
+  supplierPayments  SupplierPayment[]
 
-  @@unique([shopId, billNumber, deletedAt])
+  @@unique([shopId, billNumber, deletedToken])
   @@index([shopId, status])
   @@index([supplierId])
   @@index([purchaseOrderId])
@@ -2066,12 +2132,14 @@ model PurchaseReturn {
   taxAmount      Decimal @default(0) @db.Decimal(10, 2)
   discountAmount Decimal @default(0) @db.Decimal(10, 2)
 
-  notes     String?   @db.Text
-  createdBy String?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  isDeleted Boolean   @default(false)
-  deletedAt DateTime?
+  notes        String?   @db.Text
+  createdBy    String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  isDeleted    Boolean   @default(false)
+  deletedAt    DateTime?
+  /// '' while the row is live, the row's own id once soft-deleted: makes the soft-delete unique keys enforceable (MySQL treats NULLs as distinct).
+  deletedToken String    @default("") @db.VarChar(191)
 
   supplier      Supplier       @relation(fields: [supplierId], references: [id], onDelete: Restrict)
   purchaseOrder PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
@@ -2090,7 +2158,7 @@ model PurchaseReturn {
   supplierCredits   SupplierCreditNote[]
   workflowInstances WorkflowInstance[]
 
-  @@unique([shopId, returnNumber, deletedAt])
+  @@unique([shopId, returnNumber, deletedToken])
   @@index([shopId, status])
   @@index([supplierId])
   @@index([purchaseOrderId])
@@ -2127,6 +2195,7 @@ model PurchaseReturnLine {
   @@index([shopId])
   @@index([purchaseReturnId])
   @@index([productId])
+  @@index([grnLineId])
 }
 
 model PurchaseReturnAttachment {
@@ -2281,11 +2350,13 @@ model SupplierCreditNote {
   exchangeRate Decimal @default(1.0) @db.Decimal(10, 4)
   notes        String? @db.Text
 
-  createdBy String?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  isDeleted Boolean   @default(false)
-  deletedAt DateTime?
+  createdBy    String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  isDeleted    Boolean   @default(false)
+  deletedAt    DateTime?
+  /// '' while the row is live, the row's own id once soft-deleted: makes the soft-delete unique keys enforceable (MySQL treats NULLs as distinct).
+  deletedToken String    @default("") @db.VarChar(191)
 
   supplier       Supplier        @relation(fields: [supplierId], references: [id], onDelete: Restrict)
   purchaseReturn PurchaseReturn? @relation(fields: [purchaseReturnId], references: [id], onDelete: Restrict)
@@ -2301,7 +2372,7 @@ model SupplierCreditNote {
   statusHistory     SupplierCreditStatusHistory[]
   workflowInstances WorkflowInstance[]
 
-  @@unique([shopId, creditNumber, deletedAt])
+  @@unique([shopId, creditNumber, deletedToken])
   @@index([shopId, status])
   @@index([supplierId])
 }
@@ -2746,11 +2817,15 @@ model OutboxEvent {
   actorId       String?
   entityId      String?
   entityType    String?
-  status        String    @default("PENDING") // PENDING, DONE, FAILED
+  status        String    @default("PENDING") // PENDING, CLAIMED, DONE, FAILED (PROCESSING: legacy claim)
   error         String?
   retryCount    Int       @default(0)
   createdAt     DateTime  @default(now())
   processedAt   DateTime?
+  /** Set when a relay claims the row; a claim older than the stale window is reaped back to PENDING. */
+  claimedAt     DateTime?
+  /** A retried row is not re-claimed before this instant (exponential backoff). */
+  nextAttemptAt DateTime?
 
   shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
@@ -2764,8 +2839,8 @@ model LedgerTransaction {
   invoiceId    String?
   account      LedgerAccount
   type         LedgerEntryType
-  amount       Decimal         @db.Decimal(10, 2)
-  balanceAfter Decimal         @db.Decimal(10, 2)
+  amount       Decimal         @db.Decimal(14, 2)
+  balanceAfter Decimal         @db.Decimal(18, 2)
   description  String?
   createdAt    DateTime        @default(now())
 
@@ -2980,10 +3055,12 @@ model ProductVariant {
 
   imageUrl String?
 
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  isDeleted Boolean  @default(false)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  isDeleted    Boolean  @default(false)
+  /// '' while the row is live, the row's own id once soft-deleted: makes the soft-delete unique keys enforceable (MySQL treats NULLs as distinct).
+  deletedToken String   @default("") @db.VarChar(191)
 
   product    Product                   @relation(fields: [productId], references: [id])
   shop       Shop                      @relation(fields: [shopId], references: [id])
@@ -2995,7 +3072,8 @@ model ProductVariant {
   qrCodes           QrCode[]
   mediaReferences   MediaReference[]
 
-  @@unique([shopId, sku, isDeleted])
+  @@unique([shopId, sku, deletedToken])
+  @@unique([shopId, barcode, deletedToken])
   @@index([productId])
   @@index([shopId])
 }
@@ -3161,12 +3239,15 @@ model VariantIdentity {
   id        String   @id @default(cuid())
   shopId    String
   variantId String   @unique
-  sku       String   @unique
+  /// Unique per shop (roadmap 4.1): two shops may sell the same SKU.
+  sku       String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   shop    Shop           @relation(fields: [shopId], references: [id])
   variant ProductVariant @relation(fields: [variantId], references: [id])
+
+  @@unique([shopId, sku])
 }
 
 model PackageIdentity {
@@ -3441,6 +3522,7 @@ model SearchHistory {
   user User? @relation(fields: [userId], references: [id])
 
   @@index([shopId, query])
+  @@index([shopId, createdAt])
 }
 
 model SavedSearch {
@@ -3726,6 +3808,7 @@ model ProductEventLog {
 
   @@index([shopId, eventType])
   @@index([entityId, entityType])
+  @@index([shopId, timestamp])
 }
 
 model WebhookEndpoint {
@@ -3969,18 +4052,20 @@ model Warehouse {
   contactName  String?
   contactPhone String?
 
-  isActive  Boolean   @default(true)
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  isDeleted Boolean   @default(false)
-  deletedAt DateTime?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  isDeleted    Boolean   @default(false)
+  deletedAt    DateTime?
+  /// '' while the row is live, the row's own id once soft-deleted: makes the soft-delete unique keys enforceable (MySQL treats NULLs as distinct).
+  deletedToken String    @default("") @db.VarChar(191)
 
   shop            Shop             @relation(fields: [shopId], references: [id], onDelete: Restrict)
   locations       Location[]
   goodsReceipts   GoodsReceipt[]
   purchaseReturns PurchaseReturn[]
 
-  @@unique([shopId, code, deletedAt])
+  @@unique([shopId, code, deletedToken])
   @@index([shopId, isActive])
   @@index([type])
 }
@@ -4005,10 +4090,12 @@ model Location {
   currentWeightKg Decimal @default(0) @db.Decimal(12, 3)
   currentVolumeM3 Decimal @default(0) @db.Decimal(12, 3)
 
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  isDeleted Boolean   @default(false)
-  deletedAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  isDeleted    Boolean   @default(false)
+  deletedAt    DateTime?
+  /// '' while the row is live, the row's own id once soft-deleted: makes the soft-delete unique keys enforceable (MySQL treats NULLs as distinct).
+  deletedToken String    @default("") @db.VarChar(191)
 
   shop      Shop      @relation(fields: [shopId], references: [id], onDelete: Restrict)
   warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
@@ -4020,7 +4107,7 @@ model Location {
   inventoryItems InventoryItem[]
   capacityLogs   LocationCapacityLog[]
 
-  @@unique([shopId, warehouseId, code, deletedAt])
+  @@unique([shopId, warehouseId, code, deletedToken])
   @@index([shopId, warehouseId])
   @@index([parentId])
   @@index([shopId, path]) // Critical for fast prefix querying (LIKE '/WH1/Z1/%')
@@ -4341,6 +4428,7 @@ model InventoryKpi {
   turnoverRate      Decimal @default(0) @db.Decimal(10, 4) // Sales / Avg Inventory
   daysOfInventory   Decimal @default(0) @db.Decimal(10, 2) // How long stock will last
   stockoutRiskScore Decimal @default(0) @db.Decimal(5, 2) // 0-100 risk score
+  avgDailyUnits     Decimal @default(0) @db.Decimal(10, 3) // Net units sold per day over the KPI window
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -4370,9 +4458,10 @@ model InventoryClassification {
 }
 
 model InventoryRecommendation {
-  id        String @id @default(cuid())
+  id        String   @id @default(cuid())
   shopId    String
   productId String
+  forDate   DateTime @db.Date // Business day the nightly run computed it for
 
   type       RecommendationType
   score      Decimal            @db.Decimal(5, 2) // 0-100 confidence score
@@ -4387,8 +4476,10 @@ model InventoryRecommendation {
   shop    Shop    @relation(fields: [shopId], references: [id], onDelete: Restrict)
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
+  @@unique([shopId, productId, forDate, type])
   @@index([shopId, status])
   @@index([shopId, type])
+  @@index([shopId, forDate])
 }
 
 // -----------------------------------------------------------------------------

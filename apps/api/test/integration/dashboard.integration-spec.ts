@@ -6,7 +6,6 @@
  */
 import { INestApplication } from '@nestjs/common';
 import { Prisma, Role, TenderType } from '@prisma/client';
-import { JwtService } from '@nestjs/jwt';
 import request from 'supertest';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../src/prisma/prisma.service';
@@ -18,6 +17,7 @@ import { DashboardInsightsService } from '../../src/analytics-domain/services/da
 import { AnalyticsPageService } from '../../src/analytics-domain/services/analytics-page.service';
 import { startOfBusinessDay } from '../../src/common/time/business-day';
 import { actorFor, bootApp, createProduct, createShop, num, receiveStock, tenantRunner, TestShop } from './pos-fixtures';
+import { bearerToken, ownerOf } from '../security/security-fixtures';
 
 jest.setTimeout(300_000);
 const TZ = 'Asia/Kolkata';
@@ -32,7 +32,6 @@ describe('Dashboard (EXEC-005)', () => {
   let dashboard: DashboardService;
   let insights: DashboardInsightsService;
   let trends: AnalyticsPageService;
-  let jwt: JwtService;
   let run: ReturnType<typeof tenantRunner>;
   let A: TestShop;
   let B: TestShop;
@@ -40,11 +39,19 @@ describe('Dashboard (EXEC-005)', () => {
 
   const owner = (s: TestShop) => actorFor(s, s.ownerId, Role.OWNER);
   const as = <T>(s: TestShop, fn: () => Promise<T>) => run.as(s.shopId, s.ownerId, Role.OWNER, fn);
-  const token = (s: TestShop) =>
-    jwt.sign({ sub: s.ownerId, email: `owner-${s.suffix}@test.local`, role: 'OWNER', shopId: s.shopId, tokenVersion: 0 });
-  const http = (s: TestShop | null, path: string) => {
+  // One session per shop owner, opened through AuthService like a real login.
+  const tokens = new Map<string, string>();
+  const token = async (s: TestShop) => {
+    let t = tokens.get(s.shopId);
+    if (!t) {
+      t = await bearerToken(app, s, ownerOf(s));
+      tokens.set(s.shopId, t);
+    }
+    return t;
+  };
+  const http = async (s: TestShop | null, path: string) => {
     const req = request(app.getHttpServer()).get(`/api/dashboard/${path}`);
-    return s ? req.set('Authorization', `Bearer ${token(s)}`) : req;
+    return s ? req.set('Authorization', `Bearer ${await token(s)}`) : req;
   };
   const sell = (s: TestShop, items: Array<Record<string, unknown>>, amount: number, extra: Record<string, unknown> = {}) =>
     as(s, () =>
@@ -82,7 +89,6 @@ describe('Dashboard (EXEC-005)', () => {
     dashboard = app.get(DashboardService);
     insights = app.get(DashboardInsightsService);
     trends = app.get(AnalyticsPageService);
-    jwt = app.get(JwtService);
     run = tenantRunner(app);
     A = await createShop(app, 'dshA', { creditLimit: 100000 });
     B = await createShop(app, 'dshB', { creditLimit: 100000 });
@@ -314,7 +320,7 @@ describe('Dashboard (EXEC-005)', () => {
 
     const spoof = await request(app.getHttpServer())
       .get(`/api/dashboard/summary?shopId=${A.shopId}`)
-      .set('Authorization', `Bearer ${token(B)}`)
+      .set('Authorization', `Bearer ${await token(B)}`)
       .set('x-shop-id', A.shopId);
     expect(spoof.status).toBe(200);
     expect(spoof.body.todaySales).toBe(sb.body.todaySales);

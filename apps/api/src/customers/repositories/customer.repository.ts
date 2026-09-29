@@ -45,8 +45,9 @@ export const CUSTOMER_DETAIL_INCLUDE = {
 export class CustomerRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(data: Prisma.CustomerCreateInput | Prisma.CustomerUncheckedCreateInput) {
-    return this.prisma.customer.create({ data });
+  /** Inserts the customer through `db`: the caller's transaction, so the audit row commits with it. */
+  async create(data: Prisma.CustomerCreateInput | Prisma.CustomerUncheckedCreateInput, db: Prisma.TransactionClient | PrismaService = this.prisma) {
+    return db.customer.create({ data });
   }
 
   async findById(id: string, shopId: string) {
@@ -73,9 +74,5 @@ export class CustomerRepository {
 
   async update(id: string, shopId: string, data: Prisma.CustomerUpdateInput) {
     return this.prisma.customer.update({ where: { id, shopId }, data });
-  }
-
-  async softDelete(id: string, shopId: string) {
-    return this.prisma.customer.update({ where: { id, shopId }, data: { isDeleted: true, deletedAt: new Date(), isActive: false } });
   }
 }

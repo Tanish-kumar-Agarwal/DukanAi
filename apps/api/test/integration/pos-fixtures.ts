@@ -29,7 +29,16 @@ export interface TestShop {
   suffix: string;
 }
 
-export async function bootApp(configure?: (builder: TestingModuleBuilder) => TestingModuleBuilder): Promise<INestApplication> {
+/**
+ * Boots the real AppModule the way main.ts does. `configure` adjusts the
+ * testing module (override providers); `beforeInit` runs on the application
+ * before `init()`, which is where adapters must be installed (a WebSocket
+ * adapter set after init never sees the gateways).
+ */
+export async function bootApp(
+  configure?: (builder: TestingModuleBuilder) => TestingModuleBuilder,
+  beforeInit?: (app: INestApplication) => void,
+): Promise<INestApplication> {
   let builder = Test.createTestingModule({ imports: [AppModule] });
   if (configure) builder = configure(builder);
   const moduleRef = await builder.compile();
@@ -37,6 +46,7 @@ export async function bootApp(configure?: (builder: TestingModuleBuilder) => Tes
   app.setGlobalPrefix('api');
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));
   app.useGlobalFilters(new GlobalExceptionFilter());
+  beforeInit?.(app);
   await app.init();
   await waitForQueueConnections(app);
   return app;

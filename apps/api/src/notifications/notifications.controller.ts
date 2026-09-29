@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { ListQueryDto, PagedList } from '../common/pagination';
 import { NotificationsService } from './notifications.service';
 import { CreateNotificationDto } from './dto/notification.dto';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
@@ -10,8 +11,9 @@ export class NotificationsController {
   constructor(private readonly notificationsService: NotificationsService) {}
 
   @Get()
-  findAll() {
-    return this.notificationsService.findAll();
+  @PagedList()
+  findAll(@Query() query: ListQueryDto) {
+    return this.notificationsService.findAll(query);
   }
 
   @Roles(...MANAGEMENT_ROLES)

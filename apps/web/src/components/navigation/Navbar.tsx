@@ -5,7 +5,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Bell, Check, Moon, Search, Sun } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { signOut, useSession } from 'next-auth/react';
+import { useSession } from 'next-auth/react';
+import { signOutEverywhere } from '@/lib/sign-out';
 import { useTheme } from '@/hooks';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
 import { notificationsApi, type NotificationView } from '@/lib/api-client';
@@ -274,7 +275,7 @@ export function Navbar() {
           {status === 'authenticated' ? (
             <button
               type="button"
-              onClick={() => void signOut({ callbackUrl: '/login' })}
+              onClick={() => void signOutEverywhere('/login')}
               className="flex items-center gap-3 pl-5 border-l border-gray-100 hover:bg-gray-50 p-2 rounded-xl transition-colors"
               title="Sign out"
             >

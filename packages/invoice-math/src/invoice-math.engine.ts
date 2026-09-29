@@ -99,7 +99,9 @@ function normalisePayment(input: InvoiceMathInput): PaymentInput | undefined {
 export function deriveInvoicePaymentMode(tenders: readonly { type: TenderType; amount: Decimal }[], udhar: Decimal): InvoicePaymentMode {
   const nonZero = tenders.filter((t) => t.amount.greaterThan(0));
   if (nonZero.length === 0) {
-    return 'UDHAR';
+    // Nothing tendered: credit when something is owed, plain CASH for a
+    // zero-total document (a sub-₹0.50 sale rounds to ₹0 and owes nothing).
+    return udhar.greaterThan(0) ? 'UDHAR' : 'CASH';
   }
   if (udhar.greaterThan(0)) return 'SPLIT';
   const types = new Set(nonZero.map((t) => t.type));
@@ -155,6 +157,42 @@ function settlePayment(payment: PaymentInput, finalTotal: Decimal): PaymentResul
     paymentMode: deriveInvoicePaymentMode(tenders, udhar),
     tenders,
   };
+}
+
+/**
+ * Splits `total` over `weights` in proportion (2 dp per share), so that
+ * Σ shares == total, 0 <= share_i <= weight_i. Half-up rounding of the
+ * proportional shares can overshoot or undershoot the total by a few paise;
+ * the difference is settled on lines with room (undershoot) or with a share to
+ * give back (overshoot), never by pushing a line negative.
+ */
+export function allocateProportionally(total: Decimal, weights: readonly Decimal[]): Decimal[] {
+  const shares: Decimal[] = weights.map(() => new Decimal(0));
+  if (!total.greaterThan(0)) return shares;
+  const base = weights.reduce((acc, w) => acc.plus(w), new Decimal(0));
+  if (!base.greaterThan(0)) return shares;
+  let allocated = new Decimal(0);
+  for (let i = 0; i < weights.length; i++) {
+    const share = Decimal.min(money(total.mul(weights[i]).div(base)), weights[i]);
+    shares[i] = share;
+    allocated = allocated.plus(share);
+  }
+  let remainder = total.minus(allocated);
+  for (let i = weights.length - 1; i >= 0 && !remainder.isZero(); i--) {
+    if (remainder.greaterThan(0)) {
+      const room = weights[i].minus(shares[i]);
+      if (room.greaterThan(0)) {
+        const add = Decimal.min(room, remainder);
+        shares[i] = shares[i].plus(add);
+        remainder = remainder.minus(add);
+      }
+    } else if (shares[i].greaterThan(0)) {
+      const give = Decimal.min(shares[i], remainder.negated());
+      shares[i] = shares[i].minus(give);
+      remainder = remainder.plus(give);
+    }
+  }
+  return shares;
 }
 
 export class InvoiceMathEngine {
@@ -265,29 +303,7 @@ export class InvoiceMathEngine {
     }
 
     // Proportional allocation of the invoice discount over net line amounts.
-    const shares: Decimal[] = pre.map(() => new Decimal(0));
-    if (invoiceDiscount.greaterThan(0)) {
-      let allocated = new Decimal(0);
-      for (let i = 0; i < pre.length; i++) {
-        const isLast = i === pre.length - 1;
-        let share = isLast
-          ? invoiceDiscount.minus(allocated)
-          : money(invoiceDiscount.mul(pre[i].netSubtotal).div(netSubtotal));
-        if (share.greaterThan(pre[i].netSubtotal)) share = pre[i].netSubtotal;
-        shares[i] = share;
-        allocated = allocated.plus(share);
-      }
-      // Fix-up: if capping left a remainder, push it onto lines with room.
-      let remainder = invoiceDiscount.minus(allocated);
-      for (let i = 0; i < pre.length && remainder.greaterThan(0); i++) {
-        const room = pre[i].netSubtotal.minus(shares[i]);
-        if (room.greaterThan(0)) {
-          const add = Decimal.min(room, remainder);
-          shares[i] = shares[i].plus(add);
-          remainder = remainder.minus(add);
-        }
-      }
-    }
+    const shares = allocateProportionally(invoiceDiscount, pre.map((l) => l.netSubtotal));
 
     const lines: InvoiceLineResult[] = [];
     let subtotal = new Decimal(0);
@@ -374,9 +390,20 @@ export class InvoiceMathEngine {
   }
 
   /**
-   * Proportional return math. Each line's stored amounts are scaled by
-   * quantity / originalQuantity (2 dp). Returning the full original quantity
-   * reproduces the stored amounts exactly.
+   * Cumulative return math (roadmap 3.1, audit P1-1). For every stored line
+   * amount A the amount refunded for quantity q of an original quantity Q is
+   * `cum(q) = round2(A × q / Q)`, with `cum(Q) = A` exactly. A document that
+   * returns `qty` after `returnedQuantity` has already gone back refunds
+   * `cum(returnedQuantity + qty) − cum(returnedQuantity)`: the sum over all
+   * returns of a line is A, whatever the split, and the return that completes
+   * a line takes its exact remainder.
+   *
+   * The document total is the sum of its lines: a return is never rounded to
+   * the rupee on its own (that is what let 4 × ₹0.50 refund ₹4). With a
+   * `settlement`, the total is capped at `invoiceTotal − refundedTotal`, and
+   * the return that completes the invoice takes exactly that remainder, so
+   * Σ refunds == invoiceTotal and the sale's round-off is refunded once.
+   * `roundOff` on the result is whatever the cap or remainder changed.
    */
   static calculateReturn(rawInput: ReturnMathInput): ReturnCalculationResult {
     const input = Object.freeze(JSON.parse(JSON.stringify(rawInput))) as ReturnMathInput;
@@ -386,31 +413,38 @@ export class InvoiceMathEngine {
 
     const lines: ReturnLineResult[] = input.lines.map((l) => {
       const originalQty = toDecimal(l.originalQuantity);
+      const before = toDecimal(l.returnedQuantity).toDecimalPlaces(QUANTITY_DP, Decimal.ROUND_HALF_UP);
       const qty = toDecimal(l.quantity).toDecimalPlaces(QUANTITY_DP, Decimal.ROUND_HALF_UP);
       if (!originalQty.greaterThan(0)) {
         throw new InvoiceMathError(`Invalid original quantity on ${l.lineRef}.`, 'ERR_INVALID_RETURN_LINE');
       }
+      if (before.isNegative() || before.greaterThan(originalQty)) {
+        throw new InvoiceMathError(`Invalid returned quantity on ${l.lineRef}.`, 'ERR_INVALID_RETURN_LINE');
+      }
       if (!qty.greaterThan(0)) {
         throw new InvoiceMathError(`Return quantity on ${l.lineRef} must be greater than 0.`, 'ERR_INVALID_QUANTITY');
       }
-      if (qty.greaterThan(originalQty)) {
-        throw new InvoiceMathError(`Return quantity on ${l.lineRef} exceeds the original quantity.`, 'ERR_RETURN_QTY_EXCEEDS');
+      const after = before.plus(qty);
+      if (after.greaterThan(originalQty)) {
+        throw new InvoiceMathError(`Return quantity on ${l.lineRef} exceeds the quantity that can still be returned.`, 'ERR_RETURN_QTY_EXCEEDS');
       }
-      const full = qty.equals(originalQty);
-      const ratio = qty.div(originalQty);
-      const scale = (v: NumericInput | undefined) => {
-        const d = money(toDecimal(v));
-        return full ? d : money(d.mul(ratio));
+      // cum(q): the amount refunded once q units of the line have gone back.
+      const cumulative = (v: NumericInput | undefined, q: Decimal): Decimal => {
+        const stored = money(toDecimal(v));
+        if (q.isZero()) return new Decimal(0);
+        if (q.equals(originalQty)) return stored;
+        return money(stored.mul(q).div(originalQty));
       };
+      const slice = (v: NumericInput | undefined) => cumulative(v, after).minus(cumulative(v, before));
 
       const unitPrice = money(toDecimal(l.unitPrice));
       const lineSubtotal = money(unitPrice.mul(qty));
-      const discountAmount = scale(l.discountAmount);
-      const taxableAmount = scale(l.taxableAmount);
-      const cgstAmount = scale(l.cgstAmount);
-      const sgstAmount = scale(l.sgstAmount);
-      const igstAmount = scale(l.igstAmount);
-      const cessAmount = scale(l.cessAmount);
+      const discountAmount = slice(l.discountAmount);
+      const taxableAmount = slice(l.taxableAmount);
+      const cgstAmount = slice(l.cgstAmount);
+      const sgstAmount = slice(l.sgstAmount);
+      const igstAmount = slice(l.igstAmount);
+      const cessAmount = slice(l.cessAmount);
       const taxAmount = cgstAmount.plus(sgstAmount).plus(igstAmount).plus(cessAmount);
       const lineTotal = taxableAmount.plus(taxAmount);
 
@@ -440,9 +474,18 @@ export class InvoiceMathEngine {
     const totalCess = sum((l) => l.cessAmount);
     const totalTax = sum((l) => l.taxAmount);
     const grandTotal = taxableTotal.plus(totalTax);
-    const roundedTotal = grandTotal.toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
-    const roundOff = money(roundedTotal.minus(grandTotal));
-    const finalTotal = grandTotal.plus(roundOff);
+
+    let finalTotal = grandTotal;
+    if (input.settlement) {
+      const invoiceTotal = money(toDecimal(input.settlement.invoiceTotal));
+      const refunded = money(toDecimal(input.settlement.refundedTotal));
+      if (invoiceTotal.isNegative() || refunded.isNegative()) {
+        throw new InvoiceMathError('Settlement amounts cannot be negative.', 'ERR_INVALID_RETURN_LINE');
+      }
+      const remaining = Decimal.max(invoiceTotal.minus(refunded), 0);
+      finalTotal = input.settlement.completesInvoice ? remaining : Decimal.min(grandTotal, remaining);
+    }
+    const roundOff = money(finalTotal.minus(grandTotal));
 
     return {
       lines,

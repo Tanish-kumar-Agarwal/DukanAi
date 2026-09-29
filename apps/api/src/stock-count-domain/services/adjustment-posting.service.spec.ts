@@ -13,9 +13,9 @@ describe('AdjustmentPostingService', () => {
   let ledger: { post: jest.Mock };
   let tx: {
     product: { findUnique: jest.Mock };
-    adjustmentRequest: { update: jest.Mock };
+    adjustmentRequest: { updateMany: jest.Mock; findFirstOrThrow: jest.Mock };
   };
-  let prisma: { adjustmentRequest: { findFirst: jest.Mock }; $transaction: jest.Mock };
+  let prisma: { $transaction: jest.Mock };
 
   const mutationResult = (bypassed: boolean) => ({
     bypassed,
@@ -37,10 +37,9 @@ describe('AdjustmentPostingService', () => {
     ledger = { post: jest.fn().mockResolvedValue({ posted: true, postingId: 'lp-1' }) };
     tx = {
       product: { findUnique: jest.fn().mockResolvedValue({ costPrice: D('12.50') }) },
-      adjustmentRequest: { update: jest.fn().mockResolvedValue({}) },
+      adjustmentRequest: { updateMany: jest.fn().mockResolvedValue({ count: 1 }), findFirstOrThrow: jest.fn() },
     };
     prisma = {
-      adjustmentRequest: { findFirst: jest.fn() },
       $transaction: jest.fn((fn: (t: unknown) => Promise<unknown>) => fn(tx)),
     };
     service = new AdjustmentPostingService(
@@ -50,14 +49,14 @@ describe('AdjustmentPostingService', () => {
     );
   });
 
-  it('rejects an adjustment that is not approved', async () => {
-    prisma.adjustmentRequest.findFirst.mockResolvedValue(null);
+  it('rejects an adjustment that is not approved (or already claimed by a concurrent poster)', async () => {
+    tx.adjustmentRequest.updateMany.mockResolvedValue({ count: 0 });
     await expect(service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1')).rejects.toThrow(BadRequestException);
     expect(engine.mutateStock).not.toHaveBeenCalled();
   });
 
   it('positive delta: mutates stock in, posts DEBIT INVENTORY / CREDIT INVENTORY_ADJUSTMENT at cost, marks POSTED', async () => {
-    prisma.adjustmentRequest.findFirst.mockResolvedValue(adjustment('4'));
+    tx.adjustmentRequest.findFirstOrThrow.mockResolvedValue(adjustment('4'));
 
     await expect(service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1')).resolves.toEqual({ success: true });
 
@@ -91,14 +90,16 @@ describe('AdjustmentPostingService', () => {
     // 4 × 12.50 = 50.00
     expect(posting.entries.map((e: { amount: Prisma.Decimal }) => e.amount.toFixed(2))).toEqual(['50.00', '50.00']);
 
-    expect(tx.adjustmentRequest.update).toHaveBeenCalledWith({
-      where: { id: 'adj-1' },
+    // The claim (APPROVED -> POSTED) is status-guarded and happens before any stock moves.
+    expect(tx.adjustmentRequest.updateMany).toHaveBeenCalledWith({
+      where: { id: 'adj-1', shopId: 'shop-1', status: AdjustmentStatus.APPROVED },
       data: { status: AdjustmentStatus.POSTED },
     });
+    expect(tx.adjustmentRequest.updateMany.mock.invocationCallOrder[0]).toBeLessThan(engine.mutateStock.mock.invocationCallOrder[0]);
   });
 
   it('negative delta: mutates stock out and posts DEBIT INVENTORY_ADJUSTMENT / CREDIT INVENTORY', async () => {
-    prisma.adjustmentRequest.findFirst.mockResolvedValue(adjustment('-2.5'));
+    tx.adjustmentRequest.findFirstOrThrow.mockResolvedValue(adjustment('-2.5'));
 
     await service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1');
 
@@ -115,18 +116,18 @@ describe('AdjustmentPostingService', () => {
   });
 
   it('posts nothing when the engine bypassed the product (SERVICE / DIGITAL)', async () => {
-    prisma.adjustmentRequest.findFirst.mockResolvedValue(adjustment('3'));
+    tx.adjustmentRequest.findFirstOrThrow.mockResolvedValue(adjustment('3'));
     engine.mutateStock.mockResolvedValue(mutationResult(true));
 
     await service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1');
 
     expect(tx.product.findUnique).not.toHaveBeenCalled();
     expect(ledger.post).not.toHaveBeenCalled();
-    expect(tx.adjustmentRequest.update).toHaveBeenCalled();
+    expect(tx.adjustmentRequest.updateMany).toHaveBeenCalled();
   });
 
   it('skips the posting when the value is zero (zero cost price)', async () => {
-    prisma.adjustmentRequest.findFirst.mockResolvedValue(adjustment('3'));
+    tx.adjustmentRequest.findFirstOrThrow.mockResolvedValue(adjustment('3'));
     tx.product.findUnique.mockResolvedValue({ costPrice: D('0') });
 
     await service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1');
@@ -135,7 +136,7 @@ describe('AdjustmentPostingService', () => {
   });
 
   it('delegates replay protection to the ledger source key (keyed by the adjustment request id)', async () => {
-    prisma.adjustmentRequest.findFirst.mockResolvedValue(adjustment('3'));
+    tx.adjustmentRequest.findFirstOrThrow.mockResolvedValue(adjustment('3'));
     ledger.post.mockResolvedValue({ posted: false, postingId: 'lp-existing' });
 
     await expect(service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1')).resolves.toEqual({ success: true });

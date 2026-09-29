@@ -5,7 +5,7 @@ import { JwtStrategy } from './jwt.strategy';
 import { UsersModule } from '../users/users.module';
 import { PassportModule } from '@nestjs/passport';
 import { JwtModule } from '@nestjs/jwt';
-import { JwtConfig } from '../config/domains/jwt.config';
+import { JWT_ALGORITHM, JwtConfig } from '../config/domains/jwt.config';
 import { AuthController } from './auth.controller';
 import { RolesGuard } from './roles.guard';
 import { AuthBypassModule } from './auth-bypass.module';
@@ -20,7 +20,7 @@ import { GoogleIdentityService } from './google-identity.service';
       inject: [JwtConfig],
       useFactory: async (jwtConfig: JwtConfig) => ({
         secret: jwtConfig.jwtSecret,
-        signOptions: { expiresIn: jwtConfig.jwtExpiresIn } as any,
+        signOptions: { expiresIn: jwtConfig.jwtExpiresIn, algorithm: JWT_ALGORITHM } as any,
       }),
     }),
   ],

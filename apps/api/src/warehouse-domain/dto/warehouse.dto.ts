@@ -1,4 +1,5 @@
-import { IsString, IsEnum, IsOptional, IsNumber, Min } from 'class-validator';
+import { IsString, IsEnum, IsOptional, IsNumber, MaxLength, Min } from 'class-validator';
+import { ListQueryDto } from '../../common/pagination';
 import { WarehouseType, LocationType } from '@prisma/client';
 
 export class CreateWarehouseDto {
@@ -58,4 +59,9 @@ export class CreateLocationDto {
   @IsNumber()
   @Min(0)
   maxVolumeM3?: number;
+}
+
+/** `GET warehouses/:id/locations/subtree?path=` plus the shared page (roadmap 5.6). */
+export class SubtreeQueryDto extends ListQueryDto {
+  @IsString() @MaxLength(191) path: string;
 }

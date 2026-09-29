@@ -8,6 +8,7 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
 import helmet from 'helmet';
 import { AuthenticatedIoAdapter } from './iam/websockets/authenticated-io.adapter';
 import { AppConfig, Environment } from './config/domains/app.config';
+import { applyTrustProxy } from './common/http/trust-proxy';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -34,14 +35,20 @@ async function bootstrap() {
   // Helmet Security
   app.use(helmet());
 
-  // Strict CORS Lockdown
   const appConfig = app.get(AppConfig);
+
+  // Reverse proxies: decides what req.ip is (rate limiting, login audit rows).
+  applyTrustProxy(app, appConfig.trustProxy, logger);
+
+  // Strict CORS Lockdown
   const frontendUrl = appConfig.frontendUrl;
   app.enableCors({
     origin: frontendUrl.split(',').map((s: string) => s.trim()),
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-correlation-id'],
+    // Paged lists describe their page in these headers (roadmap 5.6); a browser client may read them.
+    exposedHeaders: ['X-Total-Count', 'X-Page-Skip', 'X-Page-Take', 'x-correlation-id'],
   });
 
   // Global Validation Pipe

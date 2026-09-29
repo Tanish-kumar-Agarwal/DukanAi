@@ -3,9 +3,13 @@ import { LedgerAccount, LedgerEntryType, Prisma } from '@prisma/client';
 import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 import { InventoryLocationService } from '../../inventory-domain/services/inventory-location.service';
 import { LedgerPostingService } from '../../ledger/ledger-posting.service';
+import { SupplierPayablesService } from '../../ledger/supplier-payables.service';
 
 export interface PurchaseReturnInventoryLine {
+  /** PurchaseReturnLine id: the stock idempotency key is per line, not per product. */
+  id?: string;
   productId: string;
+  variantId?: string | null;
   returnQuantity: Prisma.Decimal | number | string;
   unitPrice: Prisma.Decimal | number | string;
 }
@@ -14,6 +18,8 @@ export interface PurchaseReturnInventoryInput {
   id: string;
   warehouseId?: string | null;
   createdBy?: string | null;
+  /** The supplier the goods go back to; its pendingPayables shrinks with the posted value. */
+  supplierId?: string | null;
   lines: PurchaseReturnInventoryLine[];
 }
 
@@ -25,6 +31,7 @@ export class PurchaseReturnInventoryService {
     private readonly inventoryMutationEngine: InventoryMutationEngine,
     private readonly locationService: InventoryLocationService,
     private readonly ledger: LedgerPostingService,
+    private readonly payables: SupplierPayablesService,
   ) {}
 
   /**
@@ -49,6 +56,7 @@ export class PurchaseReturnInventoryService {
         shopId,
         locationId,
         productId: line.productId,
+        variantId: line.variantId ?? null,
         quantity: returnQty.toNumber(),
         mutationType: MutationType.PURCHASE_RETURN,
         reason: `Purchase Return: ${returnAggregate.id}`,
@@ -57,18 +65,19 @@ export class PurchaseReturnInventoryService {
         occurredAt: new Date(),
         // Supplier returns are physically confirmed; do not block on a stale count.
         allowNegative: true,
-        idempotencyKey: `PRET:${returnAggregate.id}:${line.productId}`,
+        // One key per return line (roadmap 3.7, audit P2-25).
+        idempotencyKey: `PRET:${returnAggregate.id}:${line.id ?? line.productId}`,
       });
 
-      if (result.bypassed) continue;
+      if (result.bypassed || result.idempotent) continue;
       inventoryValue = inventoryValue.plus(new Prisma.Decimal(line.unitPrice.toString()).times(returnQty));
     }
     this.logger.debug(`Purchase return ${returnAggregate.id} deducted from location ${locationId}`);
 
-    await this.postInventoryReturn(tx, shopId, returnAggregate.id, inventoryValue.toDecimalPlaces(2));
+    await this.postInventoryReturn(tx, shopId, returnAggregate.id, inventoryValue.toDecimalPlaces(2), returnAggregate.supplierId);
   }
 
-  private async postInventoryReturn(tx: Prisma.TransactionClient, shopId: string, returnId: string, value: Prisma.Decimal) {
+  private async postInventoryReturn(tx: Prisma.TransactionClient, shopId: string, returnId: string, value: Prisma.Decimal, supplierId?: string | null) {
     if (value.lessThanOrEqualTo(0)) return;
 
     const description = `Purchase return ${returnId}`;
@@ -84,6 +93,10 @@ export class PurchaseReturnInventoryService {
         { account: LedgerAccount.INVENTORY, type: LedgerEntryType.CREDIT, amount: value },
       ],
     });
-    if (!result.posted) this.logger.log(`Ledger posting for ${description} already exists. Skipped.`);
+    if (!result.posted) {
+      this.logger.log(`Ledger posting for ${description} already exists. Skipped.`);
+      return;
+    }
+    await this.payables.reducePayable(tx, shopId, supplierId, value);
   }
 }

@@ -9,9 +9,9 @@ describe('ReservationExpiryService', () => {
     const findMany = jest.fn().mockResolvedValue([expired('r1'), expired('r2'), expired('r3')]);
     const $transaction = jest
       .fn()
-      .mockImplementationOnce(async (fn: (tx: unknown) => Promise<void>) => fn({ stockReservation: { update: jest.fn() } }))
+      .mockImplementationOnce(async (fn: (tx: unknown) => Promise<void>) => fn({ stockReservation: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) } }))
       .mockRejectedValueOnce(new Error('deadlock'))
-      .mockImplementationOnce(async (fn: (tx: unknown) => Promise<void>) => fn({ stockReservation: { update: jest.fn() } }));
+      .mockImplementationOnce(async (fn: (tx: unknown) => Promise<void>) => fn({ stockReservation: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) } }));
     const prisma = { stockReservation: { findMany }, $transaction } as unknown as PrismaService;
     const service = new ReservationExpiryService(prisma, {} as InventoryMutationEngine);
 

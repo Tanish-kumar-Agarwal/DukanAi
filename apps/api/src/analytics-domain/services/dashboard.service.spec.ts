@@ -40,7 +40,7 @@ function setup() {
     invoice: { findMany: jest.fn().mockResolvedValue([]) },
     shift: { findFirst: jest.fn().mockResolvedValue(null) },
   };
-  const cache = { getKpis: jest.fn().mockResolvedValue(null), setKpis: jest.fn().mockResolvedValue(undefined) };
+  const cache = { getKpis: jest.fn().mockResolvedValue(null), setKpis: jest.fn().mockResolvedValue(undefined), getAllTime: jest.fn().mockResolvedValue(undefined), setAllTime: jest.fn().mockResolvedValue(undefined) };
   const shopTimezone = { resolve: jest.fn().mockResolvedValue('Asia/Kolkata') };
   const service = new DashboardService(
     prisma as never,
@@ -131,6 +131,20 @@ describe('DashboardService', () => {
 
     await expect(service.getSummary('shop-1', 'user-1')).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(SUMMARY_SECTIONS).toHaveLength(11);
+  });
+
+  it('serves the all-time totals from the cache and fills it on a miss (roadmap 5.5)', async () => {
+    const { service, cache, revenueEngine } = setup();
+    await service.getSummary('shop-1', 'user-1');
+    expect(cache.setAllTime).toHaveBeenCalledWith('shop-1', expect.objectContaining({ grossSales: expect.any(String), orders: expect.any(Number) }));
+    const totalsCalls = (revenueEngine.totals as jest.Mock).mock.calls.length;
+
+    cache.getAllTime.mockResolvedValueOnce({ grossSales: '1234.50', returns: '34.50', netSales: '1200.00', orders: 7, returnCount: 1 });
+    const summary = await service.getSummary('shop-1', 'user-1');
+    expect(summary.totalRevenue).toBe(1200);
+    expect(summary.totalOrders).toBe(7);
+    // The cached hit skipped the all-time aggregate; only the ranged "today" call ran.
+    expect((revenueEngine.totals as jest.Mock).mock.calls.length).toBe(totalsCalls + 1);
   });
 
   it('computes the average order value on net sales and caches the KPIs', async () => {

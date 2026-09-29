@@ -10,11 +10,11 @@
  */
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { JwtService } from '@nestjs/jwt';
 import { Prisma, Role, TenderType } from '@prisma/client';
 import request from 'supertest';
 import { AppModule } from '../../src/app.module';
 import { PrismaService } from '../../src/prisma/prisma.service';
+import { issueTokens } from '../security/security-fixtures';
 import { TenantContextService } from '../../src/iam/tenant-context/tenant-context.service';
 import { BillingService } from '../../src/billing/billing.service';
 import { InvoiceReversalService } from '../../src/billing/services/invoice-reversal.service';
@@ -51,7 +51,6 @@ describe('EXEC-006C POS workflow (integration)', () => {
   let analyticsPage: AnalyticsPageService;
   let exporter: ReportExportService;
   let search: SearchEngineService;
-  let jwt: JwtService;
 
   const suffix = `${Date.now()}${Math.floor(Math.random() * 1000)}`;
   let shopId: string;
@@ -103,7 +102,6 @@ describe('EXEC-006C POS workflow (integration)', () => {
     analyticsPage = app.get(AnalyticsPageService);
     exporter = app.get(ReportExportService);
     search = app.get(SearchEngineService);
-    jwt = app.get(JwtService);
 
     await asSystem(async () => {
       const shop = await prisma.shop.create({ data: { name: `Shop ${suffix}`, state: 'Karnataka', city: 'Bengaluru' } });
@@ -544,7 +542,7 @@ describe('EXEC-006C POS workflow (integration)', () => {
   });
 
   it('HTTP surface: validation, error envelope with code, tenant scoping and a real checkout', async () => {
-    const token = jwt.sign({ sub: cashierId, email: `cashier-${suffix}@test.local`, role: 'CASHIER', shopId, tokenVersion: 0 });
+    const token = (await issueTokens(app, { id: cashierId })).access_token;
     const server = app.getHttpServer();
 
     const bad = await request(server).post('/api/billing/invoice').set('Authorization', `Bearer ${token}`).send({ items: [] });
@@ -592,7 +590,7 @@ describe('EXEC-006C POS workflow (integration)', () => {
     expect(receipt.status).toBe(200);
     expect(receipt.body.shop.name).toContain('Shop');
 
-    const csv = await request(server).get('/api/dashboard/export/invoices.csv').set('Authorization', `Bearer ${jwt.sign({ sub: ownerId, email: 'o', role: 'OWNER', shopId, tokenVersion: 0 })}`);
+    const csv = await request(server).get('/api/dashboard/export/invoices.csv').set('Authorization', `Bearer ${(await issueTokens(app, { id: ownerId })).access_token}`);
     expect(csv.status).toBe(200);
     expect(csv.headers['content-type']).toContain('text/csv');
   });

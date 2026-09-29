@@ -13,7 +13,6 @@ import { ReportExportService } from './services/report-export.service';
 import { ShopTimezoneService } from './services/shop-timezone.service';
 import { KpiService } from './services/kpi.service';
 import { ClassificationService } from './services/classification.service';
-import { ForecastService } from './services/forecast.service';
 import { RecommendationEngineService } from './services/recommendation-engine.service';
 import { AnalyticsJobScheduler } from './services/analytics-job.scheduler';
 import { AnalyticsController } from './analytics.controller';
@@ -21,7 +20,10 @@ import { AnalyticsController } from './analytics.controller';
 /**
  * Dashboard & reports. Everything is computed live from Invoice /
  * InvoiceItem / InvoicePayment rows; the former BullMQ aggregation and export
- * queues (and the tables only they wrote) are no longer used.
+ * queues (and the tables only they wrote) are no longer used. The nightly
+ * job (`AnalyticsJobScheduler`, roadmap 4.9) writes the KPI snapshot, the
+ * ABC/XYZ classes and the recommendations; the former forecast stub (a
+ * logger call with no computation) is out of the chain.
  */
 @Module({
   imports: [PrismaModule],
@@ -39,7 +41,6 @@ import { AnalyticsController } from './analytics.controller';
     ShopTimezoneService,
     KpiService,
     ClassificationService,
-    ForecastService,
     RecommendationEngineService,
     AnalyticsJobScheduler,
   ],

@@ -58,6 +58,7 @@ export class AllocationService {
           shopId,
           locationId: item.locationId,
           productId: item.productId,
+          variantId: item.variantId,
           quantity: allocateFromHere,
           mutationType: MutationType.RESERVATION,
           reason: `Reservation allocation: ${reservationItemId}`,

@@ -29,11 +29,12 @@ export class EventsDlqService {
     });
   }
 
-  async getDeadLetters(shopId: string, limit: number) {
+  async getDeadLetters(shopId: string, limit: number, offset: number = 0) {
     return this.prisma.purchaseDeadLetter.findMany({
       where: { shopId, status: 'ACTIVE' },
       take: limit,
-      orderBy: { createdAt: 'desc' }
+      skip: offset,
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }]
     });
   }
 

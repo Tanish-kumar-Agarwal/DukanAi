@@ -38,12 +38,6 @@ export class CacheConfig {
   @IsInt()
   @Min(0)
   @IntegerFromEnv()
-  @EnvVariable('CACHE_SALES_ORDER_TTL_MS')
-  salesOrderTtlMs: number = 900000;
-
-  @IsInt()
-  @Min(0)
-  @IntegerFromEnv()
   @EnvVariable('CACHE_PURCHASE_RETURN_TTL_MS')
   purchaseReturnTtlMs: number = 60000;
 
@@ -58,18 +52,6 @@ export class CacheConfig {
   @IntegerFromEnv()
   @EnvVariable('CACHE_EVENTS_STATS_TTL_MS')
   eventsStatsTtlMs: number = 60000;
-
-  @IsInt()
-  @Min(0)
-  @IntegerFromEnv()
-  @EnvVariable('CACHE_PRICING_TTL_MS')
-  pricingTtlMs: number = 3600000;
-
-  @IsInt()
-  @Min(0)
-  @IntegerFromEnv()
-  @EnvVariable('CACHE_INVOICE_TTL_MS')
-  invoiceTtlMs: number = 300000;
 
   @IsInt()
   @Min(0)

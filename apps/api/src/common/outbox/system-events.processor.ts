@@ -84,7 +84,8 @@ export class SystemEventsProcessor extends WorkerHost {
   }
 
   async process(job: Job<SystemEventJobData, unknown, string>): Promise<SystemEventOutcome> {
-    const eventId = job.opts.jobId ?? job.data?.eventId;
+    // The job id is `<OutboxEvent id>:<retryCount>` (roadmap 4.7); the row id itself travels in the data.
+    const eventId = asOptionalString(job.data?.eventId) ?? (job.opts.jobId ? String(job.opts.jobId).split('.')[0] : undefined);
     if (!eventId) {
       // Without the OutboxEvent id there is no row to mark; the job is dropped loudly.
       this.logger.error(`Job ${String(job.id)} (${job.name}) carries no OutboxEvent id; dropping it.`);
@@ -114,6 +115,8 @@ export class SystemEventsProcessor extends WorkerHost {
       const outcome = await this.tenantContext.runWithContext(context, () =>
         this.handle(job, eventId, shopId, payload, context),
       );
+      // The relay only claims the row (roadmap 4.7); the worker is what ends it.
+      await this.markDone(eventId);
       this.logger.log(`System event ${eventId} (${job.name}) for shop ${shopId}: ${outcome.status}`);
       return outcome;
     } catch (error) {
@@ -239,54 +242,63 @@ export class SystemEventsProcessor extends WorkerHost {
     await invalidateAnalyticsCache(this.cache, shopId);
   }
 
-  /** One unread LOW_STOCK notification per product; re-raised only after the previous one was read. */
+  /**
+   * One unread LOW_STOCK notification per product; re-raised only after the
+   * previous one was read. Three statements for the whole invoice (roadmap
+   * 5.7): the products of the sale, the unread LOW_STOCK notifications that
+   * already exist for them, and one `createMany` for the rest.
+   */
   private async raiseLowStockNotifications(
     tx: Prisma.TransactionClient,
     shopId: string,
     payload: Record<string, unknown>,
   ): Promise<LowStockAlert[]> {
     const invoiceId = asOptionalString(payload.invoiceId) ?? null;
-    const alerts: LowStockAlert[] = [];
+    const productIds = extractProductIds(payload.items);
+    if (productIds.length === 0) return [];
 
-    for (const productId of extractProductIds(payload.items)) {
-      const product = await tx.product.findFirst({
-        where: { id: productId, shopId, isDeleted: false },
-        select: { id: true, name: true, currentStock: true, reorderPoint: true, isDeleted: true },
-      });
-      if (!product) {
+    const products = await tx.product.findMany({
+      where: { id: { in: productIds }, shopId, isDeleted: false },
+      select: { id: true, name: true, currentStock: true, reorderPoint: true },
+    });
+    const found = new Set(products.map((p) => p.id));
+    for (const productId of productIds) {
+      if (!found.has(productId)) {
         this.logger.warn(`Product ${productId} from invoice ${invoiceId} not found in shop ${shopId}; skipping low-stock check.`);
-        continue;
       }
-      if (product.currentStock.gt(product.reorderPoint)) continue;
-
-      const existing = await tx.notification.findFirst({
-        where: { shopId, type: NotificationType.LOW_STOCK, entityId: productId, isRead: false, isDeleted: false },
-        select: { id: true },
-      });
-      if (existing) {
-        this.logger.debug(`Unread LOW_STOCK notification ${existing.id} already exists for product ${productId}; not duplicating.`);
-        continue;
-      }
-
-      await tx.notification.create({
-        data: {
-          shopId,
-          type: NotificationType.LOW_STOCK,
-          title: 'Low Stock Alert',
-          message: `${product.name} is low on stock: ${product.currentStock.toString()} left (reorder point ${product.reorderPoint.toString()}).`,
-          entityId: productId,
-          metadata: {
-            productId,
-            currentStock: product.currentStock.toString(),
-            reorderPoint: product.reorderPoint.toString(),
-            invoiceId,
-          },
-        },
-      });
-      alerts.push({ productId, productName: product.name, currentStock: product.currentStock.toNumber() });
     }
 
-    return alerts;
+    const lowStock = products.filter((product) => !product.currentStock.gt(product.reorderPoint));
+    if (lowStock.length === 0) return [];
+
+    const existing = await tx.notification.findMany({
+      where: { shopId, type: NotificationType.LOW_STOCK, entityId: { in: lowStock.map((p) => p.id) }, isRead: false, isDeleted: false },
+      select: { id: true, entityId: true },
+    });
+    const alreadyRaised = new Set(existing.map((n) => n.entityId));
+    for (const notification of existing) {
+      this.logger.debug(`Unread LOW_STOCK notification ${notification.id} already exists for product ${notification.entityId}; not duplicating.`);
+    }
+
+    const toRaise = lowStock.filter((product) => !alreadyRaised.has(product.id));
+    if (toRaise.length === 0) return [];
+
+    await tx.notification.createMany({
+      data: toRaise.map((product) => ({
+        shopId,
+        type: NotificationType.LOW_STOCK,
+        title: 'Low Stock Alert',
+        message: `${product.name} is low on stock: ${product.currentStock.toString()} left (reorder point ${product.reorderPoint.toString()}).`,
+        entityId: product.id,
+        metadata: {
+          productId: product.id,
+          currentStock: product.currentStock.toString(),
+          reorderPoint: product.reorderPoint.toString(),
+          invoiceId,
+        },
+      })),
+    });
+    return toRaise.map((product) => ({ productId: product.id, productName: product.name, currentStock: product.currentStock.toNumber() }));
   }
 
   private async handleCustomerPaymentRecorded(
@@ -351,12 +363,29 @@ export class SystemEventsProcessor extends WorkerHost {
     return shop.ownerId;
   }
 
-  /** OutboxEvent is not tenant-scoped; updates run by id outside any tenant context. */
+  /**
+   * OutboxEvent is tenant-owned (it carries shopId), and the row is settled
+   * after the tenant context of `handle` has ended (or never existed, when
+   * the job names no shop), so the worker settles it as the system tenant by id.
+   */
+  private async markDone(eventId: string): Promise<void> {
+    try {
+      // Awaited inside the scope: a PrismaPromise is lazy and would run outside the bypass otherwise.
+      await this.tenantContext.runAsSuperAdmin(async () => {
+        await this.prisma.outboxEvent.updateMany({ where: { id: eventId }, data: { status: 'DONE', processedAt: new Date(), error: null } });
+      });
+    } catch (error) {
+      this.logger.error(`Could not mark OutboxEvent ${eventId} DONE: ${errorMessage(error)}`);
+    }
+  }
+
   private async markFailed(eventId: string, message: string): Promise<void> {
     try {
-      await this.prisma.outboxEvent.updateMany({
-        where: { id: eventId },
-        data: { status: 'FAILED', error: message.slice(0, MAX_ERROR_LENGTH), retryCount: { increment: 1 } },
+      await this.tenantContext.runAsSuperAdmin(async () => {
+        await this.prisma.outboxEvent.updateMany({
+          where: { id: eventId },
+          data: { status: 'FAILED', error: message.slice(0, MAX_ERROR_LENGTH), retryCount: { increment: 1 } },
+        });
       });
     } catch (error) {
       this.logger.error(`Could not mark OutboxEvent ${eventId} FAILED: ${errorMessage(error)}`);
@@ -365,9 +394,8 @@ export class SystemEventsProcessor extends WorkerHost {
 
   private async incrementRetryCount(eventId: string): Promise<void> {
     try {
-      await this.prisma.outboxEvent.updateMany({
-        where: { id: eventId },
-        data: { retryCount: { increment: 1 } },
+      await this.tenantContext.runAsSuperAdmin(async () => {
+        await this.prisma.outboxEvent.updateMany({ where: { id: eventId }, data: { retryCount: { increment: 1 } } });
       });
     } catch (error) {
       this.logger.error(`Could not increment retryCount of OutboxEvent ${eventId}: ${errorMessage(error)}`);

@@ -40,6 +40,27 @@ export function IntegerFromEnv(): PropertyDecorator {
   return Transform(({ value }) => parseEnvInteger(value));
 }
 
+const DECIMAL = /^-?(\d+\.?\d*|\.\d+)$/;
+
+/**
+ * Decimal environment value: unset or blank → `undefined` (the class default is
+ * kept), a finite decimal string → number, anything else → `NaN` so
+ * `@IsNumber()` rejects it (`Number('')` is 0 and `Number('1e400')` is
+ * Infinity, so neither the constructor nor `parseFloat` is used).
+ */
+export function parseEnvNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'number') return value;
+  const text = String(value).trim();
+  if (text === '') return undefined;
+  return DECIMAL.test(text) ? Number(text) : Number.NaN;
+}
+
+/** Property transform for decimal environment variables; pair with `@IsNumber()`. */
+export function NumberFromEnv(): PropertyDecorator {
+  return Transform(({ value }) => parseEnvNumber(value));
+}
+
 /** Property transform for string environment variables: blank keeps the default, otherwise trimmed. */
 export function StringFromEnv(): PropertyDecorator {
   return Transform(({ value }) => {

@@ -104,11 +104,14 @@ API now detects this at boot with a schema probe, logs a loud
 `SCHEMA DRIFT DETECTED` error, and refuses to start. The fix is always:
 
 ```bash
-cd apps/api && npx prisma db push
+cd apps/api && npx prisma migrate deploy
 ```
 
-Run it after every `git pull` that changes `prisma/schema.prisma` (make sure
-`DATABASE_URL` in your environment points at your local database).
+Run it after every `git pull` that adds a migration (make sure `DATABASE_URL`
+in your environment points at your local database). Never `prisma db push`:
+it bypasses the migration history, and the ledger triggers and data fixes
+only ship as migrations. A failed or edited migration is settled with
+`prisma migrate resolve`; see `apps/api/prisma/MIGRATIONS.md`.
 
 ### Seeding demo data
 

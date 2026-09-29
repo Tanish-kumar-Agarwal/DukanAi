@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { BillingActor, isManager, money } from '../billing/billing.types';
 import { BillingHelpers } from '../billing/billing.helpers';
 import { CloseShiftDto, ListShiftsDto, OpenShiftDto } from './dto/shift.dto';
+import { pageArgs } from '../common/pagination';
 
 const SHIFT_INCLUDE = {
   openedBy: { select: { id: true, name: true } },
@@ -122,10 +123,9 @@ export class ShiftsService {
   async list(query: ListShiftsDto, actor: BillingActor) {
     const where: Prisma.ShiftWhereInput = { shopId: actor.shopId, isDeleted: false };
     if (!isManager(actor.role)) where.openedById = actor.userId;
-    const take = query.take ?? 25;
-    const skip = query.skip ?? 0;
+    const { skip, take } = pageArgs(query, 25);
     const [rows, total] = await Promise.all([
-      this.prisma.shift.findMany({ where, include: SHIFT_INCLUDE, orderBy: { openedAt: 'desc' }, skip, take }),
+      this.prisma.shift.findMany({ where, include: SHIFT_INCLUDE, orderBy: [{ openedAt: 'desc' }, { id: 'asc' }], skip, take }),
       this.prisma.shift.count({ where }),
     ]);
     return { items: rows.map((s) => this.view(s)), total, skip, take };

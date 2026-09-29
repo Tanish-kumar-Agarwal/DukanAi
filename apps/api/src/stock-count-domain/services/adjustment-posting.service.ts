@@ -24,15 +24,18 @@ export class AdjustmentPostingService {
    *   negative delta: DEBIT INVENTORY_ADJUSTMENT / CREDIT INVENTORY
    * Adjustments the engine bypasses (SERVICE / DIGITAL products) post nothing.
    */
-  async postApprovedAdjustment(shopId: string, adjustmentId: string, postedByUserId: string) {
-    const adjustment = await this.prisma.adjustmentRequest.findFirst({
-      where: { id: adjustmentId, shopId, status: AdjustmentStatus.APPROVED },
-      include: { inventoryItem: true }
-    });
+  async postApprovedAdjustment(shopId: string, adjustmentId: string, postedByUserId: string, outerTx?: Prisma.TransactionClient) {
+    const run = async (tx: Prisma.TransactionClient) => {
+      // Claim the request first (APPROVED -> POSTED, status-guarded): a
+      // concurrent poster finds no row and stops before touching stock. If the
+      // stock or ledger write below fails, the transaction rolls the claim back.
+      const claimed = await tx.adjustmentRequest.updateMany({
+        where: { id: adjustmentId, shopId, status: AdjustmentStatus.APPROVED },
+        data: { status: AdjustmentStatus.POSTED },
+      });
+      if (claimed.count === 0) throw new BadRequestException('Adjustment request not found, not approved, or already posted.');
+      const adjustment = await tx.adjustmentRequest.findFirstOrThrow({ where: { id: adjustmentId, shopId }, include: { inventoryItem: true } });
 
-    if (!adjustment) throw new BadRequestException('Adjustment request not found or not approved.');
-
-    return this.prisma.$transaction(async (tx) => {
       const delta = new Prisma.Decimal(adjustment.requestedQuantityDelta.toString());
       const absDelta = delta.abs();
 
@@ -41,6 +44,7 @@ export class AdjustmentPostingService {
         shopId,
         locationId: adjustment.inventoryItem.locationId,
         productId: adjustment.inventoryItem.productId,
+        variantId: adjustment.inventoryItem.variantId,
         quantity: absDelta.toNumber(),
         mutationType: MutationType.ADJUSTMENT,
         metadata: { direction: delta.isNegative() ? -1 : 1 },
@@ -56,18 +60,11 @@ export class AdjustmentPostingService {
         await this.postAdjustmentValue(tx, shopId, adjustment.id, adjustment.inventoryItem.productId, delta);
       }
 
-      // 3. Mark Adjustment as Posted
-      await tx.adjustmentRequest.update({
-        where: { id: adjustment.id },
-        data: { 
-          status: AdjustmentStatus.POSTED
-        }
-      });
-
       this.logger.log(`Posted Adjustment ${adjustment.id}.`);
-      
+
       return { success: true };
-    });
+    };
+    return outerTx ? run(outerTx) : this.prisma.$transaction(run);
   }
 
   private async postAdjustmentValue(tx: Prisma.TransactionClient, shopId: string, adjustmentId: string, productId: string, delta: Prisma.Decimal) {

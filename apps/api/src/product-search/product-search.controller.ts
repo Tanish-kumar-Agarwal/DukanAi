@@ -1,12 +1,10 @@
-import { BadRequestException, Body, Controller, Get, Logger, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Logger, Param, Post, Query } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { SearchEngineService } from './search-engine.service';
 import { SynonymEngineService } from './synonym-engine.service';
 import { SearchAnalyticsService } from './search-analytics.service';
 import { IndexingEngineService } from './indexing-engine.service';
-import { parseLimit } from './search-term';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
+import { clampSearchQuery, parseLimit } from './search-term';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
@@ -19,7 +17,6 @@ const MANAGE_ROLES: Role[] = [Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MAN
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('search')
 export class ProductSearchController {
   private readonly logger = new Logger(ProductSearchController.name);
@@ -35,13 +32,15 @@ export class ProductSearchController {
   @Get()
   @Roles(...READ_ROLES)
   async search(
-    @Query('q') query: string | undefined,
+    @Query('q') rawQuery: string | undefined,
     @Query('sort') sort: string | undefined,
     @Query('limit') limitStr: string | undefined,
     @CurrentShop() shopId: string,
     @CurrentUser() user: SafeUserDto,
   ) {
-    if (!query || !query.trim()) throw new BadRequestException('Query is required');
+    // Roadmap 5.3: the query is normalised and capped once; every consumer below sees the same value.
+    const query = clampSearchQuery(rawQuery);
+    if (!query) throw new BadRequestException('Query is required');
     const limit = parseLimit(limitStr, DEFAULT_LIMIT, MAX_LIMIT);
     const start = Date.now();
 
@@ -71,7 +70,8 @@ export class ProductSearchController {
 
   @Get('suggestions')
   @Roles(...READ_ROLES)
-  async getSuggestions(@Query('q') query: string | undefined, @CurrentShop() shopId: string) {
+  async getSuggestions(@Query('q') rawQuery: string | undefined, @CurrentShop() shopId: string) {
+    const query = clampSearchQuery(rawQuery);
     if (!query) return [];
     return this.searchEngine.autocomplete(shopId, query);
   }

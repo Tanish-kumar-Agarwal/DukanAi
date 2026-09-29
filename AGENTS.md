@@ -8,8 +8,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - `nest build` uses `tsconfig.build.json` (`include: ["src/**/*"]`), so the
   entrypoint compiles to `dist/main.js` and `start:prod` is `node dist/main`.
-  If the root-level `check-db.ts` / `setup-triggers.ts` ever get pulled into
-  the build, tsc widens rootDir and the output moves to `dist/src/main.js`;
+  If the root-level `check-db.ts` (or any other root-level script) ever gets
+  pulled into the build, tsc widens rootDir and the output moves to `dist/src/main.js`;
   `test/boot-regression.e2e-spec.ts` guards the script/output agreement.
 - Boot failures are surfaced via `abortOnError: false` + a `bootstrap().catch`
   in `src/main.ts` that writes to stderr. `bufferLogs: true` otherwise swallows
@@ -25,10 +25,14 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   endpoints are placeholders. The web `.env.production` must likewise hold
   valid URLs and a 32+ character `NEXTAUTH_SECRET` placeholder or `next build`
   fails while collecting page data.
-- Nest's `ConfigModule` loads `.env.local`, `.env.<NODE_ENV>`, then `.env` (see
-  `EnterpriseConfigModule`). Committed `.env.production`/`.env.development`/
-  `.env.test` are templates the owner deliberately tracks; the root
-  `.gitignore` documents this ("ALWAYS COMMITTED") and is marked do-not-modify.
+- Nest's `ConfigModule` loads `.env.local`, `.env.<NODE_ENV>` (only when
+  `NODE_ENV` is set), then `.env` (see `EnterpriseConfigModule`). `NODE_ENV` is
+  required (`AppConfig` has no default; the `start*` scripts pin it, `start:prod`
+  to production), so a bare process never runs as development. Committed
+  `.env.production`/`.env.development`/`.env.test` are templates the owner
+  deliberately tracks; the root `.gitignore` documents this ("ALWAYS COMMITTED")
+  and is marked do-not-modify. A production boot that still carries a template
+  placeholder (`JWT_SECRET`, `FRONTEND_URL`) refuses to start.
 - `@dukaanai/invoice-math` resolves to `packages/invoice-math/dist` (gitignored).
   Build it first (`npm run build` at the root runs turbo in dependency order;
   in isolation run `cd packages/invoice-math && npx tsc -p tsconfig.json`), or
@@ -117,9 +121,21 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `it` (see `test/security/README.md`). Never skip or delete one.
   Point either at another database with `TEST_DATABASE_URL` (integration) or
   `DATABASE_URL` + `E2E_DATABASE_URL` (Playwright); no env file edits needed.
-- BullMQ takes host/port/credentials/db from `REDIS_URL` (`app.module.ts`).
-  The db index matters: dev (db 0) and tests (db 1) share one Redis server,
-  and before the db was honoured a running dev API consumed the tests' jobs.
+- BullMQ's connection comes from `bullConnectionFromUrl(REDIS_URL)`
+  (`src/common/redis/redis-connection.ts`: `rediss://` turns TLS on,
+  credentials are percent-decoded, the path is the db, `maxRetriesPerRequest:
+  null`). The db index matters: dev (db 0) and tests (db 1) share one Redis
+  server, and before the db was honoured a running dev API consumed the tests'
+  jobs. Every queue is BullMQ (`@nestjs/bullmq`); the legacy `@nestjs/bull`
+  package is gone (`barcode-bulk` was its last processor and dialled
+  localhost:6379 db 0 regardless of `REDIS_URL`). The shared `REDIS_CLIENT` is
+  QUIT on application shutdown (`RedisClientLifecycle`).
+- The cache (`CACHE_MANAGER`) is a Keyv Redis store (`buildCacheOptions`,
+  `src/common/cache/cache-options.ts`): keys are `cache:<key>` in Redis, so
+  every instance shares entries and an invalidation is seen by all. Without
+  `REDIS_URL` it is an in-process Map (dev only). cache-manager 7 reads
+  `stores`, not `store`: the old `cache-manager-redis-yet` wiring was ignored
+  and left an unbounded per-process Map.
 - Integration runs are hermetic: `test/jest-integration.global-setup.ts`
   flushes the test Redis db first (index >= 1 only), and the setup file sets
   `CRON_ENABLED=false` so no scheduler registers (the two
@@ -137,9 +153,403 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   race (roadmap 7.3).
 - Config domains read env through `hydrateFromEnv` (`src/config/hydrate-from-env.ts`):
   only `@EnvVariable` properties are copied, blank keeps the default, `0` is a
-  value, garbage fails boot (`IntegerFromEnv`, `IsCronExpression`). `CronConfig`
-  and `CacheConfig` use it; the older `plainToInstance(X, process.env)` domains
-  still silently default bad values (roadmap 2.10).
+  value, garbage fails boot (`IntegerFromEnv`, `NumberFromEnv` for decimals,
+  `BooleanFromEnv`, `IsCronExpression`). Every numeric/boolean domain uses it
+  (`AppConfig`, `JwtConfig`, `SecurityConfig`, `CronConfig`, `CacheConfig`,
+  `BullConfig`, `PrismaConfig`, `QueueConfig`, `EmailConfig`, all
+  `*FeatureConfig`); never hydrate with `plainToInstance(..., {
+  enableImplicitConversion: true })`, which turned the string "false" into
+  true. Bounds live on the class (`BILLING_CASHIER_MAX_DISCOUNT_PERCENT` 0-100,
+  `OCR_FUZZY_MATCH_THRESHOLD` 0-1, `BCRYPT_ROUNDS` 4-31, limits >= 1).
+  Shared rules live in `src/config/validation/env-rules.ts`:
+  `IsProductionSecret` (under `NODE_ENV=production` a secret must be 32+ chars
+  and no template placeholder such as `___REPLACE_ME___`/`your_`/`CHANGE_ME`),
+  `IsUrlList` (`FRONTEND_URL`: comma-separated absolute http(s) origins).
+- Boot refusals throw: `StartupValidatorService` and
+  `ConfigurationRegistryService` raise an Error (never `process.exit`), so the
+  reason reaches `bootstrap().catch` and stderr. `test/boot-regression.e2e-spec.ts`
+  spawns `node dist/main` for the matrix (no `NODE_ENV`, blank / placeholder /
+  short `JWT_SECRET`, placeholder `FRONTEND_URL`, `AUTH_DISABLED` in
+  production) and asserts each message.
+
+## Money and stock correctness (roadmap phase 3)
+
+- Returns are cumulative (`InvoiceMathEngine.calculateReturn`, spec in
+  `packages/invoice-math/CALCULATION_SPEC.md`): every line carries
+  `returnedQuantity`, a document refunds `cum(before + qty) − cum(before)`
+  per stored amount, is never rounded to the rupee on its own, and is settled
+  against the sale (`settlement`: capped at `invoiceTotal − refundedTotal`,
+  exact remainder when it completes the invoice). `InvoiceReversalService`
+  reads the earlier returns under the invoice lock (`priorReturns`) and the
+  web preview passes the same settlement. A cancellation settles as a
+  completing return, so its math lands on the stored total.
+- `splitRevenue` (`billing.types.ts`) decides the SALES_REVENUE / GST_PAYABLE
+  split of a sale or reversal: revenue carries the round-off and a sub-₹0.50
+  document moves the shortfall onto GST, because the ledger drops negative
+  entries. Use it for any new revenue posting.
+- Reversals run on soft-deleted products and customers: the engine blocks a
+  deleted product only for SALE/RESERVATION, `lockCustomer` takes
+  `allowDeleted`. A refund posts to the sale's shift while it is still open
+  and usable by the actor (`lockShiftForReversal`), else to the actor's own.
+- Authority: `creditLimit` is accepted from MANAGER+ only
+  (`CREDIT_LIMIT_REQUIRES_MANAGER`, AuditLog row `CUSTOMER_CREDIT_LIMIT_CHANGED`
+  in the same transaction). A cashier's discount authority is the max of the
+  line, invoice and combined effective percentages, and a cashier's custom
+  line is capped at `BILLING_CASHIER_MAX_CUSTOM_LINE_AMOUNT` (default 500,
+  `CUSTOM_LINE_REQUIRES_APPROVAL`).
+- Soft-delete unique keys use `deletedToken` (`''` live, the row id once
+  deleted; `src/prisma/soft-delete-token.ts`, DMMF-derived, stamped by the
+  Prisma extension on `update`/`upsert` by id: a soft delete through
+  `updateMany` throws). Keys are `(shopId, key, deletedToken)` on Category,
+  Product (sku, barcode), ProductVariant (sku, barcode), Supplier, Customer,
+  CustomerGroup/Category, PurchaseOrder, GoodsReceipt, VendorBill,
+  PurchaseReturn, SupplierCreditNote, Warehouse, Location. The index is the
+  guard: services pre-check for a friendly message and map P2002 with
+  `rethrowUniqueViolation` (`common/db/unique-violation.ts`); the global
+  filter answers 409 `DB_P2002` with `details.target` otherwise. Live rows
+  that were already duplicates when the migration ran keep their id as token
+  (exempt, still live); list them with `deletedToken <> '' AND isDeleted = 0`.
+- Stock engine: `idempotencyKey` is per document line (`GRN:<grn>:<lineId>`,
+  `PRET:<return>:<lineId>`) and callers skip the value of an `idempotent`
+  result; a RESERVATION_RELEASE floors `reserved` at 0; `variantId` on the
+  request addresses the variant row (adjustments, allocations, releases pass
+  it); a new product-level item bootstraps `currentStock − Σ onHand` as
+  OPENING_BALANCE; `InventoryReconService` writes an InventoryLog row
+  (recorded under the shop owner) when it corrects `currentStock`.
+- Reservations always expire (`expiresInSeconds` 30 s..7 d, mandatory);
+  `POST /reservations/:id/cancel|release` free the stock once
+  (`ReservationExpiryService.releaseReservation`, status-guarded). Stock-count
+  adjustments are never auto-approved, take their delta from
+  `StockCountItem.variance` when raised from a count item, need an approver
+  other than the requester, and approve + post in one transaction with
+  guarded PENDING_APPROVAL → APPROVED → POSTED transitions.
+- Payables (`SupplierPayablesService`, global LedgerModule): a GRN adds to
+  `Supplier.pendingPayables` and a purchase return floors it, in the same
+  transaction as their postings; supplier and vendor-bill payments create a
+  `SupplierPayment` row (idempotent per `(shopId, idempotencyKey)`), decrement
+  the balance under a guard (`PAYABLES_INSUFFICIENT`) and post DR
+  ACCOUNTS_PAYABLE / CR CASH|BANK with source `SUPPLIER_PAYMENT`.
+  `payablesFromLedger` rebuilds the balance (`openingPayables` + postings).
+- Migrations: an applied migration is never edited
+  (`scripts/check-migrations-immutable.sh`, run in CI against the base
+  branch); a fix ships as a new migration with `information_schema` guards
+  (`20260929090100_foundation_convergence` is the template); the ledger
+  immutability triggers are a migration (`20260929090200`), so
+  `LedgerTransaction` rows cannot be updated or deleted, not even by tests.
+  The boot drift message and `prisma/MIGRATIONS.md` give the
+  `migrate deploy` / `migrate resolve` runbook; `prisma db push` is never used.
+  `test/integration/migrations.integration-spec.ts` replays the phase 3
+  migrations on a seeded scratch database (needs CREATE DATABASE rights on
+  the test server).
+
+## Scaffolding modules (roadmap phase 4)
+
+- 4.1: the media, product-validation, product-identity, import-export,
+  webhook and product-events controllers take the shop from `@CurrentShop()`
+  and the user from `@CurrentUser('id')` (`src/iam/decorators`); `req.shop`
+  was never set and every call answered 500. Every body is a DTO; webhooks
+  are MANAGER+ for reads and writes and the HMAC secret is returned once, in
+  the create response, only when the server generated it. Foreign keys in
+  those routes go through `assertOwned` (media attach, barcode targets, bulk
+  validation); validation state rows are read and written by shop;
+  `VariantIdentity.sku` is unique per shop (`(shopId, sku)`, migration
+  `20260929120000`). The former media `bulk`/`search` stubs are gone; `tag`
+  and `order` are real. `test/integration/scaffolding-routes.integration-spec.ts`
+  walks every route as OWNER, VIEWER and a foreign owner (no 500s, role
+  gates, 404 on foreign ids) and follows an import to the worker.
+- Every BullMQ processor runs its job under a tenant context
+  (`src/iam/tenant-context/job-context.ts`): `jobContext(shopId, jobId)` when
+  the job names its shop (`requireJobShop` refuses one that does not),
+  `runInShopOf(tenant, prisma, model, id, jobId, fn)` when it names only a
+  document (the owner is read as the system tenant; a missing row is a
+  logged no-op, not a crash loop), `runAsSuperAdmin` for relays.
+  `src/iam/tenant-context/processor-context.spec.ts` scans every
+  `@Processor` source and fails a worker that touches a collaborator
+  without one (a pure Redis/queue worker is allowlisted there with its reason).
+  Producers put `shopId` on the job (`import-job`, `webhook-delivery`).
+- 4.2 procurement (purchase, grn, purchase-return, vendor-bill,
+  supplier-credit domains; kept and fixed because the phase 3 payables build
+  on GRNs and bills; the web does not call these routes yet):
+  - Document numbers come from `NumberSequenceService`
+    (`src/common/numbering`, global; one `NumberSequence` row per
+    `(shopId, entityType)` under `FOR UPDATE`): `PO-YYYYMM-00001`,
+    `GRN|PR|VB|SCN-<FY>-000001`; the POS invoice/return numbers use the same
+    service. Never number a document from `Date.now()`.
+  - Every procurement write runs in `procurementTransaction`
+    (`src/common/db/procurement-transaction.ts`: READ COMMITTED, 30 s,
+    serialization retry), not Serializable, and takes the canonical locks:
+    the order header (`PurchaseReceiptService.lockReceivableOrder`, raw
+    `FOR UPDATE`) then `InventoryMutationEngine.lockProducts` before stock moves.
+  - State machines are the `*LifecycleService` maps; a purchase-order
+    transition is a compare-and-set `updateMany` on the current status (0 rows
+    is 409 `PURCHASE_ORDER_STATE_CONFLICT`). Submission opens one PENDING
+    approval row (`openApproval`) and puts returns, bills and credit notes in
+    `PENDING_APPROVAL`; an order is decided SUBMITTED → APPROVED/REJECTED in one
+    step. The creator/submitter never approves (`SEPARATION_OF_DUTIES`, 403);
+    approving without a PENDING row is 400 `*_NOT_PENDING`.
+  - A goods receipt is bound to its order: the order must be APPROVED,
+    ORDERED or PARTIALLY_RECEIVED, the supplier must match, each line fulfils
+    one `PurchaseOrderItem` (`GoodsReceiptLine.purchaseOrderItemId`, migration
+    `20260929140000`), ordered quantity and unit price come from that line
+    (the DTO has neither), and Σ accepted over every ACCEPTED/COMPLETED/CLOSED
+    receipt of a line never exceeds what was ordered (`GRN_OVER_RECEIPT`).
+    Inspection quantities are applied to the lines; acceptance stocks the
+    inspected (else received) quantities, posts DR INVENTORY / CR
+    ACCOUNTS_PAYABLE and moves the order to PARTIALLY_RECEIVED / RECEIVED.
+  - A purchase return line names its GRN line; over-return is checked against
+    accepted minus the other live returns (`COUNTED_RETURN_STATUSES`), the
+    return's own rows excluded on re-validation. Vendor-bill three-way match
+    is cumulative over the other live bills of the receipt line. A credit note
+    is worth its lines, is issued on approval, and allocates only to a
+    POSTED/PARTIALLY_PAID bill of its own supplier (the bill becomes
+    PARTIALLY_PAID/PAID; the ledger payable was already reduced by the
+    purchase return, so an allocation posts nothing).
+  - Outbox: the purchase relay claims rows as PROCESSING and the
+    `purchase-events` worker sets DONE/FAILED (marking DONE at enqueue made the
+    worker skip everything). The relay's family is
+    `PURCHASE_RELAY_TYPE_PREFIXES` (`src/common/outbox/outbox-routing.ts`,
+    incl. `Goods*`, `Inspection*`, `Outstanding*`); `Inventory*`/`Product*`
+    rows (with `Category*`/`Brand*`) belong to the product-events relay
+    (`PRODUCT_RELAY_TYPE_PREFIXES`, 4.7). Listeners receive one
+    envelope `{ shopId, outboxEventId, aggregateId, correlationId, payload }`;
+    the order approval event is `PurchaseOrderApproved`. Analytics SQL is MySQL
+    (`TIMESTAMPDIFF`), not PostgreSQL.
+  - `test/integration/procurement.integration-spec.ts` walks the whole chain
+    over HTTP (numbers, approvals, receipts, bill, payments, return, credit
+    note, relay) and asserts stock, ledger and `Supplier.pendingPayables`.
+- 4.3 warehouses/locations (`src/warehouse-domain`): MANAGER+ writes, shop
+  from the tenant context, `Warehouse.code` unique per shop and
+  `Location.code` per warehouse (409 `WAREHOUSE_CODE_IN_USE` /
+  `LOCATION_CODE_IN_USE`, unique indexes with `deletedToken` behind the
+  pre-check), `warehouseId` through `assertOwned`, a parent location must be
+  in the same warehouse (404). Covered by the procurement spec above.
+- 4.4 OCR (`src/ocr`, `POST /ocr/scan-bill`, MANAGER+): multer limits and
+  the image-only filter come from `OcrModule`'s `MulterModule.registerAsync`
+  (`OCR_MAX_IMAGE_BYTES`, one file, JPEG/PNG/WebP by declared type and
+  extension); the bytes are then sniffed (`sniffImageMimeType`,
+  `ocr-upload.ts`) and that mimetype, not the client's, goes to Gemini with
+  the key in `x-goog-api-key` (never the URL) and `OCR_MODEL`. A placeholder
+  or missing `GEMINI_API_KEY` is 503 `OCR_NOT_CONFIGURED`; an unreadable
+  model answer is 502 `OCR_UNREADABLE_RESPONSE`, never an empty success.
+  Matching (`OcrService.matchProducts`) is per line with up to four keywords
+  as plain `contains` filters (MySQL collation is case-insensitive; Prisma's
+  `mode: 'insensitive'` is PostgreSQL-only and answered 500 here), five
+  candidates, four lookups in flight, and the Dice similarity against
+  `OCR_FUZZY_MATCH_THRESHOLD` is the reported `confidence`. Items are capped
+  at `OCR_MAX_ITEMS`. The web has no caller yet (the AI scanner page is a
+  mock). `src/ocr/ocr.service.spec.ts` and
+  `test/integration/ocr.integration-spec.ts` (stubbed `fetch`) cover it.
+- 4.5 / 4.6: the enterprise-invoice (`/invoices/generate`), returns-domain
+  (`/returns/initiate`), payment-domain (`/payments/capture`), sales-domain
+  (`/sales/orders`, `/sales/workflow`), pricing-domain (`/pricing/simulate`)
+  and events-domain (`/events/replay`, its duplicate `/events/webhooks`) stacks
+  are detached from `AppModule`: POS billing (`/billing/*`) is the one
+  invoice / return / payment path and product-events (`/webhooks`,
+  `/events`) the one webhook path. Customers and reservations no longer write
+  outbox rows nobody consumed (`customer.*`, `StockReserved`); a customer's
+  audit row commits in the same transaction as the create / delete. Every
+  BullMQ queue must have a worker and a producer: `QueueWiringAssertion`
+  (`src/common/queues`, boot) refuses a registered queue without a worker or
+  a worker without a registration, and `queue-wiring.spec.ts` walks the
+  import graph from `app.module.ts` (unreachable files do not count) and
+  also requires an `@InjectQueue` producer per queue. The 15 consumer-only
+  workers (`grn-jobs`, `purchase-returns`, `supplier-credits`, `vendor-bills`,
+  `purchase-attachments`, `workflow-engine`, `customer-queue`, `barcode-bulk`
+  and the seven of the detached stacks) and the producer-only
+  `internal-events` / `inventory-events` queues are gone from the modules.
+  A new queue needs both sides in the same change.
+- 4.7 outbox: every relay goes through `OutboxClaimService`
+  (`src/common/outbox/outbox-claim.service.ts`): `claim(predicate)` runs one
+  READ COMMITTED transaction (`SELECT ... FOR UPDATE SKIP LOCKED` on PENDING
+  rows whose `nextAttemptAt` has passed, then `status = 'CLAIMED'`,
+  `claimedAt`), the relay enqueues after the commit (`release` on an enqueue
+  failure) and the worker settles the row: `markDone`, or `scheduleRetry`
+  (PENDING again with `nextAttemptAt` = exponential backoff from
+  `EVENTS_OUTBOX_RETRY_BACKOFF_MS`, FAILED once `EVENTS_OUTBOX_MAX_RETRIES`
+  attempts are spent). Job ids are `<outboxEventId>.<retryCount>`
+  (`jobIdFor`; BullMQ refuses a custom id containing `:`) so a retry never
+  collides with a retained job. The
+  `OutboxReaper` cron (`CRON_OUTBOX_REAPER`, lock `cron:outbox-reaper`) puts
+  claims older than `EVENTS_OUTBOX_STALE_CLAIM_MS` (CLAIMED, or legacy
+  PROCESSING) back to PENDING with the same backoff, or FAILED. Three relays
+  share the semantic: system events (`OutboxRelayService` -> `system-events`
+  worker; every type no other family owns), purchase
+  (`PurchaseOutboxRelayCron` -> `purchase-events`), product
+  (`OutboxProcessorWorker` routes inline to `webhook-delivery`). The sales
+  relay pair (`sales-events`/`sales-webhooks`) is gone: nothing stages its
+  types since 4.5. `POST /sales/events/retry` (MANAGER+) resets a FAILED row
+  of the shop to PENDING (409 `OUTBOX_EVENT_NOT_FAILED` otherwise);
+  `GET /sales/events[?status=]` lists them. Never mark a row DONE at enqueue
+  time and never poll a row's status from a relay: claim, hand over, let the
+  worker end it. A test that relays product rows drains the family first
+  (other suites leave PENDING rows; the relay claims the oldest batch).
+- 4.8 webhooks: one delivery path, `ProductWebhookDispatcherService` over
+  `WebhookHttpClient` (axios, `maxRedirects: 0`, response capped at
+  `EVENTS_WEBHOOK_MAX_RESPONSE_BYTES`, only 2xx counts). `OutboundUrlGuard`
+  (`src/common/net/outbound-url-guard.ts`) vets the URL at registration
+  (`POST /webhooks`, MANAGER+, 400 with `WEBHOOK_URL_SCHEME|CREDENTIALS|
+  PRIVATE|UNRESOLVABLE|INVALID`) and again at send time: https only unless
+  `EVENTS_WEBHOOK_ALLOW_HTTP`, no credentials, no localhost/`.local`/
+  `.internal` names, and every DNS answer must be public (loopback, RFC1918,
+  link-local incl. 169.254.169.254, CGNAT, mapped/NAT64/6to4 IPv6 are
+  blocked); the connection is then pinned to the vetted address (`lookup`
+  override), so a host cannot rebind between check and connect. A blocked
+  target is a WebhookDelivery FAILED row and `UnrecoverableError` (no
+  retry). Signature: `x-dukanai-signature: t=<ms>,v1=<hex HMAC-SHA256(secret,
+  "<ms>.<body>")>` with `x-dukanai-timestamp`, `x-dukanai-event`,
+  `x-dukanai-delivery` (`signWebhookPayload`). The resolver is the
+  `OUTBOUND_RESOLVER` provider (ProductEventsModule); tests override it and
+  `WebhookHttpClient` (`test/integration/outbox-webhooks.integration-spec.ts`).
+- 4.9 nightly analytics (`AnalyticsJobScheduler`, `CRON_ANALYTICS_JOB`, lock
+  `cron:analytics-job`, every open shop through `sweepEveryShop`, which pages
+  shops by id): per shop `KpiService.calculateDailyKpis` (now also
+  `avgDailyUnits`), `ClassificationService.classifyInventory` (ABC by
+  cumulative net pre-tax revenue 80 / 95 %, XYZ by the coefficient of
+  variation of weekly net units over 13 business weeks,
+  `engines/classification-engine.ts`; no sales = UNCLASSIFIED; one row per
+  live product, deleted products pruned) and
+  `RecommendationEngineService.generateRecommendations` (REORDER when the
+  stockout risk is above 80 with `suggestedQuantity` = 14 days of demand,
+  LIQUIDATE above 180 days of inventory). Recommendations are keyed by
+  `(shopId, productId, forDate, type)` (migration `20260929170000`, forDate =
+  business day): a re-run upserts score/reason/actionData and keeps the
+  `status` a user set; rows older than 90 days and KPI rows older than 400
+  days are pruned in LIMIT batches. All writes are multi-row
+  `INSERT ... ON DUPLICATE KEY UPDATE` (`engines/batch-write.ts`, 500 rows);
+  never write these tables one upsert per product. The forecast stub is out
+  of the chain (dashboard insights compute their own forecast live).
+
+## Denial of service and performance (roadmap phase 5)
+
+- 5.1 uploads: every multipart route goes through `src/common/upload`:
+  `buildUploadOptions(policy, tempDir)` gives multer hard `limits` (file
+  size from `UploadConfig`: `UPLOAD_MAX_MEDIA_BYTES`, `UPLOAD_MAX_IMPORT_BYTES`;
+  file, part and field counts), a `fileFilter` on the declared type and
+  extension (400 with the route's code before a byte is stored) and disk
+  storage into `UPLOAD_TEMP_DIR` under a random name; a file over the cap is
+  multer `LIMIT_FILE_SIZE`, which Nest answers as 413 while the rest of the
+  body is drained. The handler then calls `assertUploadContent` (media) or
+  `assertImportFileContent` (imports): the magic bytes must match the
+  declared type (`file-signature.ts`: JPEG, PNG, WebP, GIF, AVIF, MP4,
+  QuickTime, WebM, Matroska, PDF, OLE, ZIP-based docx, glTF; CSV/JSON must
+  be readable UTF-8 with no control bytes) or the file is unlinked and the
+  request is 400. A temp file never outlives its request
+  (`ProductMediaService.uploadMedia` unlinks in `finally`; the CDN move
+  renames it away first; imports rename it into `uploads/imports`), and
+  `UploadCleanupInterceptor` (`src/common/upload`, listed BEFORE the
+  `FileInterceptor` on every disk-stored route) unlinks whatever is still
+  there when the request ends by any other path: the global ValidationPipe
+  runs after multer, so a body-validation 400 or an ownership 404 used to
+  leave the file behind. A new disk-stored upload route must carry it. SVG is
+  not a media type. The storage routes keep their constants
+  (`storage-security.constants.ts`) and memory storage (documents are
+  written to `STORAGE_ROOT` from the buffer) but now check the bytes in
+  `validateUploadedFile` (`STORAGE_CONTENT_MISMATCH`) and cap parts and
+  fields; OCR keeps its own limits and delegates sniffing to the shared
+  sniffer. Roles: media and imports MANAGER+, storage per route, OCR
+  MANAGER+. `test/integration/upload-limits.integration-spec.ts` overrides
+  `UploadConfig` with small caps and asserts 413 / 400 / discarded temp
+  files / roles per route.
+- 5.2 variants: `GenerateVariantsDto` bounds the matrix before it is expanded
+  (`attributeMatrixProblem`: at most 8 attributes, 100 values each, labels
+  1-50 characters with letters or digits, no duplicate slugs, and the product
+  of the value counts at most `MAX_VARIANT_COMBINATIONS` = 1000);
+  `ProductVariantsService.generateVariants` re-checks it (400
+  `VARIANT_MATRIX_TOO_LARGE` / `VARIANT_MATRIX_INVALID`) so a direct caller
+  cannot bypass the DTO. The Cartesian product is typed and built only after
+  the check.
+- 5.3 search: `clampSearchQuery` (`product-search/search-term.ts`) takes any
+  query value (`queryString`: a repeated `?q=a&q=b` arrives as an array and
+  reads as its first string, a non-string is absent), normalises it and cuts
+  it to `MAX_SEARCH_QUERY_LENGTH` (100); the controller, `SearchEngineService`
+  and `GET /products?q` all apply it. `tokenizeForSynonyms` lower-cases,
+  de-duplicates and caps the tokens looked up (8), while `queryTokens` keeps
+  every typed token in the expansion; `SynonymEngineService.expandQuery`
+  resolves them in ONE `findMany({ term: { in } })`, capping the expansion
+  at 24 terms (a synonym list is at most 191 characters, the column width).
+  Every `SearchHistory` insert goes through a per-shop, per-minute budget
+  (`SEARCH_HISTORY_MAX_PER_MINUTE`, default 120; one Redis MULTI of `INCR`
+  + `PEXPIRE NX` on `search-history:{shopId}:{minute}`, per-process counter
+  when Redis is down): a search past the budget is served but not recorded.
+  Never add a per-token query or an uncapped `q` consumer.
+- 5.4 reconciliation: `InventoryReconService.runReconciliation(now)` pages
+  products with keyset pagination (`inventory/recon-keyset.ts`: closed window
+  `updatedAt` in `[now - lookback, now]`, cursor `(updatedAt, id)` over the
+  `Product(updatedAt)` index), never `skip`; a product updated during the run
+  (including one the run repairs, which bumps `updatedAt`) waits for the next
+  run, so the loop terminates under continuous sales. It returns a summary
+  (`productsChecked`, `batches`, drift counters) for tests.
+- 5.5 dashboard: the all-time totals of the summary are cached under
+  `shop:{shopId}:analytics:allTime` (`AnalyticsCacheService.getAllTime` /
+  `setAllTime`, the KPI TTL of 60 s, not the dashboard hour: an aggregate
+  that started before a sale committed can be written after that sale's
+  invalidation, and the short TTL bounds the stale figure to a minute) with
+  Decimals as strings and a shape check on read (`isCachedTotals`); the key
+  is part of `analyticsCacheKeys`, so `BillingHelpers.afterStockChange` and
+  the system-events worker drop it with the others after every committed
+  sale, return and cancellation. Add any new whole-history aggregate to that
+  key family rather than caching it on its own.
+- 5.6 lists: every list route is a capped page. `src/common/pagination`:
+  `ListQueryDto` (`skip >= 0`, `take 1..MAX_LIST_TAKE` = 200, default
+  `DEFAULT_LIST_TAKE` = 100; a bad value is 400 under the global
+  `forbidNonWhitelisted` pipe) and `LimitOffsetQueryDto` for the procurement
+  lists that already used `limit`/`offset`; `pageArgs` / `limitOffsetArgs`
+  clamp again for direct callers. A service returns `PagedResult`
+  (`{ items, total, skip, take }`) and the handler carries `@PagedList()`:
+  the response body stays the plain array the web renders (UI unchanged) and
+  the page goes in `X-Total-Count` / `X-Page-Skip` / `X-Page-Take`. Applied
+  to expenses, suppliers, batches, categories (default = cap, tree order),
+  warehouses, the location subtree (`SubtreeQueryDto`, `path` required),
+  inventory-domain items and alerts, notifications, `/inventory/products`,
+  purchases / grn / vendor-bills / purchase-returns / supplier-credit-notes,
+  the purchase-events dead letter, `/users/employees`, `/webhooks`, the
+  workflow task and definition lists, media galleries, `/auth/sessions` and
+  the barcode history; shifts (own `{ items, total }` envelope), customers,
+  invoices, products and search had their own caps already, and nested
+  includes (`subCategories`, product `images`/`attributes`, media
+  thumbnails/tags, duplicate candidates) carry `take: MAX_LIST_TAKE`. CORS
+  exposes the page headers. A new list route takes `@Query() query:
+  ListQueryDto` and never a bare `@Query('limit')`; every paged `orderBy`
+  ends in `id` so pages are stable.
+  `test/integration/list-caps.integration-spec.ts` walks the named lists,
+  the legacy `limit` routes, the extra lists above and the `q` routes.
+- 5.7 guards: `JwtAuthGuard`, `TenantGuard` and `RolesGuard` run once as
+  `APP_GUARD`s (`app.module.ts`); no controller repeats them with
+  `@UseGuards` (the only local guards left are `LocalAuthGuard` on login and
+  the socket guards on `InventoryGateway`). `raiseLowStockNotifications`
+  (system-events worker) is three statements per sale: products `in`,
+  unread LOW_STOCK notifications `in`, one `createMany`. A category move
+  (`CategoriesService.update`; `parentId: null` moves to the root, an absent
+  `parentId` is a plain update) runs in one transaction that reads the
+  category and the new parent `FOR UPDATE` (two concurrent moves can neither
+  build a cycle nor re-root from a stale prefix) and re-roots the subtree
+  with one `UPDATE ... SET path = CONCAT(new, SUBSTRING(path, ...)), depth =
+  depth + delta WHERE shopId = ? AND path LIKE 'old%'`
+  (`updateDescendantsPath`, LIKE-escaped prefix), never one update per
+  descendant. `Category.path` is VARCHAR(191): about seven levels of ids.
+- 5.8 load test: `apps/api/load/` (`pos-peak.yml`, `processor.js`,
+  `setup.mjs`, `summarize.mjs`, `run.sh`, `upload-gate.sh`, README) drives
+  checkout, dashboard summary and login at 3x the assumed peak (15 / 30 / 3
+  per second) with artillery (`npx artillery@2.0.34`, not a workspace
+  dependency) against a built API on a disposable database, through public
+  routes only (registration creates the shop OWNER). `summarize.mjs` is the
+  one gate (artillery's expect/ensure plugins are not loaded, so a check in
+  the yml would be ignored): checkout p95 < 500 ms, zero 5xx, zero
+  transport errors, every response 2xx, and the load delivered (users
+  created = completed, requests = responses). `upload-gate.sh` is the other
+  half of the phase gate: N x 300 MB uploads answer 413 with the RSS
+  sampled and the temp directory empty. The load is spread over
+  `LOAD_SHOPS` shops (16): a checkout holds the shop's shift, number-sequence
+  and product row locks, so one shop bills serially by design. Both scripts
+  boot with `NODE_ENV=test` (so `.env.test` applies: rate limits open,
+  billing timeouts wide) and `PRISMA_LOG_QUERIES=false`;
+  `PrismaService.logLevelsFor` honours that flag outside production (it used
+  to log every query under any non-production `NODE_ENV`; `.env.test` and
+  `.env.development` still say `true`, and `test/jest-integration.setup.ts`
+  forces `false`, so integration runs print no query log). The recorded
+  baseline, the environment and the code version it was taken on are in
+  `docs/LOAD_TEST_BASELINE.md`; re-run and update it after a change to the
+  checkout transaction, the dashboard queries or the upload path.
 
 ## Toolchain
 
@@ -214,15 +624,101 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   from the parent); nested creates must set it, and `BatchStock`'s unique key
   is `(shopId, batchId, inventoryItemId)`.
 
+## Rate limiting and proxies (roadmap 2.1)
+
+- `SecurityConfig` windows are milliseconds (`RATE_LIMIT_*_TTL_MS`, under
+  1000 fails boot); the old second-based `RATE_LIMIT_*_TTL` keys are not read.
+  Counters live in Redis (`RedisThrottlerStorage`, keys `throttle:{...}`) and
+  degrade to the per-process storage when Redis is down. Routes that take
+  credentials carry `@AuthThrottle()` (login, register, refresh, google,
+  invitation accept) and get the `AUTH_RATE_LIMIT_*` limits instead of the
+  general ones (`src/common/throttling`). `.env.test` opens every window wide;
+  `test/integration/rate-limit.integration-spec.ts` proves the limiter with its
+  own overrides and clears `throttle:*` before and after.
+- The tracker is `req.ip`, so `TRUST_PROXY` (Express `trust proxy`, applied in
+  `main.ts`) decides whether `X-Forwarded-For` counts. Every sign-in and
+  refresh call reaches the API from the web server, which forwards the
+  browser's address (`apps/web/src/lib/auth.ts`); count it as a hop.
+- Login lockout (`UsersService.incrementFailedAttempts`, atomic
+  `{ increment: 1 }`): `SECURITY_MAX_LOGIN_ATTEMPTS` failures lock NEW logins
+  for `SECURITY_LOCKOUT_DURATION_MS`; an expired lock is cleared on the next
+  attempt (`isLockedNow`). A lock never revokes open sessions or sockets
+  (`JwtStrategy`, `AuthenticatedIoAdapter` ignore `isLocked`): suspension is
+  `isActive`, revocation is `tokenVersion`. The `auth-account` throttler
+  (`AUTH_RATE_LIMIT_ACCOUNT_LIMIT` per medium window, keyed by the submitted
+  email) caps attempts spread over many addresses.
+
+## Invitations, Google sign-in, email (roadmap 2.8, 2.9)
+
+- Invitations (`InvitationsService`): the invited role must rank strictly
+  below the inviter's (`ROLE_RANK`/`outranks` in `src/auth/role-sets.ts`, also
+  used by user suspend/delete), `Invitation.inviterId` records the issuer, and
+  the token reaches the invitee only by email: the API response carries no
+  token. A MANAGER revokes only their own invitations; ADMIN roles any.
+- `EmailService` (`src/common/email`, global) sends through nodemailer from
+  `SMTP_URL`; unset, it logs each message (`isConfigured` false). Production
+  refuses to issue an invitation without SMTP (503). Integration specs
+  override the provider (`bootApp(b => b.overrideProvider(EmailService)...)`)
+  and read the token from the recorded message. The email links to
+  `<FRONTEND_URL>/register?invite=<token>`; the web register page does not
+  read that parameter yet (the invitee pastes the code).
+- Google sign-in: the web sends only `{ idToken: account.id_token }` to
+  `POST /auth/google`, and registers the provider only with real credentials
+  (`hasGoogleCredentials`, placeholder-aware). The API never links a Google
+  identity to an existing account that was not created through Google (409,
+  surfaced as `AccessDenied` on the login page): anyone can register a
+  password account under someone else's address.
+
+## WebSockets and correlation (roadmap 2.13, 2.14)
+
+- `AuthenticatedIoAdapter` registers its middleware on the root socket.io
+  server AND on every namespace as it is created (`new_namespace`), because
+  `server.use` alone never guards `/inventory`. The middleware verifies the
+  access token (HS256, live session family), the user and the shop, then joins
+  `tenant:<shopId>`; `InventoryGateway` emits to that room under the tenant
+  context. `test/integration/infrastructure.integration-spec.ts` connects with
+  `socket.io-client`.
+- A request's correlation id is settled once by `CorrelationIdMiddleware`
+  (`sanitizeIdentifier` in `src/common/correlation/correlation-id.ts`: a
+  well-formed client value is kept, anything else becomes a UUID) and read as
+  `req.correlationId` by the tenant interceptor and `GlobalExceptionFilter`
+  (so a guard's 401 carries it too); never read the raw header. The socket
+  handshake header goes through the same function.
+- `CorrelationLogger` prints one JSON line per entry (Nest's ConsoleLogger
+  json mode) with the correlation id (`system-job` outside a request) and
+  redacts sensitive keys cycle- and depth-safely (`redact`).
+
 ## Auth bypass flag
 
 - `AUTH_DISABLED` (API) + `NEXT_PUBLIC_AUTH_DISABLED` (web, build-time) disable
-  authentication for demos/dev. OFF by default; see `AuthBypassService`
+  authentication for demos/dev. OFF by default and accepted only under
+  `NODE_ENV=development` or `test` (`assertAuthBypassPermitted` refuses boot
+  otherwise, and `AuthBypassService.isEnabled` stays false); no committed
+  template sets it, put it in an untracked `.env.local`. See `AuthBypassService`
   (`apps/api/src/auth/auth-bypass.service.ts`), `AuthConfig`
   (`apps/api/src/config/domains/auth.config.ts`), and `apps/web/src/lib/auth-bypass.ts`.
   When on, every request runs as a provisioned system user
   (`system@dukaanai.local`, OWNER, own shop). Real auth code stays intact - the
   flag gates access, it never accepts unverified identity from a request.
+- Tokens are HS256 only (`JWT_ALGORITHM`, pinned in `JwtModule`, `JwtStrategy`
+  and the socket adapter). Refresh tokens are opaque and stored hashed; there
+  is no `JWT_REFRESH_SECRET`. The web enforces a real `NEXTAUTH_SECRET` on a
+  running production server (`apps/web/src/config/env.ts`, skipped during
+  `next build`, which cannot know the runtime secret).
+- Sessions are refresh-token families (`AuthService`, roadmap 2.6): a login
+  opens a family (`RefreshToken.familyId`), every refresh consumes the token
+  (`rotatedAt`, conditional `updateMany`) and writes a successor in one
+  transaction; a consumed token presented again is reuse and revokes the
+  family AND bumps `tokenVersion` (all sessions end); `absoluteExpiresAt`
+  (`SESSION_ABSOLUTE_LIFETIME`, 30d) caps a family, `JWT_REFRESH_EXPIRES_IN`
+  (7d) is one token's idle life. Access tokens live 15 min (`JWT_EXPIRES_IN`)
+  and carry `sid` = familyId; `JwtStrategy`/the socket adapter reject a token
+  whose family has no live row, so `POST /auth/logout`, `DELETE
+  /auth/sessions/:id` and reuse take effect at once. Tests must mint tokens
+  through `issueTokens`/`httpAs` (`test/security/security-fixtures.ts`, async):
+  a bare `jwtService.sign` token names no session and is refused. The web's
+  sign-out buttons call `signOutEverywhere` (`apps/web/src/lib/sign-out.ts`),
+  which hits `/auth/logout` before NextAuth `signOut`.
 
 ## Git attribution rule
 

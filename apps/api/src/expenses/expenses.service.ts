@@ -3,6 +3,7 @@ import { Expense, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { CreateExpenseDto, UpdateExpenseDto } from './dto/expense.dto';
+import { ListQueryDto, pageArgs, PagedResult } from '../common/pagination';
 
 /** Shape the expenses page renders. */
 export interface ExpenseView {
@@ -34,13 +35,16 @@ export class ExpensesService {
     private readonly tenantContext: TenantContextService,
   ) {}
 
-  async findAll(): Promise<ExpenseView[]> {
+  /** Newest first, hard-capped page (roadmap 5.6). */
+  async findAll(query?: ListQueryDto): Promise<PagedResult<ExpenseView>> {
     // shopId is injected by the tenant Prisma extension.
-    const expenses = await this.prisma.expense.findMany({
-      where: { isDeleted: false },
-      orderBy: { expenseDate: 'desc' },
-    });
-    return expenses.map(toView);
+    const { skip, take } = pageArgs(query);
+    const where = { isDeleted: false };
+    const [expenses, total] = await Promise.all([
+      this.prisma.expense.findMany({ where, orderBy: [{ expenseDate: 'desc' }, { id: 'desc' }], skip, take }),
+      this.prisma.expense.count({ where }),
+    ]);
+    return { items: expenses.map(toView), total, skip, take };
   }
 
   async create(dto: CreateExpenseDto): Promise<ExpenseView> {

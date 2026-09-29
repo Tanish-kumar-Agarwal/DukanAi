@@ -27,6 +27,16 @@ function isDukaanUser(u: User): u is DukaanUser {
 // ---------------------------------------------------------------------------
 const API_URL = clientConfig.NEXT_PUBLIC_API_URL;
 
+/** Values the committed templates leave behind; a provider registered with them only produces confusing OAuth errors. */
+const PLACEHOLDER = /replace_me|your_|change_?me|placeholder/i;
+
+export function hasGoogleCredentials<T extends { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string }>(
+  config: T,
+): config is T & { GOOGLE_CLIENT_ID: string; GOOGLE_CLIENT_SECRET: string } {
+  const { GOOGLE_CLIENT_ID: id, GOOGLE_CLIENT_SECRET: secret } = config;
+  return Boolean(id && secret && !PLACEHOLDER.test(id) && !PLACEHOLDER.test(secret));
+}
+
 /** Message surfaced on the login form when the backend cannot be reached. */
 export const API_UNREACHABLE_MESSAGE = `The DukaanAI API at ${API_URL} is unreachable. Make sure the backend server is running, then try again.`;
 
@@ -44,6 +54,24 @@ function accessTokenExpiryFor(accessToken: string): number {
   return decodeJwtExpiryMs(accessToken) ?? Date.now() + FALLBACK_ACCESS_LIFETIME_MS;
 }
 
+// ---------------------------------------------------------------------------
+// The API rate-limits sign-in and refresh per client address. Every call below
+// is made by this server, so without help the API would see one address for
+// every user of the deployment. Forward the browser's address (Next.js fills
+// `x-forwarded-for` from the socket when no proxy set it); the API honours it
+// only where TRUST_PROXY covers this server.
+// ---------------------------------------------------------------------------
+async function forwardedClientHeaders(): Promise<Record<string, string>> {
+  try {
+    const { headers } = await import('next/headers');
+    const forwardedFor = headers().get('x-forwarded-for');
+    return forwardedFor ? { 'X-Forwarded-For': forwardedFor } : {};
+  } catch {
+    // next/headers unavailable outside a request scope — nothing to forward
+    return {};
+  }
+}
+
 type ProvisionResult =
   | { ok: true; user: DukaanUser }
   | { ok: false; reason: 'rejected' | 'unreachable' };
@@ -53,9 +81,9 @@ async function provisionUserFromBackend(
 ): Promise<ProvisionResult> {
   let res: Response;
   try {
-    res = await fetch(`${API_URL}/auth/${payload.googleId ? 'google' : 'login'}`, {
+    res = await fetch(`${API_URL}/auth/${'idToken' in payload ? 'google' : 'login'}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await forwardedClientHeaders()) },
       body: JSON.stringify(payload),
     });
   } catch (error) {
@@ -105,7 +133,7 @@ async function exchangeRefreshToken(refreshToken: string): Promise<RefreshOutcom
   try {
     const res = await fetch(`${API_URL}/auth/refresh`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(await forwardedClientHeaders()) },
       body: JSON.stringify({ refresh_token: refreshToken }),
     });
     const data = await res.json().catch(() => null);
@@ -191,8 +219,8 @@ export const authOptions: NextAuthOptions = {
       },
     }),
 
-    // ---- Google OAuth ----
-    ...(serverConfig.GOOGLE_CLIENT_ID && serverConfig.GOOGLE_CLIENT_SECRET
+    // ---- Google OAuth (only with real credentials; a template placeholder leaves it off) ----
+    ...(hasGoogleCredentials(serverConfig)
       ? [GoogleProvider({
           clientId: serverConfig.GOOGLE_CLIENT_ID,
           clientSecret: serverConfig.GOOGLE_CLIENT_SECRET,
@@ -212,14 +240,12 @@ export const authOptions: NextAuthOptions = {
       // Credentials provider already handled in authorize — allow through
       if (account?.provider === 'credentials') return true;
 
-      // Google OAuth — the user object carries name/email from Google;
-      // we need to provision this identity in our backend to get role/shopId/accessToken.
+      // Google OAuth — only the Google-issued ID token is sent; the API
+      // verifies it and derives the identity itself. Returning false here
+      // sends the browser back to /login?error=AccessDenied.
       if (account?.provider === 'google') {
-        const provisioned = await provisionUserFromBackend({
-          googleId: account.providerAccountId,
-          email: user.email,
-          name: user.name,
-        });
+        if (!account.id_token) return false;
+        const provisioned = await provisionUserFromBackend({ idToken: account.id_token });
 
         if (!provisioned.ok) return false;
 

@@ -1,16 +1,14 @@
-import { Controller, Get, Post, Param, Body, UseGuards, Query, Req } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
+import { Controller, Get, Post, Param, Body, Query, Req } from '@nestjs/common';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { VendorBillRepository } from './repositories/vendor-bill.repository';
 import type { Request } from 'express';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
+import { LimitOffsetQueryDto, limitOffsetArgs } from '../common/pagination';
 import { ApprovalDecisionDto } from '../common/dto/approval-decision.dto';
 import { CreateVendorBillDto, PayVendorBillDto } from './dto/vendor-bill.dto';
 
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('vendor-bills')
 export class VendorBillController {
   constructor(private readonly repository: VendorBillRepository) {}
@@ -24,10 +22,10 @@ export class VendorBillController {
   @Get()
   async listBills(
     @CurrentShop() shopId: string,
-    @Query('limit') limit?: number,
-    @Query('offset') offset?: number
+    @Query() query: LimitOffsetQueryDto,
   ) {
-    return this.repository.listVendorBills(shopId, limit ? Number(limit) : 50, offset ? Number(offset) : 0);
+    const { limit, offset } = limitOffsetArgs(query);
+    return this.repository.listVendorBills(shopId, limit, offset);
   }
 
   @Get(':id')

@@ -35,6 +35,8 @@ export interface InventoryMutationRequest {
   mutationType: MutationType;
   reason?: string;
   referenceId: string;
+  /** Variant row to mutate; null / absent addresses the product-level InventoryItem. */
+  variantId?: string | null;
   performedBy: string;
   occurredAt?: Date;
   allowNegative?: boolean;
@@ -185,7 +187,12 @@ export class InventoryMutationEngine {
       where: { id: request.productId },
       select: { shopId: true, type: true, name: true, currentStock: true, stockVersion: true, isDeleted: true },
     });
-    if (!product || product.isDeleted) {
+    if (!product) {
+      throw new InventoryNotFoundError(`Product ${request.productId} not found.`);
+    }
+    // A soft-deleted product can no longer be sold or reserved, but its past
+    // invoices must still be returnable and cancellable (roadmap 3.5).
+    if (product.isDeleted && (request.mutationType === MutationType.SALE || request.mutationType === MutationType.RESERVATION)) {
       throw new InventoryNotFoundError(`Product ${request.productId} not found.`);
     }
     if (product.shopId !== request.shopId) {
@@ -210,9 +217,10 @@ export class InventoryMutationEngine {
     // 3. Conditional, atomic InventoryItem update (the DB enforces the floor)
     if (isReservation) {
       const isLocking = request.mutationType === MutationType.RESERVATION;
+      // A release never drives `reserved` below zero: it gives back at most what is held.
       const updated = await tx.$executeRaw`
         UPDATE InventoryItem
-        SET reserved = reserved ${isLocking ? Prisma.sql`+` : Prisma.sql`-`} ${qty},
+        SET reserved = ${isLocking ? Prisma.sql`reserved + ${qty}` : Prisma.sql`GREATEST(reserved - ${qty}, 0)`},
             version = version + 1,
             updatedAt = NOW(3)
         WHERE id = ${invItem.id}
@@ -372,10 +380,10 @@ export class InventoryMutationEngine {
    * anything ever bypasses that lock.
    *
    * Legacy bootstrap: products created before the inventory ledger existed
-   * carry their stock only in `Product.currentStock`. When a product has no
-   * InventoryItem rows at all and a positive currentStock, the first item is
-   * seeded with that quantity and an OPENING_BALANCE ledger entry so that
-   * `SUM(InventoryItem.onHand) == Product.currentStock` holds from day one.
+   * carry their stock only in `Product.currentStock`. When a new product-level
+   * item is created and currentStock exceeds the sum of the live item rows,
+   * the item is seeded with the gap and an OPENING_BALANCE ledger entry so
+   * that `SUM(InventoryItem.onHand) == Product.currentStock` holds from day one.
    */
   private async ensureItemForRequest(
     tx: Prisma.TransactionClient,
@@ -384,7 +392,7 @@ export class InventoryMutationEngine {
     occurredAt: Date,
     traceId: string,
   ): Promise<{ id: string; isNegativeAllowed: boolean; version: number }> {
-    return this.ensureItem(tx, { shopId: request.shopId, productId: request.productId, locationId: request.locationId, variantId: null, performedBy: request.performedBy }, product, traceId);
+    return this.ensureItem(tx, { shopId: request.shopId, productId: request.productId, locationId: request.locationId, variantId: request.variantId ?? null, performedBy: request.performedBy }, product, traceId);
   }
 
   /**
@@ -422,12 +430,17 @@ export class InventoryMutationEngine {
       return { id: existing.id, isNegativeAllowed: existing.isNegativeAllowed, version: existing.version };
     }
 
-    // Legacy bootstrap applies to the product-level row only (variantId null).
-    const anyItem = await tx.inventoryItem.findFirst({
+    // Legacy bootstrap applies to the product-level row only (variantId null):
+    // whatever `Product.currentStock` holds beyond the sum of the live item
+    // rows is stock that predates the ledger, and the new row opens with it
+    // (roadmap 3.7, audit P2-28: a product with rows at another location used
+    // to lose its legacy stock, and reconciliation then zeroed it).
+    const ledgerSum = await tx.inventoryItem.aggregate({
       where: { shopId: params.shopId, productId: params.productId, isDeleted: false },
-      select: { id: true },
+      _sum: { onHand: true },
     });
-    const bootstrapQty = variantId === null && !anyItem && product.currentStock.greaterThan(0) ? product.currentStock : new Prisma.Decimal(0);
+    const gap = product.currentStock.minus(ledgerSum._sum.onHand ?? new Prisma.Decimal(0));
+    const bootstrapQty = variantId === null && gap.greaterThan(0) ? gap : new Prisma.Decimal(0);
 
     const created = await tx.inventoryItem.create({
       data: {

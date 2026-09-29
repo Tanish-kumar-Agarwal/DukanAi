@@ -1,13 +1,12 @@
 import { Global, Module } from '@nestjs/common';
 import { ConfigModule as NestConfigModule } from '@nestjs/config';
 import { validateSync } from 'class-validator';
-import { plainToInstance } from 'class-transformer';
 import { hydrateFromEnv } from './hydrate-from-env';
 
-import { AppConfig, Environment } from './domains/app.config';
+import { AppConfig } from './domains/app.config';
 import { DatabaseConfig } from './domains/database.config';
 import { JwtConfig } from './domains/jwt.config';
-import { AuthConfig, parseAuthDisabled } from './domains/auth.config';
+import { AuthConfig, assertAuthBypassPermitted, parseAuthDisabled } from './domains/auth.config';
 import { RedisConfig } from './domains/redis.config';
 import { StorageConfig } from './domains/storage.config';
 import { AiConfig } from './domains/ai.config';
@@ -45,8 +44,8 @@ import { EventsFeatureConfig } from './domains/features/events-feature.config';
 import { InventoryFeatureConfig } from './domains/features/inventory-feature.config';
 import { ImportExportFeatureConfig } from './domains/features/import-export-feature.config';
 import { OcrFeatureConfig } from './domains/features/ocr-feature.config';
+import { UploadConfig } from './domains/upload.config';
 import { BillingFeatureConfig } from './domains/features/billing-feature.config';
-import { ProcurementFeatureConfig } from './domains/features/procurement-feature.config';
 
 function validateConfig<T extends object>(configClass: T): T {
   const errors = validateSync(configClass);
@@ -62,21 +61,16 @@ function validateConfig<T extends object>(configClass: T): T {
   imports: [
     NestConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['.env.local', `.env.${process.env.NODE_ENV || 'development'}`, '.env'],
+      // .env.<NODE_ENV> is a committed template and is read only for an explicit
+      // NODE_ENV; a process that does not say which environment it is must not
+      // pick up the development template (AppConfig then refuses to boot).
+      envFilePath: ['.env.local', ...(process.env.NODE_ENV ? [`.env.${process.env.NODE_ENV}`] : []), '.env'],
     }),
   ],
   providers: [
     {
       provide: AppConfig,
-      useFactory: () => {
-        const config = new AppConfig();
-        Object.assign(config, {
-          nodeEnv: (process.env.NODE_ENV as Environment) || Environment.Development,
-          port: parseInt(process.env.PORT || '3002', 10),
-          frontendUrl: process.env.FRONTEND_URL,
-        });
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(AppConfig)),
     },
     {
       provide: DatabaseConfig,
@@ -90,16 +84,7 @@ function validateConfig<T extends object>(configClass: T): T {
     },
     {
       provide: JwtConfig,
-      useFactory: () => {
-        const config = new JwtConfig();
-        Object.assign(config, {
-          jwtSecret: process.env.JWT_SECRET,
-          jwtExpiresIn: process.env.JWT_EXPIRES_IN,
-          jwtRefreshSecret: process.env.JWT_REFRESH_SECRET,
-          jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN,
-        });
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(JwtConfig)),
     },
     {
       provide: AuthConfig,
@@ -110,7 +95,10 @@ function validateConfig<T extends object>(configClass: T): T {
         Object.assign(config, {
           authDisabled: parseAuthDisabled(process.env.AUTH_DISABLED),
         });
-        return validateConfig(config);
+        validateConfig(config);
+        // The bypass is refused outright outside development/test (P1-6).
+        assertAuthBypassPermitted(config.authDisabled, process.env.NODE_ENV);
+        return config;
       },
     },
     {
@@ -158,33 +146,15 @@ function validateConfig<T extends object>(configClass: T): T {
     },
     {
       provide: PrismaConfig,
-      useFactory: () => {
-        const config = new PrismaConfig();
-        Object.assign(config, {
-          logQueries: process.env.PRISMA_LOG_QUERIES === 'true',
-          logLevelProduction: ['warn', 'error'],
-          logLevelDevelopment: ['query', 'info', 'warn', 'error'],
-          slowQueryThreshold: parseInt(process.env.PRISMA_SLOW_QUERY_THRESHOLD || '1000', 10),
-        });
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(PrismaConfig)),
     },
     {
       provide: QueueConfig,
-      useFactory: () => {
-        const config = new QueueConfig();
-        Object.assign(config, {
-          defaultConcurrency: parseInt(process.env.QUEUE_CONCURRENCY || '5', 10),
-          timeout: parseInt(process.env.QUEUE_TIMEOUT || '5000', 10),
-        });
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(QueueConfig)),
     },
     {
       provide: BullConfig,
-      useFactory: () => {
-        return validateConfig(plainToInstance(BullConfig, process.env, { enableImplicitConversion: true }));
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(BullConfig)),
     },
     {
       provide: CacheConfig,
@@ -213,10 +183,7 @@ function validateConfig<T extends object>(configClass: T): T {
     },
     {
       provide: EmailConfig,
-      useFactory: () => {
-        const config = new EmailConfig();
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(EmailConfig)),
     },
     {
       provide: SmsConfig,
@@ -283,9 +250,7 @@ function validateConfig<T extends object>(configClass: T): T {
     },
     {
       provide: SecurityConfig,
-      useFactory: () => {
-        return validateConfig(plainToInstance(SecurityConfig, process.env, { enableImplicitConversion: true }));
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(SecurityConfig)),
     },
     {
       provide: CorsConfig,
@@ -312,17 +277,17 @@ function validateConfig<T extends object>(configClass: T): T {
       provide: CronConfig,
       useFactory: () => validateConfig(hydrateFromEnv(CronConfig)),
     },
-    { provide: SalesFeatureConfig, useFactory: () => validateConfig(plainToInstance(SalesFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: PurchaseFeatureConfig, useFactory: () => validateConfig(plainToInstance(PurchaseFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: AnalyticsFeatureConfig, useFactory: () => validateConfig(plainToInstance(AnalyticsFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: SearchFeatureConfig, useFactory: () => validateConfig(plainToInstance(SearchFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: ValidationFeatureConfig, useFactory: () => validateConfig(plainToInstance(ValidationFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: EventsFeatureConfig, useFactory: () => validateConfig(plainToInstance(EventsFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: InventoryFeatureConfig, useFactory: () => validateConfig(plainToInstance(InventoryFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: ImportExportFeatureConfig, useFactory: () => validateConfig(plainToInstance(ImportExportFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: OcrFeatureConfig, useFactory: () => validateConfig(plainToInstance(OcrFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: BillingFeatureConfig, useFactory: () => validateConfig(plainToInstance(BillingFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: ProcurementFeatureConfig, useFactory: () => validateConfig(plainToInstance(ProcurementFeatureConfig, process.env, { enableImplicitConversion: true })) },
+    { provide: SalesFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(SalesFeatureConfig)) },
+    { provide: PurchaseFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(PurchaseFeatureConfig)) },
+    { provide: AnalyticsFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(AnalyticsFeatureConfig)) },
+    { provide: SearchFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(SearchFeatureConfig)) },
+    { provide: ValidationFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(ValidationFeatureConfig)) },
+    { provide: EventsFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(EventsFeatureConfig)) },
+    { provide: InventoryFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(InventoryFeatureConfig)) },
+    { provide: ImportExportFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(ImportExportFeatureConfig)) },
+    { provide: OcrFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(OcrFeatureConfig)) },
+    { provide: UploadConfig, useFactory: () => validateConfig(hydrateFromEnv(UploadConfig)) },
+    { provide: BillingFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(BillingFeatureConfig)) },
   ],
   exports: [
     AppConfig,
@@ -364,8 +329,8 @@ function validateConfig<T extends object>(configClass: T): T {
     InventoryFeatureConfig,
     ImportExportFeatureConfig,
     OcrFeatureConfig,
+    UploadConfig,
     BillingFeatureConfig,
-    ProcurementFeatureConfig,
   ],
 })
 export class EnterpriseConfigModule {}

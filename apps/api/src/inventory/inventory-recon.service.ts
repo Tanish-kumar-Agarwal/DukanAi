@@ -6,19 +6,28 @@ import type { Cache } from 'cache-manager';
 import { PrismaService } from '../prisma/prisma.service';
 import { CronLockService } from '../common/cron-lock/cron-lock.service';
 import { DriftAlertService } from './drift-alert.service';
-import { DriftStatus, Prisma } from '@prisma/client';
+import { DriftStatus, InventoryChangeType, Prisma } from '@prisma/client';
 import { InventoryFeatureConfig } from '../config/domains/features/inventory-feature.config';
 import { CronConfig } from '../config/domains/cron.config';
 import { CacheConfig } from '../config/domains/cache.config';
 import { REDIS_CLIENT } from '../common/redis/redis.module';
 import Redis from 'ioredis';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
+import { nextReconCursor, RECON_BATCH_ORDER, reconBatchWhere, ReconCursor } from './recon-keyset';
 
 interface ReconProduct {
   id: string;
   shopId: string;
   currentStock: Prisma.Decimal;
   stockVersion: number;
+  updatedAt: Date;
+}
+
+export interface ReconSummary {
+  productsChecked: number;
+  batches: number;
+  ledgerDrifts: DriftCounters;
+  redisDrifts: DriftCounters;
 }
 
 interface DriftCounters {
@@ -85,40 +94,43 @@ export class InventoryReconService implements OnApplicationBootstrap {
     );
   }
 
-  async runReconciliation() {
+  /**
+   * Walks every product updated inside the lookback window, in
+   * `(updatedAt, id)` keyset pages over the `Product(updatedAt)` index
+   * (roadmap 5.4, `recon-keyset.ts`), and repairs both invariants per page.
+   */
+  async runReconciliation(now: Date = new Date()): Promise<ReconSummary | null> {
     this.logger.log({ event: 'inventory_reconciliation_started' });
     const startTime = Date.now();
 
     if (!this.redis) {
       this.logger.warn('Redis client unavailable. Skipping reconciliation.');
-      return;
+      return null;
     }
 
     let productsChecked = 0;
+    let batches = 0;
     const ledgerDrifts: DriftCounters = { found: 0, fixed: 0 };
     const redisDrifts: DriftCounters = { found: 0, fixed: 0 };
 
-    const lookbackStart = new Date(Date.now() - this.inventoryConfig.reconLookbackMs);
+    const lookbackStart = new Date(now.getTime() - this.inventoryConfig.reconLookbackMs);
     const batchSize = this.inventoryConfig.reconBatchSize;
-    let skip = 0;
+    let cursor: ReconCursor | null = null;
 
     try {
       while (true) {
-        // Fetch from Prisma in batches
         const products: ReconProduct[] = await this.prisma.product.findMany({
-          where: {
-            updatedAt: { gte: lookbackStart },
-            isDeleted: false,
-          },
-          select: { id: true, shopId: true, currentStock: true, stockVersion: true },
+          where: reconBatchWhere(lookbackStart, now, cursor),
+          select: { id: true, shopId: true, currentStock: true, stockVersion: true, updatedAt: true },
           take: batchSize,
-          skip: skip,
-          orderBy: { id: 'asc' },
+          orderBy: RECON_BATCH_ORDER,
         });
 
         if (products.length === 0) break;
 
         productsChecked += products.length;
+        batches += 1;
+        cursor = nextReconCursor(products);
 
         // Invariant 1: ledger is the authority; repaired values are carried into invariant 2.
         const ledgerOutcome = await this.reconcileLedgerInvariant(products);
@@ -130,7 +142,7 @@ export class InventoryReconService implements OnApplicationBootstrap {
         redisDrifts.found += redisOutcome.found;
         redisDrifts.fixed += redisOutcome.fixed;
 
-        skip += batchSize;
+        if (products.length < batchSize) break;
       }
     } catch (error) {
       this.logger.error('Database or Redis unavailable. Aborting reconciliation cleanly.', error);
@@ -150,6 +162,7 @@ export class InventoryReconService implements OnApplicationBootstrap {
       driftsFixed: ledgerDrifts.fixed + redisDrifts.fixed,
       durationMs,
     });
+    return { productsChecked, batches, ledgerDrifts, redisDrifts };
   }
 
   /**
@@ -241,6 +254,27 @@ export class InventoryReconService implements OnApplicationBootstrap {
         }
         product.currentStock = ledgerStock;
         product.stockVersion += 1;
+
+        // The correction is itself a stock event (roadmap 3.7, audit P2-28):
+        // an InventoryLog row records what the cache said, what the ledger
+        // holds and which drift record explains it.
+        const recordedById = await this.systemActorFor(product.shopId);
+        if (recordedById) {
+          await this.prisma.inventoryLog.create({
+            data: {
+              shopId: product.shopId,
+              productId: product.id,
+              type: InventoryChangeType.ADJUSTMENT,
+              quantityBefore: cachedStock,
+              quantityChange: ledgerStock.minus(cachedStock),
+              quantityAfter: ledgerStock,
+              recordedById,
+              notes: `Product.currentStock reconciled to the inventory ledger (drift ${driftLog.id})`,
+            },
+          });
+        } else {
+          this.logger.warn(`Shop ${product.shopId} has no owner: the reconciliation of product ${product.id} is recorded only in drift log ${driftLog.id}.`);
+        }
 
         await this.prisma.inventoryDriftLog.update({
           where: { id: driftLog.id },
@@ -385,4 +419,16 @@ export class InventoryReconService implements OnApplicationBootstrap {
 
     return counters;
   }
+  private readonly systemActors = new Map<string, string | null>();
+
+  /** InventoryLog.recordedById is a User: system corrections are recorded under the shop owner. */
+  private async systemActorFor(shopId: string): Promise<string | null> {
+    const cached = this.systemActors.get(shopId);
+    if (cached !== undefined) return cached;
+    const shop = await this.prisma.shop.findUnique({ where: { id: shopId }, select: { ownerId: true } });
+    const ownerId = shop?.ownerId ?? null;
+    this.systemActors.set(shopId, ownerId);
+    return ownerId;
+  }
+
 }

@@ -36,8 +36,12 @@ export class GlobalExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost): void {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
+    // The middleware settles req.correlationId before guards run, so a 401/403
+    // thrown by a guard (before the tenant interceptor opened its context) still
+    // carries the id the client can quote; the ALS store is the fallback.
+    const request = ctx.getRequest<{ correlationId?: string } | undefined>();
     const correlationId =
-      TenantContextService.asAsyncLocalStorage.getStore()?.correlationId || 'unknown';
+      request?.correlationId || TenantContextService.asAsyncLocalStorage.getStore()?.correlationId || 'unknown';
 
     let statusCode: number;
     let message: string;
@@ -91,6 +95,11 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       message = mapped?.message ?? 'Internal server error';
       error = HttpStatus[statusCode] || 'InternalServerError';
       code = mapped ? `DB_${exception.code}` : undefined;
+      if (exception.code === 'P2002') {
+        // The unique index that rejected the write, so clients can point at the field (roadmap 3.10).
+        const target = (exception.meta as { target?: unknown } | undefined)?.target;
+        details = { target: Array.isArray(target) ? target.map(String) : target === undefined ? undefined : String(target) };
+      }
       this.logger.error(
         `Prisma error ${exception.code} [correlationId=${correlationId}]`,
         exception.message,

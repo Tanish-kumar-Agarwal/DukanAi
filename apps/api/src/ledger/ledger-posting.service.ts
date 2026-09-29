@@ -17,7 +17,8 @@ export type LedgerSourceType =
   | 'GRN'
   | 'PURCHASE_RETURN'
   | 'ADJUSTMENT_REQUEST'
-  | 'STOCK_ADJUSTMENT';
+  | 'STOCK_ADJUSTMENT'
+  | 'SUPPLIER_PAYMENT';
 
 export interface LedgerPosting {
   shopId: string;

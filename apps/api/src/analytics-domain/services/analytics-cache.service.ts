@@ -3,12 +3,13 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { CacheConfig } from '../../config/domains/cache.config';
 
-export type AnalyticsCacheSection = 'dashboard' | 'kpis' | 'summary';
+export type AnalyticsCacheSection = 'dashboard' | 'kpis' | 'summary' | 'allTime';
 
 /**
  * Per-shop cache for dashboard payloads. Keys follow the contract:
- * `shop:{shopId}:analytics:{dashboard|kpis|summary}`; the invoice event
- * processor calls `invalidateAll` after any invoice mutation.
+ * `shop:{shopId}:analytics:{dashboard|kpis|summary|allTime}`; billing drops
+ * them right after every committed sale / return / cancellation and the
+ * invoice event processor drops them again (`invalidateAnalyticsCache`).
  */
 @Injectable()
 export class AnalyticsCacheService {
@@ -58,6 +59,21 @@ export class AnalyticsCacheService {
     return this.get<T>(shopId, 'kpis');
   }
 
+  /**
+   * All-time totals (roadmap 5.5): a full-table aggregate the summary poll
+   * would otherwise repeat every 30 s. Cached with the KPI TTL (60 s), not
+   * the dashboard hour: every committed sale drops the key, but an aggregate
+   * that started before a sale committed can still be written after that
+   * invalidation, and the short TTL bounds such a stale figure to a minute.
+   */
+  async setAllTime(shopId: string, data: unknown): Promise<void> {
+    await this.set(shopId, 'allTime', data, this.cacheConfig.analyticsKpiTtlMs);
+  }
+
+  async getAllTime<T = unknown>(shopId: string): Promise<T | undefined> {
+    return this.get<T>(shopId, 'allTime');
+  }
+
   async invalidateDashboard(shopId: string): Promise<void> {
     await this.del(AnalyticsCacheService.key(shopId, 'dashboard'));
   }
@@ -65,7 +81,7 @@ export class AnalyticsCacheService {
   /** Drops every analytics cache entry of the shop (dashboard, kpis, summary). */
   async invalidateAll(shopId: string): Promise<void> {
     await Promise.all(
-      (['dashboard', 'kpis', 'summary'] as const).map((section) => this.del(AnalyticsCacheService.key(shopId, section))),
+      (['dashboard', 'kpis', 'summary', 'allTime'] as const).map((section) => this.del(AnalyticsCacheService.key(shopId, section))),
     );
   }
 

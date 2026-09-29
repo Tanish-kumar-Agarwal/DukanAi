@@ -8,6 +8,7 @@ import type { Cache } from 'cache-manager';
 import { Prisma } from '@prisma/client';
 import { CreateWorkflowDefinitionDto } from '../dto/workflow.dto';
 import { assertOwnedMany } from '../../prisma/tenant-ownership';
+import { ListQueryDto, MAX_LIST_TAKE, pageArgs } from '../../common/pagination';
 
 @Injectable()
 export class WorkflowRepository {
@@ -19,11 +20,20 @@ export class WorkflowRepository {
     @Inject(CACHE_MANAGER) private cacheManager: Cache
   ) {}
 
-  async listDefinitions(shopId: string) {
-    return this.prisma.workflowDefinition.findMany({
-      where: { shopId, isActive: true },
-      include: { steps: { orderBy: { stepOrder: 'asc' } } }
-    });
+  async listDefinitions(shopId: string, query?: ListQueryDto) {
+    const { skip, take } = pageArgs(query);
+    const where = { shopId, isActive: true };
+    const [items, total] = await Promise.all([
+      this.prisma.workflowDefinition.findMany({
+        where,
+        include: { steps: { orderBy: { stepOrder: 'asc' }, take: MAX_LIST_TAKE } },
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        skip,
+        take,
+      }),
+      this.prisma.workflowDefinition.count({ where }),
+    ]);
+    return { items, total, skip, take };
   }
 
   async createDefinition(shopId: string, payload: CreateWorkflowDefinitionDto) {
@@ -54,18 +64,18 @@ export class WorkflowRepository {
     });
   }
 
-  async getUserTasks(shopId: string, userId: string) {
-    return this.prisma.workflowTask.findMany({
-      where: {
-        shopId,
-        status: 'PENDING',
-        OR: [
-          { assignedUserId: userId },
-          { delegatedToUserId: userId }
-        ]
-      },
-      include: { workflowInstance: true }
-    });
+  async getUserTasks(shopId: string, userId: string, query?: ListQueryDto) {
+    const { skip, take } = pageArgs(query);
+    const where = {
+      shopId,
+      status: 'PENDING' as const,
+      OR: [{ assignedUserId: userId }, { delegatedToUserId: userId }],
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.workflowTask.findMany({ where, include: { workflowInstance: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], skip, take }),
+      this.prisma.workflowTask.count({ where }),
+    ]);
+    return { items, total, skip, take };
   }
 
   async processTaskDecision(shopId: string, taskId: string, actorId: string, decision: 'APPROVE' | 'REJECT', comments?: string, signature?: string) {

@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Post, Request, UseGuards, Delete, Param, Ip, Headers } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Post, Request, UseGuards, Delete, Param, Ip, Headers, Query } from '@nestjs/common';
+import { ListQueryDto, PagedList } from '../common/pagination';
 import { LocalAuthGuard } from './local-auth.guard';
 import { AuthService, LoginResponseDto } from './auth.service';
 import { Public } from './public.decorator';
@@ -14,11 +15,14 @@ import { CreateUserDto } from '../users/dto/create-user.dto';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
 import type { Request as ExpressRequest } from 'express';
 import { GoogleAuthDto } from './dto/google-auth.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { GoogleIdentityService } from './google-identity.service';
 import { AnyAuthenticated } from './/any-authenticated.decorator';
+import { AuthThrottle } from '../common/throttling/auth-throttle.decorator';
 
 interface AuthenticatedRequest extends ExpressRequest {
-  user: SafeUserDto;
+  /** `sessionId` is set by JwtStrategy from the token's `sid` claim. */
+  user: SafeUserDto & { sessionId: string };
 }
 
 @ApiTags('auth')
@@ -31,12 +35,13 @@ export class AuthController {
   ) {}
 
   @Public()
+  @AuthThrottle()
   @Post('register')
-  @ApiOperation({ summary: 'Register a new user (defaults to CASHIER role for security)' })
+  @ApiOperation({ summary: 'Register a new shop and its OWNER account (staff join a shop through invitations)' })
   @ApiBody({ type: CreateUserDto })
   @ApiResponse({ status: 201, type: SafeUserDto })
   async register(@Body() body: CreateUserDto): Promise<SafeUserDto> {
-    // Security: force default role to CASHIER (least privilege) inside usersService.
+    // Registration creates a shop and its OWNER (UsersService.create); every other role arrives through an invitation.
     // DTO mass assignment protection strips unknown fields.
     const safeBody: CreateUserDto = {
       email: body.email,
@@ -49,6 +54,7 @@ export class AuthController {
   }
 
   @Public()
+  @AuthThrottle()
   @UseGuards(LocalAuthGuard)
   @Post('login')
   @ApiOperation({ summary: 'Login with email and password' })
@@ -57,6 +63,7 @@ export class AuthController {
   }
 
   @Public()
+  @AuthThrottle()
   @Post('google')
   @ApiOperation({ summary: 'Authenticate or register via Google OAuth' })
   @ApiBody({ type: GoogleAuthDto })
@@ -72,23 +79,34 @@ export class AuthController {
   }
 
   @Public()
+  @AuthThrottle()
   @Post('refresh')
-  @ApiOperation({ summary: 'Refresh access token using refresh token' })
-  @ApiBody({ schema: { type: 'object', properties: { refresh_token: { type: 'string' } } } })
-  @ApiResponse({ status: 200, type: SafeUserDto })
+  @ApiOperation({ summary: 'Rotate the refresh token and issue a new access token' })
+  @ApiBody({ type: RefreshTokenDto })
+  @ApiResponse({ status: 201, type: SafeUserDto })
   async refresh(
-    @Body('refresh_token') refreshToken: string,
+    @Body() body: RefreshTokenDto,
     @Ip() ip: string,
     @Headers('user-agent') userAgent: string,
   ): Promise<LoginResponseDto> {
-    return this.authService.refresh(refreshToken, ip, userAgent);
+    return this.authService.refresh(body.refresh_token, ip, userAgent);
+  }
+
+  @AnyAuthenticated()
+  @Post('logout')
+  @HttpCode(200)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'End the current session: its refresh token and access tokens stop working at once' })
+  logout(@Request() req: AuthenticatedRequest): Promise<{ message: string }> {
+    return this.authService.logout(req.user.id, req.user.sessionId);
   }
 
   @Get('sessions')
+  @PagedList()
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get all active sessions for the current user' })
-  getSessions(@Request() req: AuthenticatedRequest) {
-    return this.authService.getSessions(req.user.id);
+  getSessions(@Request() req: AuthenticatedRequest, @Query() query: ListQueryDto) {
+    return this.authService.getSessions(req.user.id, query);
   }
 
   @AnyAuthenticated()
