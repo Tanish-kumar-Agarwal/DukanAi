@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { Suspense, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Card } from '@/components/ui/Card';
 import {
@@ -89,17 +90,20 @@ function parseMoney(value: string): number | null {
 /** Stats tiles come from the dashboard summary (contract §6); a failed section is shown as unavailable, never as 0. */
 type Stats = Pick<DashboardSummary, 'totalProducts' | 'lowStockCount' | 'outOfStockCount' | 'inventoryValue'>;
 
-export default function ProductsPage() {
+function ProductsPageContent() {
   const { toast } = useToast();
   const { data: session } = useSession();
+  const searchParams = useSearchParams();
+  // Roadmap 6.6: the navbar search lands on `/products?q=…`; the box follows the URL.
+  const urlQuery = (searchParams.get('q') ?? '').trim();
   const allowWrite = hasRole(WRITE_ROLES, session?.user?.role);
   const allowDelete = hasRole(DELETE_ROLES, session?.user?.role);
 
   const [products, setProducts] = useState<Product[]>([]);
   const [total, setTotal] = useState(0);
   const [pageIndex, setPageIndex] = useState(0);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [debouncedTerm, setDebouncedTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState(urlQuery);
+  const [debouncedTerm, setDebouncedTerm] = useState(urlQuery);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -207,6 +211,12 @@ export default function ProductsPage() {
     const handle = setTimeout(() => setDebouncedTerm(searchTerm.trim()), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(handle);
   }, [searchTerm]);
+
+  // A new navbar search while already on this page changes only the URL.
+  useEffect(() => {
+    setSearchTerm(urlQuery);
+    setDebouncedTerm(urlQuery);
+  }, [urlQuery]);
 
   // A new query or filter starts at the first page.
   useEffect(() => {
@@ -943,5 +953,14 @@ export default function ProductsPage() {
         )}
       </SlidingPanel>
     </div>
+  );
+}
+
+/** `useSearchParams` needs a Suspense boundary for the static shell (`next build`). */
+export default function ProductsPage() {
+  return (
+    <Suspense fallback={<div className="p-8 flex justify-center"><div className="h-8 w-8 animate-spin rounded-full border-b-2 border-[#8B5CF6]" /></div>}>
+      <ProductsPageContent />
+    </Suspense>
   );
 }

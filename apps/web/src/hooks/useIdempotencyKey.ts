@@ -28,8 +28,19 @@ export function useIdempotencyKey(): UseIdempotencyKeyReturn {
   const ensureIdempotencyKey = usePosStore((s) => s.ensureIdempotencyKey);
   const consumeIdempotencyKey = usePosStore((s) => s.consumeIdempotencyKey);
 
+  // Never write before the persisted cart is read (roadmap 6.5): this effect
+  // runs before the page's hydration effect, and a write into an unhydrated
+  // store persists the empty state over whatever the tab had saved. Wait for
+  // the hydration (and for every later scope switch) before ensuring a key.
   useEffect(() => {
-    if (!key) ensureIdempotencyKey();
+    if (key) return;
+    if (usePosStore.persist.hasHydrated()) {
+      ensureIdempotencyKey();
+      return;
+    }
+    return usePosStore.persist.onFinishHydration(() => {
+      if (!usePosStore.getState().idempotencyKey) ensureIdempotencyKey();
+    });
   }, [key, ensureIdempotencyKey]);
 
   const rotate = useCallback(() => newIdempotencyKey(), [newIdempotencyKey]);

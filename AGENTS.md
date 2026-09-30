@@ -606,6 +606,52 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   model exists. `test/integration/products-settings.integration-spec.ts`
   proves the SKU sequence, the paged filters and the IGST split over HTTP;
   `apps/web/e2e/products-settings.spec.ts` proves the pages.
+- 6.4 web security: `next.config.js` sets `poweredByHeader: false` and the
+  static headers (HSTS, `X-Content-Type-Options`, `X-Frame-Options: DENY`,
+  `Referrer-Policy`, `Permissions-Policy` with `camera=(self)` for Smart
+  Capture) and refuses to build or start with `NEXT_PUBLIC_AUTH_DISABLED`
+  under `NODE_ENV=production`; `src/lib/auth-bypass.ts` compiles the flag to
+  false in a production bundle regardless, and the middleware answers 503.
+  The Content-Security-Policy is per request in `src/middleware.ts`: a fresh
+  script nonce with `'strict-dynamic'` (no `'unsafe-inline'` for scripts;
+  `'unsafe-eval'` only under `NODE_ENV=development` for React Refresh),
+  `connect-src` = self + the `NEXT_PUBLIC_API_URL` origin, `frame-ancestors
+  'none'`, `form-action 'self'`. Next.js reads the nonce from the request's
+  CSP header, which requires dynamic rendering: the root layout exports
+  `dynamic = 'force-dynamic'`, so never prerender a page (a static page would
+  carry un-nonced inline scripts and be blocked). The middleware verifies the
+  session with `getToken` (signature, expiry, no `RefreshAccessTokenError`),
+  not cookie presence, and builds `callbackUrl` from the path; the login
+  page parses it with `sanitizeCallbackUrl` (`src/lib/safe-callback-url.ts`)
+  against `window.location.origin`, so `//evil`, `/\evil`, absolute URLs and
+  `/login` fall back to `/dashboard`. Style attributes still need
+  `style-src 'unsafe-inline'` (framer-motion, inline styles). A
+  `fetch('data:…')` is a connection under `connect-src` and is refused:
+  decode data URLs with `dataUrlToBlob` (`src/lib/data-url.ts`), never fetch
+  them.
+- 6.5 web robustness: `app/error.tsx` (page segment, keeps the shell) and
+  `app/global-error.tsx` (root layout, inline styles only). `src/lib/uuid.ts`
+  is the one uuid v4 (falls back from `crypto.randomUUID` to
+  `getRandomValues`); the POS store and `RecordPaymentModal` use it. The POS
+  store starts in the per-tab anonymous scope (`dukaanai-pos:anon`) and
+  `scopePosStoreToShop` moves it to `dukaanai-pos:<shopId>`, carrying an
+  anonymous cart into an empty shop scope and deleting the anonymous copy;
+  `usePosScope` says which shop is active and the barcode scanner is enabled
+  only once it is set. Any store write before `hydratePosStore()` persists
+  the empty state over the saved cart: `useIdempotencyKey` waits for
+  `persist.hasHydrated()` / `onFinishHydration`, and a new hook that writes
+  to the store at mount must do the same. ShiftBanner, the navbar
+  notification poll and the notifications page carry stale-response guards
+  (request sequence / cancelled flag): only the newest answer lands, none
+  after unmount. `apiClient` has `DEFAULT_API_TIMEOUT_MS` (15 s); uploads and
+  checkout set their own. Smart Capture stops the camera stream on unmount.
+- 6.6: the navbar search pushes `/products?q=<term>`; the products page reads
+  `q` from `useSearchParams` (initial state and on change while mounted).
+  `apps/web/e2e/web-hardening.spec.ts` covers headers, the nonce, the
+  production guard (loads `next.config.js` under `NODE_ENV=production`),
+  callback sanitising, navbar `q` and the anonymous-cart migration; the
+  production CSP with a real sign-in was smoke-tested with `next build` +
+  `next start` against an API without the bypass.
 - The shared axios instance (`src/lib/api.ts`) defaults to JSON and axios
   serialises a `FormData` body as JSON under that header (`{"file":{}}`); its
   request interceptor drops the content type for `FormData` so the browser
@@ -768,7 +814,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   authentication for demos/dev. OFF by default and accepted only under
   `NODE_ENV=development` or `test` (`assertAuthBypassPermitted` refuses boot
   otherwise, and `AuthBypassService.isEnabled` stays false); no committed
-  template sets it, put it in an untracked `.env.local`. See `AuthBypassService`
+  API template sets it (put it in an untracked `.env.local`), and the web's
+  `.env.development` sets `NEXT_PUBLIC_AUTH_DISABLED=true` for local work
+  only (`next build`/`next start` refuse it, roadmap 6.4). See `AuthBypassService`
   (`apps/api/src/auth/auth-bypass.service.ts`), `AuthConfig`
   (`apps/api/src/config/domains/auth.config.ts`), and `apps/web/src/lib/auth-bypass.ts`.
   When on, every request runs as a provisioned system user

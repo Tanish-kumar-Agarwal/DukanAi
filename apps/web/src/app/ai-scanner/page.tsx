@@ -13,6 +13,7 @@ import { useRouter } from 'next/navigation';
 import { ocrApi, type OcrDocumentType, type OcrMatchedItem, type OcrScanResult } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
 import { PENDING_SCAN_KEY } from '@/lib/smart-capture';
+import { dataUrlToBlob } from '@/lib/data-url';
 
 type ScanState = 'IDLE' | 'UPLOADING' | 'SCANNING' | 'SUCCESS' | 'FAILED';
 
@@ -106,10 +107,11 @@ export default function AiScannerPage() {
       pending = null;
     }
     if (!pending) return;
-    void fetch(pending)
-      .then((res) => res.blob())
-      .then((blob) => scan(blob, 'smart-capture.jpg'))
-      .catch(() => toast('Could not read the captured photo. Upload it again.', 'error'));
+    try {
+      void scan(dataUrlToBlob(pending), 'smart-capture.jpg');
+    } catch {
+      toast('Could not read the captured photo. Upload it again.', 'error');
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

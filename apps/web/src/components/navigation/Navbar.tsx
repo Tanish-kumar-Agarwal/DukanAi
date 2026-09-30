@@ -71,23 +71,33 @@ export function Navbar() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Stale-response guard (roadmap 6.5): the poll and a manual refresh can
+  // overlap; only the newest request updates the list, none after unmount.
+  const notificationsSeq = useRef(0);
   const loadNotifications = useCallback(async () => {
     if (!canLoadNotifications) return;
+    const seq = ++notificationsSeq.current;
     setNotificationsLoading(true);
     try {
       const list = await notificationsApi.list();
+      if (seq !== notificationsSeq.current) return;
       setNotifications(Array.isArray(list) ? list : []);
       setNotificationsError(null);
     } catch (err) {
+      if (seq !== notificationsSeq.current) return;
       setNotificationsError(describeApiError(err, 'Loading notifications (GET /notifications)'));
     } finally {
-      setNotificationsLoading(false);
+      if (seq === notificationsSeq.current) setNotificationsLoading(false);
     }
   }, [canLoadNotifications]);
 
   useEffect(() => {
     void loadNotifications();
   }, [loadNotifications]);
+
+  useEffect(() => () => {
+    notificationsSeq.current += 1;
+  }, []);
 
   useVisibilityPolling(() => void loadNotifications(), NOTIFICATION_POLL_MS, canLoadNotifications);
 

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { DiscountType, GstRate, PosCustomer, ProductUnit, SearchResult } from '@/types';
+import { generateUuid } from '@/lib/uuid';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -153,22 +154,7 @@ export function validateQuantity(
 // Helpers
 // ---------------------------------------------------------------------------
 
-export function generateUuid(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  // RFC 4122 v4 fallback using getRandomValues when available, Math.random otherwise.
-  const bytes = new Uint8Array(16);
-  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
-    crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < 16; i += 1) bytes[i] = Math.floor(Math.random() * 256);
-  }
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
+export { generateUuid } from '@/lib/uuid';
 
 const EMPTY_DISCOUNT: CartDiscount = { type: 'FIXED_AMOUNT', value: 0, reason: '' };
 
@@ -440,20 +426,61 @@ export const usePosStore = create<PosState>()(
   ),
 );
 
+const ANON_STORAGE_NAME = `${STORAGE_PREFIX}:anon`;
+
+/** The shop the persisted cart belongs to, or null while the store still sits in the per-tab (anonymous) scope. */
+export const usePosScope = create<{ shopId: string | null }>(() => ({ shopId: null }));
+
 /** Rehydrates the default (per-tab) scope. Safe to call more than once. */
 export function hydratePosStore(): void {
   if (typeof window === 'undefined') return;
   void usePosStore.persist.rehydrate();
 }
 
+type PersistedCart = Pick<PosState, 'lines' | 'customer' | 'discount' | 'notes' | 'heldCarts' | 'idempotencyKey'>;
+
+function snapshotCart(): PersistedCart {
+  const { lines, customer, discount, notes, heldCarts, idempotencyKey } = usePosStore.getState();
+  return { lines, customer, discount, notes, heldCarts, idempotencyKey };
+}
+
 /**
  * Switches persistence to a per-shop sessionStorage key and rehydrates from it,
- * so carts held for one shop never leak into another shop's session.
+ * so carts held for one shop never leak into another shop's session
+ * (roadmap 6.5). A cart built before the shop was known (the anonymous
+ * scope, e.g. lines scanned while `GET /shops/me` was still loading, or a
+ * cart persisted by an older build) is carried into the shop scope when
+ * that scope holds no cart of its own, then the anonymous copy is dropped so
+ * it can never surface under another shop.
  */
 export function scopePosStoreToShop(shopId: string): void {
   if (typeof window === 'undefined' || !shopId) return;
   const name = `${STORAGE_PREFIX}:${shopId}`;
-  if (usePosStore.persist.getOptions().name === name) return;
+  if (usePosStore.persist.getOptions().name === name) {
+    usePosScope.setState({ shopId });
+    return;
+  }
+  const anon = usePosStore.persist.getOptions().name === ANON_STORAGE_NAME ? snapshotCart() : null;
   usePosStore.persist.setOptions({ name });
-  void usePosStore.persist.rehydrate();
+  const rehydrated = usePosStore.persist.rehydrate();
+  const finish = () => {
+    if (anon) {
+      const shopHasCart = usePosStore.getState().lines.length > 0;
+      if (!shopHasCart && (anon.lines.length > 0 || anon.customer || anon.notes || anon.discount.value > 0)) {
+        usePosStore.setState({ lines: anon.lines, customer: anon.customer, discount: anon.discount, notes: anon.notes, idempotencyKey: anon.idempotencyKey });
+      }
+      if (anon.heldCarts.length > 0) {
+        const known = new Set(usePosStore.getState().heldCarts.map((held) => held.id));
+        usePosStore.setState({ heldCarts: [...usePosStore.getState().heldCarts, ...anon.heldCarts.filter((held) => !known.has(held.id))] });
+      }
+      try {
+        sessionStorage.removeItem(ANON_STORAGE_NAME);
+      } catch {
+        // Storage may be unavailable (private mode); the anonymous copy is then never written either.
+      }
+    }
+    usePosScope.setState({ shopId });
+  };
+  if (rehydrated && typeof (rehydrated as Promise<void>).then === 'function') void (rehydrated as Promise<void>).then(finish, finish);
+  else finish();
 }

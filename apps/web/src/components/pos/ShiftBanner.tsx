@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Clock, Lock, RefreshCw, Unlock } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { SkeletonBox } from '@/components/ui/Skeleton';
@@ -40,21 +40,33 @@ export function ShiftBanner({ onShiftChange, refreshToken = 0, className = '' }:
     [onShiftChange],
   );
 
+  // Stale-response guard (roadmap 6.5): a refresh triggered by a sale can
+  // overtake an earlier request; only the newest request may publish, and
+  // nothing is published after unmount.
+  const requestSeq = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++requestSeq.current;
     setLoading(true);
     setError(null);
     try {
-      publish(await shiftsApi.current());
+      const shift = await shiftsApi.current();
+      if (seq !== requestSeq.current) return;
+      publish(shift);
     } catch (err) {
+      if (seq !== requestSeq.current) return;
       setError(extractApiError(err, 'Loading current shift (GET /shifts/current)').message);
     } finally {
-      setLoading(false);
+      if (seq === requestSeq.current) setLoading(false);
     }
   }, [publish]);
 
   useEffect(() => {
     void load();
   }, [load, refreshToken]);
+
+  useEffect(() => () => {
+    requestSeq.current += 1; // unmounted: every in-flight answer is stale
+  }, []);
 
   if (loading) {
     return (

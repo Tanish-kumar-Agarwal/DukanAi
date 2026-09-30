@@ -12,6 +12,7 @@ import {
 } from '@/lib/api-client';
 import { describeApiError, getApiErrorCode, getApiErrorDetails, getApiErrorStatus } from '@/lib/api-error';
 import { formatMoney, TENDER_LABELS } from './format';
+import { generateUuid } from '@/lib/uuid';
 
 const TENDERS: CustomerTender[] = ['CASH', 'UPI', 'CARD', 'BANK_TRANSFER'];
 
@@ -19,8 +20,9 @@ const inputClass =
   'w-full mt-1 border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-[#8B5CF6]/20 focus:border-[#8B5CF6] transition-all disabled:bg-gray-50 disabled:text-gray-500';
 const labelClass = 'text-xs font-bold text-gray-600 uppercase tracking-wide';
 
+/** One key per attempt, reused on retry; `generateUuid` works where `crypto.randomUUID` is missing (roadmap 6.5). */
 function newIdempotencyKey(): string {
-  return crypto.randomUUID();
+  return generateUuid();
 }
 
 export interface RecordPaymentResult {

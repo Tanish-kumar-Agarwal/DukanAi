@@ -7,8 +7,16 @@ import { decodeJwtExpiryMs } from './jwt';
 
 const API_URL = clientConfig.NEXT_PUBLIC_API_URL;
 
+/**
+ * Every request gives up after this long unless the call sets its own
+ * (uploads and checkout do), so a stalled API never leaves a page spinning
+ * forever (roadmap 6.5).
+ */
+export const DEFAULT_API_TIMEOUT_MS = 15_000;
+
 const apiClient: AxiosInstance = axios.create({
   baseURL: API_URL,
+  timeout: DEFAULT_API_TIMEOUT_MS,
   headers: {
     'Content-Type': 'application/json',
   },

@@ -9,6 +9,7 @@ import {
 import { customersApi, storageApi, WALK_IN_CUSTOMER } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
 import { jpegToPdf } from '@/lib/jpeg-pdf';
+import { dataUrlToBlob } from '@/lib/data-url';
 import { useToast } from '@/components/ui/Toast';
 import type { Customer } from '@/types';
 import { useRouter } from 'next/navigation';
@@ -25,10 +26,6 @@ async function blobToJpegDataUrl(file: Blob): Promise<string> {
   canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
   bitmap.close();
   return canvas.toDataURL('image/jpeg', JPEG_QUALITY);
-}
-
-async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
-  return (await fetch(dataUrl)).blob();
 }
 
 function newBillId(): string {
@@ -190,7 +187,7 @@ export default function SmartCapturePage() {
     const billId = newBillId();
     const customerId = selectedCustomer || WALK_IN_CUSTOMER;
     try {
-      const image = await dataUrlToBlob(capturedImage);
+      const image = dataUrlToBlob(capturedImage);
       let pdf: Blob | undefined;
       if (action === 'pdf') {
         pdf = new Blob([jpegToPdf(new Uint8Array(await image.arrayBuffer()))], { type: 'application/pdf' });

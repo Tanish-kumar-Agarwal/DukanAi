@@ -4,6 +4,14 @@ import { ToastProvider } from '@/components/ui/Toast';
 import Providers from '@/components/Providers';
 import './globals.css';
 
+/**
+ * Every route renders per request: the middleware issues a fresh CSP script
+ * nonce on each response (roadmap 6.4) and a prerendered page would carry
+ * inline scripts without it. The app is session-gated, so nothing was
+ * cacheable across users anyway.
+ */
+export const dynamic = 'force-dynamic';
+
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
