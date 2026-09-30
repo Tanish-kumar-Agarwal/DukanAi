@@ -17,6 +17,7 @@ import { openReceiptWindow } from '@/components/pos/ReceiptModal';
 import { CustomItemBadge, InvoiceStatusBadge, InvoiceTypeBadge, PaymentModeBadge } from '@/components/invoices/InvoiceBadges';
 import { ReturnDialog, returnableQuantity } from '@/components/invoices/ReturnDialog';
 import { CancelDialog } from '@/components/invoices/CancelDialog';
+import { PrintPageStyle } from '@/components/print/PrintPageStyle';
 
 const MANAGER_ROLES = ['MANAGER', 'ADMIN', 'OWNER', 'SUPER_ADMIN'];
 
@@ -52,6 +53,8 @@ export default function InvoiceDetailPage() {
 
   const isManager = AUTH_DISABLED || MANAGER_ROLES.includes(String(session?.user?.role ?? '').toUpperCase());
   const returnable = useMemo(() => (invoice ? invoice.items.some((item) => returnableQuantity(item) > 0) : false), [invoice]);
+  // Cess is per line (roadmap 6.7): the document row is the sum over the items.
+  const cessTotal = useMemo(() => (invoice ? invoice.items.reduce((sum, item) => sum + item.cessAmount, 0) : 0), [invoice]);
   const canReturn = Boolean(invoice && invoice.type === 'SALE' && invoice.status === 'COMPLETED' && returnable);
   const canCancel = Boolean(invoice && invoice.type === 'SALE' && invoice.status === 'COMPLETED' && invoice.returns.length === 0 && isManager);
 
@@ -92,11 +95,13 @@ export default function InvoiceDetailPage() {
   const isReturn = invoice.type === 'SALES_RETURN';
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 print-document">
+      {/* Roadmap 6.7: Ctrl+P prints this page as an A4 document (the receipt page has its own 80 mm sheet). */}
+      <PrintPageStyle size="A4" margin="12mm" />
       {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <Link href="/invoices" className="inline-flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-[#8B5CF6]">
+          <Link href="/invoices" className="print-hidden inline-flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-[#8B5CF6]">
             <ArrowLeft size={14} /> Invoices
           </Link>
           <div className="flex flex-wrap items-center gap-2 mt-1">
@@ -111,7 +116,7 @@ export default function InvoiceDetailPage() {
             {invoice.shift ? ` · shift ${invoice.shift.status.toLowerCase()}` : ' · no shift'}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="print-hidden flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => openReceiptWindow(invoice.id)}
@@ -249,6 +254,7 @@ export default function InvoiceDetailPage() {
                   <Row label="SGST" value={money(invoice.sgstAmount)} muted />
                 </>
               )}
+              {cessTotal > 0 && <Row label="Cess" value={money(cessTotal)} muted />}
               <Row label="Total tax" value={money(invoice.taxAmount)} />
               <Row label="Round-off" value={signedMoney(invoice.roundOffAmount)} muted />
               <div className="flex justify-between border-t border-gray-200 pt-2 mt-1">

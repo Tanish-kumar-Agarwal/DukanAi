@@ -12,11 +12,10 @@ import './globals.css';
  */
 export const dynamic = 'force-dynamic';
 
+/** Pinch-zoom stays available (roadmap 6.7): a cashier on a small tablet must be able to zoom. */
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
 };
 
 export const metadata: Metadata = {

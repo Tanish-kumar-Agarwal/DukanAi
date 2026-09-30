@@ -15,6 +15,12 @@ export class ExpensesController {
     return this.expensesService.findAll(query);
   }
 
+  /** This month's figures over every expense of the shop, not over the loaded page (roadmap 6.7). */
+  @Get('summary')
+  summary() {
+    return this.expensesService.summary();
+  }
+
   @Roles(...MANAGEMENT_ROLES)
   @Post()
   create(@Body() dto: CreateExpenseDto) {

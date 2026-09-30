@@ -7,7 +7,7 @@ import { Bell, Check, Moon, Search, Sun } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSession } from 'next-auth/react';
 import { signOutEverywhere } from '@/lib/sign-out';
-import { useTheme } from '@/hooks';
+import { useTheme } from '@/hooks/useTheme';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
 import { notificationsApi, type NotificationView } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';

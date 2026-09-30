@@ -19,7 +19,7 @@ import { AUTH_BYPASS_REFUSED, AUTH_DISABLED } from '@/lib/auth-bypass';
  * Static assets (`/_next/*`, `favicon.ico`, anything with a file extension)
  * and NextAuth's own routes are excluded by the matcher below.
  */
-const PUBLIC_PATHS = ['/login', '/register'];
+const PUBLIC_PATHS = ['/login', '/register', '/forgot-password', '/reset-password'];
 const IS_DEV = process.env.NODE_ENV === 'development';
 
 function isPublicPath(pathname: string): boolean {

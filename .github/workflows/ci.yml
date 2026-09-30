@@ -165,9 +165,19 @@ jobs:
           CI: 'true'
           E2E_API_COMMAND: node dist/main
           E2E_DATABASE_URL: mysql://root:password@127.0.0.1:3306/dukaanai_test
+      # Roadmap 6.9: the same pages without the auth bypass (real sign-in, role gating).
+      - name: Playwright (real auth)
+        working-directory: apps/web
+        run: npm run test:e2e:auth
+        env:
+          CI: 'true'
+          E2E_API_COMMAND: node dist/main
+          E2E_DATABASE_URL: mysql://root:password@127.0.0.1:3306/dukaanai_test
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: playwright-report
-          path: apps/web/playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/playwright-report-auth
           retention-days: 7

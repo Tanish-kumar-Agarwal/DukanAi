@@ -1000,11 +1000,6 @@ export const employeesApi = {
   remove: (id: string) => del(`/users/${id}`),
 };
 
-export const invitationsApi = {
-  /** `POST /invitations/accept` (public): creates the invited account; the caller then signs in. */
-  accept: (data: { token: string; name: string; password: string }) =>
-    post<{ id: string; email: string; role: string }>('/invitations/accept', data),
-};
 
 // ---------------------------------------------------------------------------
 // Suppliers
@@ -1142,8 +1137,19 @@ export interface ExpenseView {
   date: string;
 }
 
+/** `GET /expenses/summary` (roadmap 6.7): this month over every expense, not the loaded page. */
+export interface ExpenseSummary {
+  month: string;
+  paidThisMonth: number;
+  pendingTotal: number;
+  largestCategory: { category: string; amount: number } | null;
+  countThisMonth: number;
+}
+
 export const expensesApi = {
   list: () => get<ExpenseView[]>('/expenses'),
+
+  summary: () => get<ExpenseSummary>('/expenses/summary'),
 
   create: (data: {
     description: string;

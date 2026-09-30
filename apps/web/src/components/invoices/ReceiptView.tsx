@@ -36,6 +36,8 @@ export function ReceiptView({ receipt }: { receipt: ReceiptPayload }) {
   const { shop, invoice, items, payments, gstSummary, totals } = receipt;
   const isReturn = invoice.type === 'SALES_RETURN';
   const isInterState = invoice.isInterState;
+  // Cess is per line (roadmap 6.7): the document total is the sum of the GST summary rows.
+  const cessTotal = gstSummary.reduce((sum, row) => sum + row.cess, 0);
   const shopLine2 = [shop.city, shop.state, shop.pincode].filter(Boolean).join(', ');
 
   return (
@@ -131,6 +133,7 @@ export function ReceiptView({ receipt }: { receipt: ReceiptPayload }) {
             <TotalRow label="SGST" value={money(invoice.sgstAmount)} />
           </>
         )}
+        {cessTotal > 0 && <TotalRow label="Cess" value={money(cessTotal)} />}
         {totals.roundOff !== 0 && <TotalRow label="Round off" value={`${totals.roundOff > 0 ? '+' : '-'}${money(Math.abs(totals.roundOff))}`} />}
         <div className="flex justify-between text-[13px] font-bold border-t border-dashed border-black pt-1 mt-1">
           <span>{isReturn ? 'REFUND' : 'TOTAL'}</span>

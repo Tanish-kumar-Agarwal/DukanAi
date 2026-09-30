@@ -1,4 +1,4 @@
-import { IsBoolean, IsEmail, IsEnum, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsEmail, IsEnum, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Max, MaxLength, Min, ValidateIf } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { TenderType } from '@prisma/client';
@@ -19,7 +19,8 @@ export class CreateCustomerDto {
 export class UpdateCustomerDto {
   @IsOptional() @IsString() @IsNotEmpty() @MaxLength(100) @ApiPropertyOptional() name?: string;
   @IsOptional() @IsString() @IsNotEmpty() @MaxLength(20) @ApiPropertyOptional() phone?: string;
-  @IsOptional() @IsEmail() @ApiPropertyOptional() email?: string;
+  /** An empty string clears the address (roadmap 6.7); anything else must be an email. */
+  @IsOptional() @ValidateIf((dto: UpdateCustomerDto) => dto.email !== '') @IsEmail() @ApiPropertyOptional() email?: string;
   @IsOptional() @IsString() @MaxLength(500) @ApiPropertyOptional() address?: string;
   @IsOptional() @IsString() @MaxLength(100) @ApiPropertyOptional() city?: string;
   @IsOptional() @IsString() @MaxLength(100) @ApiPropertyOptional() state?: string;

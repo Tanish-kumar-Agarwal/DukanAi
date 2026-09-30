@@ -206,12 +206,12 @@ function LoginPageContent() {
                 <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide">
                   Password
                 </label>
-                <a
-                  href="#"
+                <Link
+                  href="/forgot-password"
                   className="text-xs font-bold text-[#8B5CF6] hover:text-purple-700 transition-colors"
                 >
                   Forgot?
-                </a>
+                </Link>
               </div>
               <div className="relative">
                 <Lock

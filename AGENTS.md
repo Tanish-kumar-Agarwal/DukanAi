@@ -561,7 +561,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   roles from `INVITABLE_ROLES`); the code reaches the invitee by email only,
   and the register page (`/register?invite=<code>`, or the code pasted into
   the "Invitation Code" field) switches to join mode and calls
-  `POST /invitations/accept`. Payroll, attendance and shift columns are not
+  `POST /invitations/accept` (the page posts it itself; there is no client
+  wrapper). Payroll, attendance and shift columns are not
   modelled by the API and were removed, not stubbed. Suppliers edit through
   `PATCH /suppliers/:id` (MANAGER+), delete through `DELETE /suppliers/:id`
   (ADMIN+, row removed only after the API answers) and send the chosen
@@ -652,6 +653,55 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   callback sanitising, navbar `q` and the anonymous-cart migration; the
   production CSP with a real sign-in was smoke-tested with `next build` +
   `next start` against an API without the bypass.
+- 6.7 correctness: the receipt and the invoice page show a Cess row when the
+  document carries cess (summed from the lines: `Invoice` has no cess column).
+  Print CSS is per page: `globals.css` hides `.print-hidden` (the shell) on
+  every page, applies the 80 mm receipt rules only while the receipt portal
+  is mounted (`body:has(.receipt-print-root)`), and each printable page
+  mounts its own `@page` through `PrintPageStyle`
+  (`src/components/print`; receipt 80 mm, invoice detail A4 under
+  `.print-document`). A customer edit sends '' for a blanked optional field
+  (the API stores null; `UpdateCustomerDto.email` skips `IsEmail` for '')
+  and the form lengths match the DTO (name 100, city 100, address 500, notes
+  1000). Expenses tiles read `GET /expenses/summary` (this month in the
+  shop's timezone over every expense, pending over every unpaid one) and the
+  Edit action is real (`PATCH /expenses/:id`). Batch dates go through
+  `formatBatchDate` (null = "Not recorded"). The viewport allows pinch-zoom.
+  Low-stock badges use each product's reorder point (6.2). The inventory page
+  keeps only the tabs with a module (Batches & Expiry, Low Stock); stock
+  moves are recorded from Products › Update Stock, so the transfer /
+  adjustment placeholders are gone. Forgot password: `POST
+  /auth/forgot-password` (public, auth-throttled) always answers the same
+  message and emails `<FRONTEND_URL>/reset-password?token=…` when the address
+  has a password account (never a Google-only one); the token is hashed at
+  rest (`PasswordResetToken`, migration `20260930090000`), single use, one
+  hour, and a new request voids the older ones; `POST /auth/reset-password`
+  sets the password, bumps `tokenVersion`, revokes the refresh tokens and
+  drops the sockets, so every session ends. Production without SMTP answers
+  503 like invitations. Web pages `/forgot-password` and `/reset-password`
+  are public in the middleware and shell-less in `RootLayout`.
+  `test/integration/web-correctness.integration-spec.ts` and
+  `apps/web/e2e/correctness.spec.ts` cover the row.
+- 6.8 dead code: the 13 unused web dependencies are gone (radix, react-hook-form,
+  react-query, next-themes, class-variance-authority, tailwind-merge, …) plus
+  `@types/uuid`; `data/customers.json`, `eslint_output.txt`, the unused
+  `Button`, `Input`, `StatCard`, `DataTable`, `Charts` components, the hooks
+  barrel (`useTheme` now lives in `src/hooks/useTheme.ts`) and the unused
+  exports in `lib/utils.ts`, `types/index.ts`, `store/index.ts`
+  (sidebar state only) are removed. Verify with `npx ts-prune -p
+  tsconfig.json` before adding an export nobody imports. recharts is loaded
+  with `next/dynamic` (`SalesTrendChart`, `components/analytics/AnalyticsCharts`),
+  never imported from a page. `SkeletonBox` pulses with the CSS keyframe
+  `skeleton-pulse` (globals.css, reduced-motion aware), not a JS loop.
+- 6.9 gate evidence: `playwright.auth.config.ts` (`npm run test:e2e:auth`,
+  CI step "Playwright (real auth)") boots the API without `AUTH_DISABLED` and
+  the web with the bypass off on ports 3005 / 3012, sequentially after the
+  bypass suite (both use the `.next` dev cache). `e2e-auth/real-auth.spec.ts`
+  registers through the form, proves the middleware bounce and callback, a
+  wrong password, sign-out, every repaired page under a real session, and a
+  VIEWER (inserted with a bcrypt hash through `E2E_DATABASE_URL`) who sees no
+  write buttons while the API answers 403. `docs/WEB_GATE_EVIDENCE.md` holds
+  the exit-gate record (persistence suite, headers, Lighthouse).
 - The shared axios instance (`src/lib/api.ts`) defaults to JSON and axios
   serialises a `FormData` body as JSON under that header (`{"file":{}}`); its
   request interceptor drops the content type for `FormData` so the browser

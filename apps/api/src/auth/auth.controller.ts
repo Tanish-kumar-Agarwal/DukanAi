@@ -19,6 +19,8 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { GoogleIdentityService } from './google-identity.service';
 import { AnyAuthenticated } from './/any-authenticated.decorator';
 import { AuthThrottle } from '../common/throttling/auth-throttle.decorator';
+import { PasswordResetService } from './password-reset.service';
+import { ForgotPasswordDto, ResetPasswordDto } from './dto/password-reset.dto';
 
 interface AuthenticatedRequest extends ExpressRequest {
   /** `sessionId` is set by JwtStrategy from the token's `sid` claim. */
@@ -32,6 +34,7 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly usersService: UsersService,
     private readonly googleIdentityService: GoogleIdentityService,
+    private readonly passwordReset: PasswordResetService,
   ) {}
 
   @Public()
@@ -90,6 +93,24 @@ export class AuthController {
     @Headers('user-agent') userAgent: string,
   ): Promise<LoginResponseDto> {
     return this.authService.refresh(body.refresh_token, ip, userAgent);
+  }
+
+  @Public()
+  @AuthThrottle()
+  @Post('forgot-password')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Email a password reset link; the answer never reveals whether the address has an account' })
+  forgotPassword(@Body() body: ForgotPasswordDto): Promise<{ message: string }> {
+    return this.passwordReset.request(body.email);
+  }
+
+  @Public()
+  @AuthThrottle()
+  @Post('reset-password')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Set a new password with the emailed token; ends every session of the account' })
+  resetPassword(@Body() body: ResetPasswordDto): Promise<{ message: string }> {
+    return this.passwordReset.reset(body.token, body.password);
   }
 
   @AnyAuthenticated()

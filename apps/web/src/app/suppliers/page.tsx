@@ -245,13 +245,15 @@ export default function SuppliersPage() {
           <h1 className="text-2xl font-bold text-gray-800">Suppliers & Vendors</h1>
           <p className="text-sm text-gray-500 mt-1">Manage your distributors, track payables, and record purchases.</p>
         </div>
-        <button 
-          onClick={() => setIsAddModalOpen(true)}
-          className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg shadow-purple-500/30 transition-all"
-        >
-          <Plus size={18} />
-          Add Supplier
-        </button>
+        {allowEdit && (
+          <button 
+            onClick={() => setIsAddModalOpen(true)}
+            className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg shadow-purple-500/30 transition-all"
+          >
+            <Plus size={18} />
+            Add Supplier
+          </button>
+        )}
       </div>
 
       {/* Stats Row */}
