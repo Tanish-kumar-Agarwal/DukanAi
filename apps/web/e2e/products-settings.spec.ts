@@ -45,6 +45,9 @@ async function createProduct(request: APIRequestContext, name: string, extra: Re
 }
 
 async function searchProducts(page: Page, term: string): Promise<void> {
+  // The footer is rendered from the first list fetch, which runs in an effect: it proves the page is hydrated,
+  // so the keystrokes below reach React (a fill before hydration on the dev server is lost, no request follows).
+  await expect(page.getByTestId('products-pagination')).toBeVisible();
   const listed = page.waitForResponse((r) => r.request().method() === 'GET' && isProductList(r.url()) && new URL(r.url()).searchParams.get('q') === term);
   await page.getByPlaceholder('Search by product name or SKU...').fill(term);
   expect((await listed).status()).toBe(200);
