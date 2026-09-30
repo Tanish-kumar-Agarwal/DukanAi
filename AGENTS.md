@@ -336,8 +336,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `mode: 'insensitive'` is PostgreSQL-only and answered 500 here), five
   candidates, four lookups in flight, and the Dice similarity against
   `OCR_FUZZY_MATCH_THRESHOLD` is the reported `confidence`. Items are capped
-  at `OCR_MAX_ITEMS`. The web has no caller yet (the AI scanner page is a
-  mock). `src/ocr/ocr.service.spec.ts` and
+  at `OCR_MAX_ITEMS`. The web caller is the AI scanner page (roadmap 6.1).
+  `src/ocr/ocr.service.spec.ts` and
   `test/integration/ocr.integration-spec.ts` (stubbed `fetch`) cover it.
 - 4.5 / 4.6: the enterprise-invoice (`/invoices/generate`), returns-domain
   (`/returns/initiate`), payment-domain (`/payments/capture`), sales-domain
@@ -706,8 +706,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   refuses to issue an invitation without SMTP (503). Integration specs
   override the provider (`bootApp(b => b.overrideProvider(EmailService)...)`)
   and read the token from the recorded message. The email links to
-  `<FRONTEND_URL>/register?invite=<token>`; the web register page does not
-  read that parameter yet (the invitee pastes the code).
+  `<FRONTEND_URL>/register?invite=<token>`, which the web register page reads
+  into its join mode (roadmap 6.1; the code can also be pasted).
 - Google sign-in: the web sends only `{ idToken: account.id_token }` to
   `POST /auth/google`, and registers the provider only with real credentials
   (`hasGoogleCredentials`, placeholder-aware). The API never links a Google
