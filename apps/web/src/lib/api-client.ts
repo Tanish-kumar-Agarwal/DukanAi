@@ -102,19 +102,89 @@ function mapProduct(raw: Record<string, unknown>): Product {
     mrp: toNumber(raw.mrp ?? raw.sellingPrice),
     sellingPrice: toNumber(raw.sellingPrice ?? raw.mrp),
     cessRate: toNumber(raw.cessRate),
+    categoryId: (raw.categoryId as string | null | undefined) ?? (raw.category as { id?: string } | undefined)?.id ?? null,
+    reorderPoint: toNumber(raw.reorderPoint, 10),
+    hsnCode: (raw.hsnCode as string | null | undefined) ?? null,
   };
 }
 
 // ---------------------------------------------------------------------------
 // Products
 // ---------------------------------------------------------------------------
+export interface ProductInput {
+  name: string;
+  /** Omit to let the API number it. */
+  sku?: string;
+  barcode?: string | null;
+  description?: string;
+  sellingPrice: number;
+  costPrice: number;
+  /** Defaults to the selling price when omitted on create. */
+  mrp?: number;
+  wholesalePrice?: number;
+  gstRate: GstRate;
+  unit: ProductUnit;
+  categoryId?: string | null;
+}
+
+/** Only the given fields go on the wire; `undefined` means "not sent", `null` on barcode/category clears it. */
+function productPayload(data: Partial<ProductInput>): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  const set = (key: string, value: unknown) => {
+    if (value !== undefined) body[key] = value;
+  };
+  set('name', data.name?.trim());
+  set('sku', data.sku?.trim() || undefined);
+  set('barcode', data.barcode === null ? null : data.barcode?.trim() || undefined);
+  set('description', data.description?.trim());
+  set('sellingPrice', data.sellingPrice);
+  set('costPrice', data.costPrice);
+  set('mrp', data.mrp ?? (data.sellingPrice !== undefined ? data.sellingPrice : undefined));
+  set('wholesalePrice', data.wholesalePrice ?? (data.sellingPrice !== undefined ? data.sellingPrice : undefined));
+  set('gstRate', data.gstRate);
+  set('unit', data.unit);
+  set('categoryId', data.categoryId);
+  return body;
+}
+
+export type ProductStockFilter = 'in' | 'low' | 'out';
+
+export interface ProductListParams {
+  q?: string;
+  limit?: number;
+  offset?: number;
+  categoryId?: string;
+  /** Dashboard definitions: `out` no stock, `low` at or below the reorder point, `in` above it. */
+  stock?: ProductStockFilter;
+}
+
+export interface ProductPage {
+  items: Product[];
+  total: number;
+  skip: number;
+  take: number;
+}
+
+/** The page the API describes in `X-Total-Count` / `X-Page-Skip` / `X-Page-Take` (roadmap 5.6). */
+function pageFromHeaders(headers: Record<string, unknown>, fallback: { skip: number; take: number; count: number }): { total: number; skip: number; take: number } {
+  const read = (name: string, or: number) => {
+    const value = Number(headers[name]);
+    return Number.isFinite(value) && value >= 0 ? value : or;
+  };
+  return { total: read('x-total-count', fallback.count), skip: read('x-page-skip', fallback.skip), take: read('x-page-take', fallback.take) };
+}
+
 export const productsApi = {
-  /** `GET /products?q&limit&offset` (limit max 200). Returns an array of products. */
-  list: (params?: { q?: string; limit?: number; offset?: number }) => {
-    const qs = buildQuery({ q: params?.q, limit: params?.limit, offset: params?.offset });
-    return get<unknown[]>(`/products${qs}`).then((arr) =>
-      (Array.isArray(arr) ? arr : []).map((item) => mapProduct(item as Record<string, unknown>)),
-    );
+  /** `GET /products?q&limit&offset&categoryId&stock` (limit max 200). Returns the array body only. */
+  list: (params?: ProductListParams) => productsApi.listPage(params).then((page) => page.items),
+
+  /** The same list with its page (`X-Total-Count`), for the products page (roadmap 6.2). */
+  listPage: (params?: ProductListParams, options?: { signal?: AbortSignal }): Promise<ProductPage> => {
+    const qs = buildQuery({ q: params?.q, limit: params?.limit, offset: params?.offset, categoryId: params?.categoryId, stock: params?.stock });
+    return apiClient.get<unknown[]>(`/products${qs}`, options?.signal ? { signal: options.signal } : {}).then((res) => {
+      const items = (Array.isArray(res.data) ? res.data : []).map((item) => mapProduct(item as Record<string, unknown>));
+      return { items, ...pageFromHeaders(res.headers as Record<string, unknown>, { skip: params?.offset ?? 0, take: params?.limit ?? items.length, count: items.length }) };
+    });
   },
 
   /** `GET /search?q&limit` mapped onto the full Product shape (lean search rows). */
@@ -129,26 +199,38 @@ export const productsApi = {
   get: (id: string) =>
     get<Record<string, unknown>>(`/products/${id}`).then(mapProduct),
 
-  create: (data: {
-    name: string;
-    sku: string;
-    sellingPrice: number;
-    costPrice: number;
-    mrp: number;
-    categoryId?: string;
-    unit?: string;
-  }) =>
-    post<Record<string, unknown>>('/products', {
-      ...data,
-      unit: data.unit ?? 'PCS',
-      mrp: data.mrp ?? data.sellingPrice,
-      wholesalePrice: data.sellingPrice,
-    }).then(mapProduct),
+  /**
+   * `POST /products`. The SKU is optional: without one the API numbers it
+   * (`SKU-000001`); the client never invents one (roadmap 6.2). The cost price
+   * is what the user typed, never derived from the selling price.
+   */
+  create: (data: ProductInput) => post<Record<string, unknown>>('/products', productPayload(data)).then(mapProduct),
 
-  update: (id: string, data: Record<string, unknown>) =>
-    patch<Record<string, unknown>>(`/products/${id}`, data).then(mapProduct),
+  /** `PATCH /products/:id` (MANAGER+): only the given fields; a price change is audited by the API. */
+  update: (id: string, data: Partial<ProductInput>) =>
+    patch<Record<string, unknown>>(`/products/${id}`, productPayload(data)).then(mapProduct),
 
   delete: (id: string) => del(`/products/${id}`),
+};
+
+// ---------------------------------------------------------------------------
+// Categories (roadmap 6.2: the products page filters and files products by real categories)
+// ---------------------------------------------------------------------------
+export interface CategoryView {
+  id: string;
+  name: string;
+  parentId: string | null;
+}
+
+export const categoriesApi = {
+  /** `GET /categories` — the shop's categories as one capped page (tree order, default = cap). */
+  list: () =>
+    get<Array<Record<string, unknown>>>('/categories').then((rows) =>
+      (Array.isArray(rows) ? rows : []).map((row) => ({ id: row.id as string, name: (row.name as string) ?? '', parentId: (row.parentId as string | null | undefined) ?? null })),
+    ),
+
+  /** `POST /categories` (MANAGER+). */
+  create: (name: string) => post<Record<string, unknown>>('/categories', { name: name.trim() }).then((row) => ({ id: row.id as string, name: (row.name as string) ?? name, parentId: null })),
 };
 
 // ---------------------------------------------------------------------------
@@ -1208,9 +1290,56 @@ function mapShopProfile(raw: Raw): ShopProfile {
   };
 }
 
+/** The profile fields `PATCH /shops/me` accepts; the shop `state` decides IGST vs CGST+SGST on every sale (roadmap 6.3). */
+export interface ShopProfileInput {
+  name?: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  pincode?: string;
+  phone?: string;
+  email?: string;
+  gstin?: string;
+}
+
 export const shopApi = {
   /** `GET /shops/me` */
   me: () => get<Raw>('/shops/me').then(mapShopProfile),
+
+  /** `PATCH /shops/me` (MANAGER+): every field is optional; an empty string clears it. */
+  update: (data: ShopProfileInput) => patch<Raw>('/shops/me', data).then(mapShopProfile),
+};
+
+// ---------------------------------------------------------------------------
+// Account sessions (settings › Account & Security, roadmap 6.3)
+// ---------------------------------------------------------------------------
+export interface SessionView {
+  id: string;
+  familyId: string;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: string;
+  expiresAt: string;
+  absoluteExpiresAt: string;
+}
+
+export const sessionsApi = {
+  /** `GET /auth/sessions` — the caller's live sessions, newest first (capped page). */
+  list: () =>
+    get<Array<Record<string, unknown>>>('/auth/sessions').then((rows) =>
+      (Array.isArray(rows) ? rows : []).map((row) => ({
+        id: row.id as string,
+        familyId: (row.familyId as string) ?? '',
+        ipAddress: (row.ipAddress as string | null | undefined) ?? null,
+        userAgent: (row.userAgent as string | null | undefined) ?? null,
+        createdAt: (row.createdAt as string) ?? '',
+        expiresAt: (row.expiresAt as string) ?? '',
+        absoluteExpiresAt: (row.absoluteExpiresAt as string) ?? '',
+      })),
+    ),
+
+  /** `DELETE /auth/sessions/:id` — ends that session everywhere it is used. */
+  revoke: (id: string) => del(`/auth/sessions/${id}`),
 };
 
 // ---------------------------------------------------------------------------

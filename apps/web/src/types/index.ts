@@ -43,6 +43,10 @@ export type Product = {
   sellingPrice?: number;
   /** Cess percentage on the taxable amount (0 for most products). */
   cessRate?: number;
+  categoryId?: string | null;
+  /** Low-stock threshold the API and dashboard use (`currentStock <= reorderPoint`). */
+  reorderPoint?: number;
+  hsnCode?: string | null;
 };
 
 export type Customer = {

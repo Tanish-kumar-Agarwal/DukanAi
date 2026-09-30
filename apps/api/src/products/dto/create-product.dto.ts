@@ -10,8 +10,11 @@ export class CreateProductDto {
   @IsOptional()
   slug?: string;
 
+  /** Unique per shop among live products; generated as `SKU-000001` when absent (roadmap 6.2). */
   @IsString()
-  sku: string;
+  @IsOptional()
+  @MaxLength(64)
+  sku?: string;
 
   /** Unique per shop across Product, ProductBarcode and ProductVariant (409 BARCODE_IN_USE). */
   @IsString()

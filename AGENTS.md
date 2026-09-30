@@ -581,6 +581,31 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `src/components/customers/permissions.ts` and treat `AUTH_DISABLED` as
   OWNER. Never re-introduce a `setTimeout` "save" or a toast without a
   request behind it.
+- 6.2 products page: the list is a server page (`productsApi.listPage`,
+  `GET /products?q&limit&offset&categoryId&stock`, 50 per page, total from
+  `X-Total-Count`); the search box is debounced and every filter is applied
+  by the API (`stock` shares the dashboard's reorder-point rule, so the row
+  badges use `reorderPoint` too), never by trimming the loaded page. The
+  four tiles read `GET /dashboard/summary` (`totalProducts`, `lowStockCount`,
+  `outOfStockCount`, `inventoryValue`) and show a failed section as
+  unavailable. Add / edit send exactly the typed fields (`productPayload`):
+  a blank SKU is omitted and numbered by the API (`SKU-000001`, per-shop
+  `NumberSequence` under the same row lock as invoice numbers), the cost
+  price is required and never derived, MRP defaults to the selling price and
+  may not be below it, GST slab and unit are selects from the Prisma enums.
+  Delete goes through a confirmation modal and re-reads the page. Create /
+  edit are MANAGER+, delete ADMIN+/OWNER (mirrors the API's `@Roles`).
+- 6.3 settings: "Shop Profile" writes every `UpdateShopProfileDto` field
+  (`shopApi.update`); the state is a picker from
+  `components/pos/indian-states.ts` because `BillingService.resolveInterState`
+  compares `Shop.state` with `Customer.state` to decide IGST, and a shop
+  without a state can never bill IGST (the save toast says so). The side
+  menu holds two panels (Shop Profile, Account & Security: the caller's
+  sessions from `GET /auth/sessions` with revoke and sign-out) and two links
+  (Notifications, Team Management); "Billing & Plans" is gone because no plan
+  model exists. `test/integration/products-settings.integration-spec.ts`
+  proves the SKU sequence, the paged filters and the IGST split over HTTP;
+  `apps/web/e2e/products-settings.spec.ts` proves the pages.
 - The shared axios instance (`src/lib/api.ts`) defaults to JSON and axios
   serialises a `FormData` body as JSON under that header (`{"file":{}}`); its
   request interceptor drops the content type for `FormData` so the browser
@@ -595,7 +620,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   not expose blob multipart bodies to Playwright, so upload tests assert the
   multipart header and the server-side effect, not the request body. A JPEG
   fixture is rendered in the page with a canvas (the API sniffs magic bytes).
-  Add a test here for every mutating UI action a later 6.x row repairs.
+  `products-settings.spec.ts` continues it for 6.2 / 6.3; add a test for
+  every mutating UI action a later 6.x row repairs. Match the products list
+  request by exact pathname: `/dashboard/products` and `/inventory/products`
+  also end in `/products`.
 
 ## Toolchain
 
