@@ -776,6 +776,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   hyphen last. Next rewrote tsconfig to `jsx: react-jsx`, so an unused
   `import React` fails the build's type check: import only what is used.
   `@playwright/test` stays pinned (1.56.1); Next lists it as an optional peer.
+  In `next dev` the Next 16 overlay echoes every `console.error` (the dev
+  tools button's name contains "Next"), so a Playwright text locator for an
+  error message must be scoped to the page's own `role=alert` and a "Next"
+  button locator needs `exact: true`, or strict mode resolves two elements.
   `apps/web/AGENTS.md` and `apps/web/CLAUDE.md` are written by `next dev`
   (they point at the bundled Next 16 docs under `node_modules/next/dist/docs`)
   and are committed because Next re-creates them on every dev start.
