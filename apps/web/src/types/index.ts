@@ -45,34 +45,6 @@ export type Customer = {
   joinedAt?: string;
 };
 
-export type InvoiceItem = {
-  productId: string;
-  productName: string;
-  quantity: number;
-  price: number;
-  total: number;
-};
-
-export type SalesData = {
-  date: string;
-  sales: number;
-};
-
-export type ProductSalesData = {
-  id: string;
-  name: string;
-  sales: number;
-  revenue: number;
-  quantity: number;
-};
-
-export type CustomerAnalytics = {
-  id: string;
-  name: string;
-  spent: number;
-  frequency: number;
-};
-
 // ---------------------------------------------------------------------------
 // POS / Billing contract shapes (docs/POS_BILLING_CONTRACT.md)
 // All money fields are numbers (coerced from Prisma Decimal strings in the API
@@ -86,7 +58,6 @@ export type InvoiceStatus = 'DRAFT' | 'COMPLETED' | 'CANCELLED';
 export type ShiftStatus = 'OPEN' | 'CLOSED';
 export type DiscountType = 'FIXED_AMOUNT' | 'PERCENTAGE';
 export type ProductUnit = 'PCS' | 'KG' | 'GM' | 'LTR' | 'ML' | 'BOX' | 'PACK' | 'DOZEN' | 'BUNDLE';
-export type ProductType = 'SIMPLE' | 'VARIABLE' | 'BUNDLE' | 'COMBO' | 'SERVICE' | 'DIGITAL';
 export type GstRate = 'ZERO' | 'FIVE' | 'TWELVE' | 'EIGHTEEN' | 'TWENTYEIGHT';
 
 /** Lean product row from `GET /search`, `GET /search/barcode/:code` and the POS grid. */

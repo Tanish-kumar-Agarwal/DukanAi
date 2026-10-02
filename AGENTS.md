@@ -688,8 +688,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `Button`, `Input`, `StatCard`, `DataTable`, `Charts` components, the hooks
   barrel (`useTheme` now lives in `src/hooks/useTheme.ts`) and the unused
   exports in `lib/utils.ts`, `types/index.ts`, `store/index.ts`
-  (sidebar state only) are removed. Verify with `npx ts-prune -p
-  tsconfig.json` before adding an export nobody imports. recharts is loaded
+  (sidebar state only) are removed (`lib/utils.ts` is `clsx` only). ts-prune
+  does not resolve the `@/` alias, so it reports every `@/types` import as
+  unused: confirm a candidate with `grep -rlw <name> src` before deleting it,
+  and never add an export nobody imports. recharts is loaded
   with `next/dynamic` (`SalesTrendChart`, `components/analytics/AnalyticsCharts`),
   never imported from a page. `SkeletonBox` pulses with the CSS keyframe
   `skeleton-pulse` (globals.css, reduced-motion aware), not a JS loop.
