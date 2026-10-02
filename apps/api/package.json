@@ -38,6 +38,7 @@
     "@nestjs/core": "^11.1.21",
     "@nestjs/event-emitter": "^3.1.0",
     "@nestjs/jwt": "^11.0.2",
+    "@nestjs/mapped-types": "^2.1.1",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.2.7",
     "@nestjs/platform-socket.io": "^11.1.21",
@@ -51,10 +52,13 @@
     "bcrypt": "^6.0.0",
     "bullmq": "^5.78.0",
     "bwip-js": "^4.11.2",
+    "cache-manager": "^7.2.9",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
+    "cron": "^4.4.0",
     "csv-parser": "^3.2.1",
     "decimal.js": "^10.6.0",
+    "express": "^5.2.1",
     "fast-json-patch": "^3.1.1",
     "fast-levenshtein": "^2.0.6",
     "fs-extra": "^10.1.0",
@@ -74,7 +78,8 @@
     "rxjs": "^7.8.1",
     "sharp": "^0.35.5",
     "socket.io": "^4.8.4",
-    "swagger-ui-express": "^5.0.1"
+    "swagger-ui-express": "^5.0.1",
+    "uuid": "^11.1.1"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",

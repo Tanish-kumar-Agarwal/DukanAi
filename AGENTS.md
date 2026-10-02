@@ -757,8 +757,14 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   as an apps/api devDependency (scripts and tests; the API reads env through
   `@nestjs/config`). `xlsx`, `joi`, `lodash`, `fluent-ffmpeg`, `fuse.js`,
   `bull` and `@nestjs/bull` are gone (nothing imported them; the media
-  worker's video branch is a comment). Node 22 is the floor everywhere
-  (`engines`, `.nvmrc`).
+  worker's video branch is a comment). The API image installs the API
+  workspace alone, so a package the API imports but only reaches
+  node_modules through another workspace (`uuid` via next-auth) is missing
+  there and boot dies with MODULE_NOT_FOUND: `src/dependency-declarations.spec.ts`
+  scans `src/` (specs excluded) and fails on any import not in the API's
+  `dependencies` (`uuid`, `cache-manager`, `cron`, `express`,
+  `@nestjs/mapped-types` are declared for that reason). Node 22 is the floor
+  everywhere (`engines`, `.nvmrc`).
 
 - 7.2: the web runs Next.js 16 on React 19 (`react`/`react-dom`/`@types/react`
   19, framer-motion 14, lucide-react 1.x, recharts 2.15). What the major
