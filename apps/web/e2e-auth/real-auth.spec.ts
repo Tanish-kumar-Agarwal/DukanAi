@@ -49,6 +49,11 @@ async function signIn(page: Page, email: string, password: string): Promise<void
 async function signOut(page: Page): Promise<void> {
   await page.getByTitle('Sign out').click();
   await page.waitForURL('**/login**');
+  // The URL changes before NextAuth has finished clearing the session: wait until the session endpoint is empty,
+  // or the next protected navigation can still carry the old cookie.
+  await expect
+    .poll(async () => page.evaluate(() => fetch('/api/auth/session').then((r) => r.json()).then((s) => Boolean(s && s.user))))
+    .toBe(false);
 }
 
 async function apiToken(request: APIRequestContext, email: string, password: string): Promise<string> {

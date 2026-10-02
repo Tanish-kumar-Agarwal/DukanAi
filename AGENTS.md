@@ -733,6 +733,31 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   wraps the document in `{ invoice }`, and `POST /customers/:id/payments`
   needs an `idempotencyKey`.
 
+## Dependencies (roadmap phase 7)
+
+- 7.1: `npm audit --omit=dev` is clean except the `next` 14 advisory, which
+  only the major upgrade (7.2) clears; re-check with `npm audit --omit=dev`
+  after any dependency change and keep it that way. The root `overrides`
+  carry the fixes that upstream pins block, each with its reason in
+  `package.json`: next-auth 4's `nodemailer` (its unused Email provider) is
+  forced to 10.x, `@prisma/config`'s `deepmerge-ts` to 8.x (CJS build,
+  same `deepmerge` export; `prisma generate` / `migrate` run on it),
+  `@nestjs/swagger`'s `js-yaml` to 5.4.x, and `postcss` to 8.5.28 over the
+  copy `next` 14 pins. Keep an override scoped to its consumer: a blanket
+  `js-yaml` override breaks eslint 8 and the istanbul loader (they need
+  3.x / 4.x). `npm audit fix` is not usable here: it tries to downgrade
+  `prisma` to 6.12 and stops on the peer conflict; apply fixes as explicit
+  versions instead. `prisma` and `@prisma/client` are pinned to the same
+  exact version (6.19.3): bump both together, then `npx prisma generate`.
+  Every package is declared where it is imported: `axios` in apps/api
+  (`webhook-http-client.ts`) as well as apps/web, `mysql2` as a
+  devDependency of both apps (only tests open a raw connection), `dotenv`
+  as an apps/api devDependency (scripts and tests; the API reads env through
+  `@nestjs/config`). `xlsx`, `joi`, `lodash`, `fluent-ffmpeg`, `fuse.js`,
+  `bull` and `@nestjs/bull` are gone (nothing imported them; the media
+  worker's video branch is a comment). Node 22 is the floor everywhere
+  (`engines`, `.nvmrc`).
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and

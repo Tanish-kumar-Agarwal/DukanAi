@@ -9,7 +9,8 @@ import { SocketSessionService } from './socket-session.service';
 import { CORRELATION_HEADER, sanitizeIdentifier } from '../../common/correlation/correlation-id';
 
 export class AuthenticatedIoAdapter extends IoAdapter {
-  private readonly logger = new Logger(AuthenticatedIoAdapter.name);
+  // `IoAdapter` declares a protected `logger` since @nestjs/platform-socket.io 11.2: override it with our own tag.
+  protected override readonly logger = new Logger(AuthenticatedIoAdapter.name);
   private readonly jwtService: JwtService;
   private readonly appConfig: AppConfig;
   private readonly jwtConfig: JwtConfig;
