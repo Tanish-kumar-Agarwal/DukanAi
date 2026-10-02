@@ -784,6 +784,55 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (they point at the bundled Next 16 docs under `node_modules/next/dist/docs`)
   and are committed because Next re-creates them on every dev start.
 
+## Deployment (roadmap 7.3)
+
+- Images: `apps/api/Dockerfile` and `apps/web/Dockerfile` build from the
+  repository root (`.dockerignore` there) on one pinned Node
+  (`NODE_VERSION`, the major of `.nvmrc`; bump together), Debian slim
+  (glibc for the Prisma engines, sharp, bcrypt; `openssl` + `ca-certificates`
+  via apt), non-root `node`, `HEALTHCHECK` on the liveness route, no env
+  file copied in. The API image holds only the API's production
+  `node_modules` (`npm ci --omit=dev -w api -w @dukaanai/invoice-math`
+  + `prisma generate`), `dist`, and `prisma/` so the same image runs the
+  release step `npx prisma migrate deploy`. The web image is Next's
+  standalone output: `NEXT_STANDALONE=true` switches `output: 'standalone'`
+  on in `next.config.js` (opt-in because `next start` refuses it) with
+  `outputFileTracingRoot` at the monorepo root; `NEXT_PUBLIC_API_URL` is a
+  build arg (inlined) and also runtime env (the proxy's CSP reads it);
+  `API_INTERNAL_URL` (server-only, `serverConfig`) is where `auth.ts`
+  reaches the API from inside the network. `docker-compose.yml` + root
+  `.env.example` (two required secrets, `:?` otherwise) is the reference
+  stack: mysql 8 (`--log-bin-trust-function-creators=1` for the ledger
+  triggers), redis 7 AOF, `migrate` one-shot, `api` healthy on readiness,
+  `web`. `docs/DEPLOYMENT.md` is the runbook (probes, env, Kubernetes sketch).
+- Probes: `HealthModule` (`src/health`, `@Public()` + `@SkipThrottle()`):
+  `GET /api/health` and `/health/live` are liveness (no dependency; the
+  Playwright web servers and the `HEALTHCHECK`s poll the first);
+  `GET /api/health/ready` is 200 only when `SELECT 1`, Redis `PING` (2 s
+  probe timeout each) and `GracefulShutdownService.isDraining === false`,
+  else 503 `{ status: 'draining' | 'unavailable', checks }`. The web has
+  `app/api/health/route.ts` (excluded in the proxy matcher).
+- Shutdown (`src/common/lifecycle`): `main.ts` calls `app.init()`, waits
+  for every BullMQ queue/worker connection (`waitForQueueConnections`,
+  bounded by `QUEUE_READY_TIMEOUT_MS`; the integration fixture uses the
+  same helper unbounded), sets `keepAliveTimeout`
+  (`HTTP_KEEP_ALIVE_TIMEOUT_MS`, above the LB idle timeout), then listens;
+  `enableShutdownHooks(undefined, { useProcessExit: true })` exits 0 after a
+  clean close instead of re-raising the signal (143).
+  `GracefulShutdownService.beforeApplicationShutdown(signal)`: draining
+  flag -> watchdog (`SHUTDOWN_TIMEOUT_MS`, exit 1, armed only on a real
+  signal) -> `SHUTDOWN_DRAIN_DELAY_MS` (signal only; 0 compose, 5 s k8s) ->
+  close every worker (active jobs finish) -> Nest closes the servers ->
+  `onApplicationShutdown` closes queues, Redis (QUIT) and Prisma.
+  `PrismaService` disconnects in `onApplicationShutdown`, never in
+  `onModuleDestroy` (which runs before the server closes and failed
+  in-flight requests). `test/integration/deployment.integration-spec.ts`
+  covers the probes in-process and sends a real SIGTERM to `node dist/main`
+  (built on demand). `scripts/compose-smoke.sh` is the phase 7 exit gate
+  (CI job "Deployment (compose smoke)"): fresh clone -> `compose up` ->
+  idempotent migrate -> probes -> register -> API + web sign-in -> stock,
+  shift, sale -> dashboard -> `compose stop` exits 0 with the shutdown lines.
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and

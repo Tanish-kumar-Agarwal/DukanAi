@@ -196,7 +196,7 @@ Set both flags together, and never enable them for a production deployment.
 ### 🔧 PHASE 5: Production Optimization
 - [ ] Performance optimization
 - [ ] Redis caching
-- [ ] Docker containerization
+- [x] Docker containerization (`docker compose up`, see docs/DEPLOYMENT.md)
 - [ ] CI/CD pipeline
 - [ ] Security hardening
 - [ ] Monitoring setup

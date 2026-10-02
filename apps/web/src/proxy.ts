@@ -107,7 +107,7 @@ export async function proxy(req: NextRequest) {
 
 export const config = {
   matcher: [
-    // Everything except NextAuth routes, Next internals and files with an extension.
-    '/((?!api/auth|_next/static|_next/image|favicon.ico|.*\\..*).*)',
+    // Everything except NextAuth routes, the liveness probe, Next internals and files with an extension.
+    '/((?!api/auth|api/health|_next/static|_next/image|favicon.ico|.*\\..*).*)',
   ],
 };

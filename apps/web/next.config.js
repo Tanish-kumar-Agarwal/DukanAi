@@ -1,3 +1,5 @@
+const path = require('node:path');
+
 /**
  * Roadmap 6.4: the auth bypass never ships. `next build` and `next start` both
  * load this file with NODE_ENV=production, so a production bundle or server
@@ -28,10 +30,22 @@ const SECURITY_HEADERS = [
   { key: 'X-DNS-Prefetch-Control', value: 'off' },
 ];
 
+/**
+ * Container builds (roadmap 7.3, apps/web/Dockerfile) set NEXT_STANDALONE=true
+ * so `next build` emits .next/standalone, a self-contained server with only the
+ * traced dependencies. Not the default: `next start` refuses a standalone
+ * build, and the Lighthouse / smoke runs use `next build` + `next start`.
+ * The tracing root is the monorepo root so workspace packages
+ * (@dukaanai/invoice-math) and hoisted node_modules are included.
+ */
+const STANDALONE = ['1', 'true', 'yes', 'on'].includes((process.env.NEXT_STANDALONE ?? '').trim().toLowerCase());
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  ...(STANDALONE ? { output: 'standalone' } : {}),
+  outputFileTracingRoot: path.join(__dirname, '../../'),
   images: {
     unoptimized: true,
   },

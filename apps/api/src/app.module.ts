@@ -75,6 +75,8 @@ import { SuppliersModule } from './suppliers/suppliers.module';
 import { ExpensesModule } from './expenses/expenses.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { HealthModule } from './health/health.module';
+import { LifecycleModule } from './common/lifecycle/lifecycle.module';
 
 @Module({
   imports: [
@@ -165,6 +167,9 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     ExpensesModule,
     NotificationsModule,
     DiscoveryModule,
+    // Deployment (roadmap 7.3): probes and shutdown ordering.
+    LifecycleModule,
+    HealthModule,
   ],
   controllers: [AppController],
   providers: [

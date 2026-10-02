@@ -9,6 +9,7 @@ import helmet from 'helmet';
 import { AuthenticatedIoAdapter } from './iam/websockets/authenticated-io.adapter';
 import { AppConfig, Environment } from './config/domains/app.config';
 import { applyTrustProxy } from './common/http/trust-proxy';
+import { waitForQueueConnections } from './common/lifecycle/queue-readiness';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -29,8 +30,11 @@ async function bootstrap() {
   // Global API prefix
   app.setGlobalPrefix('api');
 
-  // Graceful shutdown hooks
-  app.enableShutdownHooks();
+  // Graceful shutdown (roadmap 7.3): a signal runs the shutdown hooks
+  // (GracefulShutdownService orders them) and then exits 0 on a clean close,
+  // instead of re-raising the signal (exit 143, which orchestrators log as a
+  // failed stop); an error during shutdown still exits 1.
+  app.enableShutdownHooks(undefined, { useProcessExit: true });
 
   // Helmet Security
   app.use(helmet());
@@ -75,9 +79,18 @@ async function bootstrap() {
     SwaggerModule.setup('api/docs', app, document);
   }
 
+  // Deployment (roadmap 7.3): listen only once every BullMQ connection is
+  // open (bounded), so a passing probe means the instance serves and consumes;
+  // keep idle connections longer than the proxy in front does.
+  await app.init();
+  await waitForQueueConnections(app, { timeoutMs: appConfig.queueReadyTimeoutMs, logger });
+  const server = app.getHttpServer() as import('http').Server;
+  server.keepAliveTimeout = appConfig.httpKeepAliveTimeoutMs;
+  server.headersTimeout = appConfig.httpKeepAliveTimeoutMs + 1_000;
+
   const port = appConfig.port;
   await app.listen(port);
-  logger.log(`Application is running on: http://localhost:${port}`);
+  logger.log(`Application is running on: http://localhost:${port} (readiness: /api/health/ready)`);
 }
 bootstrap().catch((error) => {
   const msg = `\n\n[Bootstrap FATAL]: ${error?.stack || error?.message || error}\n\n`;
