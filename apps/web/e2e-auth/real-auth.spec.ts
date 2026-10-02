@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import mysql from 'mysql2/promise';
+import { createHash, randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 
 /**
@@ -149,5 +150,69 @@ test.describe('real sign-in (6.9)', () => {
     expect((await request.post(`${API_URL}/suppliers`, { ...as, data: { name: 'Nope', phone: '9999999999' } })).status()).toBe(403);
     // Reads stay open to every signed-in role.
     expect((await request.get(`${API_URL}/products`, as)).status()).toBe(200);
+  });
+
+  test('ending another session from Account & Security revokes it on the API', async ({ page, request }) => {
+    const owner = await registerOwner(page);
+    // A second session with a recognisable user agent: the row reads "Firefox on Windows", the browser's own "Chrome on Linux".
+    const other = await request.post(`${API_URL}/auth/login`, {
+      data: { email: owner.email, password: PASSWORD },
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0' },
+    });
+    expect(other.status(), await other.text()).toBe(201);
+    const otherToken = ((await other.json()) as { access_token: string }).access_token;
+    const asOther = { headers: { Authorization: `Bearer ${otherToken}` } };
+    expect((await request.get(`${API_URL}/auth/profile`, asOther)).status()).toBe(200);
+
+    await page.goto('/settings?section=account');
+    await expect(page.getByRole('heading', { name: 'Account & Security' })).toBeVisible();
+    const list = page.getByTestId('session-list');
+    const row = list.locator('li', { hasText: 'Firefox on Windows' });
+    await expect(row).toHaveCount(1);
+    const revoked = page.waitForResponse((r) => r.request().method() === 'DELETE' && new URL(r.url()).pathname.includes('/auth/sessions/'));
+    await row.getByRole('button', { name: 'End session' }).click();
+    expect((await revoked).status()).toBe(200);
+    await expect(page.getByText('Session ended')).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Account & Security' })).toBeVisible();
+    await expect(list.locator('li')).toHaveCount(1);
+    await expect(list.locator('li', { hasText: 'Firefox on Windows' })).toHaveCount(0);
+    expect((await request.get(`${API_URL}/auth/profile`, asOther)).status()).toBe(401);
+    expect((await request.post(`${API_URL}/auth/refresh`, { data: { refresh_token: ((await other.json()) as { refresh_token: string }).refresh_token } })).status()).toBe(401);
+  });
+
+  test('the reset-password page changes the password through a real link, once, and the old password stops working', async ({ page, request }) => {
+    const owner = await registerOwner(page);
+    const newPassword = 'An0ther-Passw0rd!';
+    // The link only ever reaches the user by email: the token row is written the way the API writes it (SHA-256 at rest).
+    const rawToken = randomBytes(32).toString('hex');
+    const conn = await mysql.createConnection(DATABASE_URL);
+    try {
+      const [rows] = await conn.execute('SELECT id FROM User WHERE email = ?', [owner.email]);
+      const userId = (rows as Array<{ id: string }>)[0].id;
+      await conn.execute(
+        'INSERT INTO PasswordResetToken (id, userId, tokenHash, expiresAt, usedAt, createdAt) VALUES (?, ?, ?, DATE_ADD(NOW(3), INTERVAL 1 HOUR), NULL, NOW(3))',
+        [`prt-${stamp()}`, userId, createHash('sha256').update(rawToken).digest('hex')],
+      );
+    } finally {
+      await conn.end();
+    }
+
+    await page.goto(`/reset-password?token=${rawToken}`);
+    await page.locator('#reset-password').fill(newPassword);
+    await page.locator('#reset-confirm').fill(newPassword);
+    const reset = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/auth/reset-password'));
+    await page.getByRole('button', { name: 'Change password' }).click();
+    expect((await reset).status(), await (await reset).text()).toBe(200);
+    await expect(page.getByTestId('reset-done')).toBeVisible();
+
+    // Persisted: the old password is refused, the new one signs in, and the link is spent.
+    expect((await request.post(`${API_URL}/auth/login`, { data: { email: owner.email, password: PASSWORD } })).status()).toBe(401);
+    expect((await request.post(`${API_URL}/auth/reset-password`, { data: { token: rawToken, password: 'Third-Passw0rd!' } })).status()).toBe(400);
+    await page.context().clearCookies();
+    await signIn(page, owner.email, newPassword);
+    await page.waitForURL('**/dashboard');
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
   });
 });

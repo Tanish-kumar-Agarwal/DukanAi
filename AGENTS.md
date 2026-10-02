@@ -712,16 +712,26 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   an absolute path once (the committed relative `./data/storage` used to trip
   the traversal guard on every upload) and the guard requires the base or a
   child of it, not a string prefix.
-- `apps/web/e2e/fake-flows.spec.ts` is the phase 6 persistence suite: every
-  repaired action is asserted after a reload AND against the API or the API's
-  disk (`E2E_STORAGE_ROOT`, default `apps/api/data/storage`). Chromium does
-  not expose blob multipart bodies to Playwright, so upload tests assert the
-  multipart header and the server-side effect, not the request body. A JPEG
-  fixture is rendered in the page with a canvas (the API sniffs magic bytes).
+- `apps/web/e2e/fake-flows.spec.ts` and `persistence.spec.ts` are the phase 6
+  persistence suite: every mutating UI action (the repaired ones and the ones
+  that were already real: invoice cancel / return, customers incl. payments
+  and the POS picker, shifts, employees, expenses, notifications, suppliers,
+  stock adjustments) is asserted after a reload AND against the API or the
+  API's disk (`E2E_STORAGE_ROOT`, default `apps/api/data/storage`);
+  `e2e-auth/real-auth.spec.ts` adds the two that need a real session (ending
+  another session, the reset-password link). Chromium does not expose blob
+  multipart bodies to Playwright, so upload tests assert the multipart
+  header and the server-side effect, not the request body. A JPEG fixture is
+  rendered in the page with a canvas (the API sniffs magic bytes).
   `products-settings.spec.ts` continues it for 6.2 / 6.3; add a test for
-  every mutating UI action a later 6.x row repairs. Match the products list
-  request by exact pathname: `/dashboard/products` and `/inventory/products`
-  also end in `/products`.
+  every new mutating UI action. Match the products list request by exact
+  pathname: `/dashboard/products` and `/inventory/products` also end in
+  `/products`. Sharp edges the suite met: cancelling or refunding cash
+  needs the actor's open shift (409 `SHIFT_REQUIRED`; `GET /shifts/current`
+  answers an empty body when there is none), `DELETE /customers/:id` is 204,
+  the cancel and shift-close routes answer 200, `POST /billing/returns`
+  wraps the document in `{ invoice }`, and `POST /customers/:id/payments`
+  needs an `idempotencyKey`.
 
 ## Toolchain
 
