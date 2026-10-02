@@ -3,7 +3,8 @@ import { getToken } from 'next-auth/jwt';
 import { AUTH_BYPASS_REFUSED, AUTH_DISABLED } from '@/lib/auth-bypass';
 
 /**
- * Route gate and per-request security policy (roadmap 6.4).
+ * Route gate and per-request security policy (roadmap 6.4). Next.js 16 runs this as the
+ * `proxy` (the former middleware convention) on the Node.js runtime for every matched request.
  *
  * Every app page needs a valid NextAuth session: the JWT inside the cookie is
  * verified with `getToken` (signature, expiry, and no refresh failure), not
@@ -79,7 +80,7 @@ function withSecurityPolicy(req: NextRequest, response?: NextResponse): NextResp
   return res;
 }
 
-export async function middleware(req: NextRequest) {
+export async function proxy(req: NextRequest) {
   if (AUTH_BYPASS_REFUSED) {
     // A production server started with NEXT_PUBLIC_AUTH_DISABLED (next.config.js already refuses to boot).
     return new NextResponse('Authentication bypass is not permitted in production.', { status: 503 });

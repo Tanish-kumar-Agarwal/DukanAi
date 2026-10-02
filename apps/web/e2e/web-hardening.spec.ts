@@ -68,6 +68,7 @@ test.describe('security headers (6.4)', () => {
     const previous = { NODE_ENV: process.env.NODE_ENV, NEXT_PUBLIC_AUTH_DISABLED: process.env.NEXT_PUBLIC_AUTH_DISABLED };
     const load = () => {
       delete require.cache[require.resolve(configPath)];
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- a fresh CommonJS load of next.config.js under each NODE_ENV
       return require(configPath) as { poweredByHeader?: boolean; headers?: () => Promise<Array<{ headers: Array<{ key: string }> }>> };
     };
     try {

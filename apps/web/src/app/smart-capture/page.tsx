@@ -29,7 +29,8 @@ async function blobToJpegDataUrl(file: Blob): Promise<string> {
 }
 
 function newBillId(): string {
-  const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+  // Hyphen last in the character class: Tailwind scans this file and reads a leading-hyphen bracket as an arbitrary property.
+  const stamp = new Date().toISOString().replace(/[:.TZ-]/g, '').slice(0, 14);
   const suffix = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).slice(2, 10);
   return `${stamp}-${suffix}`;
 }
@@ -371,7 +372,6 @@ export default function SmartCapturePage() {
                 </div>
               </>
             ) : (
-              // eslint-disable-next-line @next/next/no-img-element
               <img src={capturedImage} alt="Captured Bill" className="w-full h-full object-contain max-w-3xl rounded-2xl shadow-2xl" />
             )}
             <canvas ref={canvasRef} className="hidden" />

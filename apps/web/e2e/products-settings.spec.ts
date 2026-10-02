@@ -72,15 +72,15 @@ test.describe('products page (6.2)', () => {
     expect(firstUrl.searchParams.get('limit')).toBe('50');
     expect(firstUrl.searchParams.get('offset')).toBe('0');
     await expect(page.getByTestId('products-total')).toHaveText(String(total));
-    await expect(page.getByRole('button', { name: 'Next' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeVisible();
     if (total > 50) {
-      await expect(page.getByRole('button', { name: 'Next' })).toBeEnabled();
+      await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeEnabled();
       const secondPage = page.waitForResponse((r) => isProductList(r.url()) && new URL(r.url()).searchParams.get('offset') === '50');
-      await page.getByRole('button', { name: 'Next' }).click();
+      await page.getByRole('button', { name: 'Next', exact: true }).click();
       expect((await secondPage).status()).toBe(200);
       await expect(page.getByText('Page 2 of', { exact: false })).toBeVisible();
     } else {
-      await expect(page.getByRole('button', { name: 'Next' })).toBeDisabled();
+      await expect(page.getByRole('button', { name: 'Next', exact: true })).toBeDisabled();
     }
 
     await searchProducts(page, product.name);

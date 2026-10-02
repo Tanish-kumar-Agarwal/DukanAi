@@ -3,7 +3,7 @@
  * load this file with NODE_ENV=production, so a production bundle or server
  * with NEXT_PUBLIC_AUTH_DISABLED on refuses to start here, before any page is
  * built or served (src/lib/auth-bypass.ts also compiles the flag to false in
- * production, and the middleware answers 503 as the last line).
+ * production, and the proxy answers 503 as the last line).
  */
 const BYPASS_ON = ['1', 'true', 'yes', 'on'].includes((process.env.NEXT_PUBLIC_AUTH_DISABLED ?? '').trim().toLowerCase());
 if (process.env.NODE_ENV === 'production' && BYPASS_ON) {
@@ -15,7 +15,7 @@ if (process.env.NODE_ENV === 'production' && BYPASS_ON) {
 /**
  * Static security headers on every response (roadmap 6.4). The Content
  * Security Policy is per request (it carries a script nonce) and lives in
- * src/middleware.ts; everything that does not depend on the request is here.
+ * src/proxy.ts; everything that does not depend on the request is here.
  * The camera is allowed for the page itself (Smart Capture); nothing else may
  * use a powerful feature, and no page may be framed.
  */
@@ -31,11 +31,7 @@ const SECURITY_HEADERS = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  swcMinify: true,
   poweredByHeader: false,
-  compiler: {
-    styledComponents: true,
-  },
   images: {
     unoptimized: true,
   },

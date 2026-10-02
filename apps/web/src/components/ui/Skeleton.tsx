@@ -1,6 +1,5 @@
 'use client';
 
-import React from 'react';
 
 /** Placeholder block; the pulse is a CSS keyframe (`.skeleton-pulse`, globals.css), not a JS animation loop (roadmap 6.8). */
 export const SkeletonBox = ({ className = '' }: { className?: string }) => (

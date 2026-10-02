@@ -1,6 +1,5 @@
 'use client';
 
-import React from 'react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from 'recharts';
 import type { TrendPoint } from '@/lib/api-client';
 

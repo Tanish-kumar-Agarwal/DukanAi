@@ -612,8 +612,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `Referrer-Policy`, `Permissions-Policy` with `camera=(self)` for Smart
   Capture) and refuses to build or start with `NEXT_PUBLIC_AUTH_DISABLED`
   under `NODE_ENV=production`; `src/lib/auth-bypass.ts` compiles the flag to
-  false in a production bundle regardless, and the middleware answers 503.
-  The Content-Security-Policy is per request in `src/middleware.ts`: a fresh
+  false in a production bundle regardless, and the proxy answers 503.
+  The Content-Security-Policy is per request in `src/proxy.ts` (Next 16's
+  name for the middleware convention; it runs on the Node.js runtime): a fresh
   script nonce with `'strict-dynamic'` (no `'unsafe-inline'` for scripts;
   `'unsafe-eval'` only under `NODE_ENV=development` for React Refresh),
   `connect-src` = self + the `NEXT_PUBLIC_API_URL` origin, `frame-ancestors
@@ -735,15 +736,16 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Dependencies (roadmap phase 7)
 
-- 7.1: `npm audit --omit=dev` is clean except the `next` 14 advisory, which
-  only the major upgrade (7.2) clears; re-check with `npm audit --omit=dev`
+- 7.1 / 7.2: `npm audit --omit=dev` is clean (the `next` 14 advisory went
+  with the Next 16 upgrade) and CI's lint job fails on any high or critical
+  production advisory (`npm audit --omit=dev --audit-level=high`); re-check
   after any dependency change and keep it that way. The root `overrides`
   carry the fixes that upstream pins block, each with its reason in
   `package.json`: next-auth 4's `nodemailer` (its unused Email provider) is
   forced to 10.x, `@prisma/config`'s `deepmerge-ts` to 8.x (CJS build,
   same `deepmerge` export; `prisma generate` / `migrate` run on it),
-  `@nestjs/swagger`'s `js-yaml` to 5.4.x, and `postcss` to 8.5.28 over the
-  copy `next` 14 pins. Keep an override scoped to its consumer: a blanket
+  `@nestjs/swagger`'s `js-yaml` to 5.4.x, and `postcss` to 8.5.28 (next 16
+  pins 8.5.23; the override keeps every copy on the patched line). Keep an override scoped to its consumer: a blanket
   `js-yaml` override breaks eslint 8 and the istanbul loader (they need
   3.x / 4.x). `npm audit fix` is not usable here: it tries to downgrade
   `prisma` to 6.12 and stops on the peer conflict; apply fixes as explicit
@@ -757,6 +759,23 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `bull` and `@nestjs/bull` are gone (nothing imported them; the media
   worker's video branch is a comment). Node 22 is the floor everywhere
   (`engines`, `.nvmrc`).
+
+- 7.2: the web runs Next.js 16 on React 19 (`react`/`react-dom`/`@types/react`
+  19, framer-motion 14, lucide-react 1.x, recharts 2.15). What the major
+  changed here: `next lint` is gone, so `npm run lint` in apps/web is
+  `eslint .` over `eslint.config.mjs` (ESLint 9 flat config: `eslint-config-next`
+  core-web-vitals + typescript; the React Compiler rules of
+  eslint-plugin-react-hooks 7, `set-state-in-effect` and `refs`, are off
+  until the compiler is adopted; CommonJS `*.config.js` may `require`).
+  `src/middleware.ts` is `src/proxy.ts` exporting `proxy` (same matcher,
+  Node.js runtime). Request APIs are async (`await headers()` /
+  `await cookies()`). `next build` and `next dev` use Turbopack, whose CSS
+  parser is strict: Tailwind scans source files (comments included) and a
+  bracket token with a leading hyphen such as a regex character class
+  `[-:.TZ]` becomes an arbitrary-property class that fails the build; put the
+  hyphen last. Next rewrote tsconfig to `jsx: react-jsx`, so an unused
+  `import React` fails the build's type check: import only what is used.
+  `@playwright/test` stays pinned (1.56.1); Next lists it as an optional peer.
 
 ## Toolchain
 

@@ -13,7 +13,7 @@ import { INDIAN_STATES } from './indian-states';
 interface CustomerPickerProps {
   customer: PosCustomer | null;
   onSelect: (customer: PosCustomer | null) => void;
-  inputRef: React.RefObject<HTMLInputElement>;
+  inputRef: React.RefObject<HTMLInputElement | null>;
   /** Called after a selection so the page can return focus to product search. */
   onDone?: () => void;
 }

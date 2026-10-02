@@ -16,7 +16,7 @@ interface ProductSearchProps {
   query: string;
   onQueryChange: (query: string) => void;
   onAdd: (product: SearchResult) => void;
-  inputRef: React.RefObject<HTMLInputElement>;
+  inputRef: React.RefObject<HTMLInputElement | null>;
   /** productId → quantity already in the cart, for the "in cart" chip. */
   cartQuantities: Record<string, number>;
   /** Bump to reload the initial grid (stock changes after a sale). */

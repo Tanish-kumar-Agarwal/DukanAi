@@ -1,6 +1,5 @@
 'use client';
 
-import React from 'react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
   BarChart, Bar, PieChart, Pie, Cell,
@@ -23,12 +22,18 @@ export interface CategoryShare extends ShareSlice {
   amount: number;
 }
 
-function TrendTooltip({ active, payload, label }: any) {
+interface TrendTooltipProps {
+  active?: boolean;
+  payload?: Array<{ name?: string; value?: number | string; color?: string }>;
+  label?: string | number;
+}
+
+function TrendTooltip({ active, payload, label }: TrendTooltipProps) {
   if (active && payload && payload.length) {
     return (
       <div className="bg-gray-900 border border-gray-700 text-white p-3 rounded-xl shadow-xl">
         <p className="font-bold text-sm mb-1">{label}</p>
-        {payload.map((entry: any, index: number) => (
+        {payload.map((entry, index) => (
           <p key={index} className="text-xs flex items-center gap-2">
             <span className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }}></span>
             {entry.name}: <span className="font-bold">₹{Number(entry.value).toLocaleString('en-IN')}</span>
@@ -83,7 +88,7 @@ export function CategorySalesChart({ data }: { data: CategoryShare[] }) {
         <XAxis type="number" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
         <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#334155', fontWeight: 600 }} width={100} />
         <RechartsTooltip
-          formatter={(value: number, _name: string, item: any) => [`${value}% (₹${Number(item?.payload?.amount ?? 0).toLocaleString('en-IN')})`, 'Share']}
+          formatter={(value: number, _name: string, item: { payload?: { amount?: number } }) => [`${value}% (₹${Number(item?.payload?.amount ?? 0).toLocaleString('en-IN')})`, 'Share']}
           cursor={{ fill: '#f8fafc' }}
         />
         <Bar dataKey="value" name="Sales (%)" radius={[0, 4, 4, 0]} barSize={24}>

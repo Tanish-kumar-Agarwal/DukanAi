@@ -52,7 +52,7 @@ function InventoryPageContent() {
   
   // Modals & Panels
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
-  const [selectedBatch, setSelectedBatch] = useState<any>(null);
+  const [selectedBatch, setSelectedBatch] = useState<BatchItem | null>(null);
 
   // Dropdowns & Tabs
   const [activeMainTab, setActiveMainTab] = useState(() => tabFromQuery(tabParam));
@@ -104,7 +104,7 @@ function InventoryPageContent() {
     b.sku.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const handleAction = (action: string, batch: any, e: React.MouseEvent) => {
+  const handleAction = (action: string, batch: BatchItem, e: React.MouseEvent) => {
     e.stopPropagation();
     setOpenActionMenuId(null);
     setSelectedBatch(batch);

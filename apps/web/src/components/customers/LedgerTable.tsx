@@ -1,6 +1,5 @@
 'use client';
 
-import React from 'react';
 import Link from 'next/link';
 import type { CustomerLedgerEntry } from '@/lib/api-client';
 import { formatDateTime, formatMoney, labelFor, LEDGER_TYPE_LABELS, TENDER_LABELS } from './format';

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import { useEffect } from 'react';
 
 /**
  * Last-resort boundary (roadmap 6.5): catches an error in the root layout

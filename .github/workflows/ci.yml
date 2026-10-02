@@ -45,6 +45,8 @@ jobs:
       - run: npm ci
       # lint depends on ^build (type-aware API rules need invoice-math/dist).
       - run: npx turbo run lint
+      # Phase 7 exit gate: no high or critical advisory in production dependencies.
+      - run: npm audit --omit=dev --audit-level=high
 
   unit:
     name: Unit tests

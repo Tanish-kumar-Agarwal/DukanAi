@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback } from 'react';
+import { useCallback } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import type { CartDiscount } from '@/store/pos';
 import type { EngineError, EngineTotals } from './engine';

@@ -16,7 +16,7 @@ export type Product = {
   currentStock?: number;
   brand?: string;
   aliases?: string[];
-  variants?: any[];
+  variants?: unknown[];
   tax?: number;
   /** ProductUnit enum value (PCS, KG, GM, LTR, ML, BOX, PACK, DOZEN, BUNDLE). */
   unit?: string;

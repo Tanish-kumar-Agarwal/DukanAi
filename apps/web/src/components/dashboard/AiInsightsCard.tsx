@@ -1,6 +1,5 @@
 'use client';
 
-import React from 'react';
 import Link from 'next/link';
 import { Sparkles, TrendingUp, PackagePlus, Trophy } from 'lucide-react';
 import { Card } from '@/components/ui/Card';

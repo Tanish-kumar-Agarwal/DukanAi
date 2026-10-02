@@ -1,6 +1,5 @@
 'use client';
 
-import React from 'react';
 import Link from 'next/link';
 import type { CustomerInvoiceSummary } from '@/lib/api-client';
 import { formatDateTime, formatMoney, labelFor, PAYMENT_MODE_LABELS } from './format';

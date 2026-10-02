@@ -58,7 +58,7 @@ smoke (`next build` + `next start` against an API without the bypass):
 | X-Powered-By | absent |
 
 The production build refuses to start with `NEXT_PUBLIC_AUTH_DISABLED`
-(`next.config.js`), and the middleware verifies the session JWT with
+(`next.config.js`), and the proxy (`src/proxy.ts`, the middleware convention in Next 16) verifies the session JWT with
 `getToken` on every protected route.
 
 ## 3. Lighthouse
@@ -77,22 +77,23 @@ to `/login` (the `landed` URL of each run was checked).
 | /login | 100 | 94 | 96 | 100 |
 | /register | 100 | 94 | 97 | 100 |
 | /forgot-password | 100 | 94 | 95 | 100 |
-| /dashboard | 100 | 94 | 97 | 100 |
-| /products | 100 | 94 | 97 | 100 |
-| /billing | 100 | 92 | 89 | 100 |
-| /customers | 100 | 93 | 96 | 100 |
-| /invoices | 100 | 96 | 97 | 100 |
-| /expenses | 100 | 94 | 94 | 100 |
-| /suppliers | 100 | 94 | 94 | 100 |
-| /employees | 100 | 94 | 94 | 100 |
-| /settings | 100 | 96 | 97 | 100 |
-| /notifications | 100 | 95 | 98 | 100 |
-| /inventory | 100 | 94 | 94 | 100 |
-| /analytics | 100 | 94 | 99 | 100 |
-| /shifts | 100 | 95 | 97 | 100 |
-| /smart-capture | 100 | 90 | 94 | 100 |
-| /ai-scanner | 100 | 90 | 95 | 100 |
+| /dashboard | 100 | 94 | 85 | 100 |
+| /products | 100 | 94 | 89 | 100 |
+| /billing | 100 | 92 | 84 | 100 |
+| /customers | 100 | 94 | 87 | 100 |
+| /invoices | 100 | 96 | 95 | 100 |
+| /expenses | 100 | 94 | 87 | 100 |
+| /suppliers | 100 | 94 | 85 | 100 |
+| /employees | 100 | 94 | 84 | 100 |
+| /settings | 100 | 96 | 88 | 100 |
+| /notifications | 100 | 96 | 98 | 100 |
+| /inventory | 100 | 94 | 88 | 100 |
+| /analytics | 100 | 94 | 97 | 100 |
+| /shifts | 100 | 96 | 98 | 100 |
+| /smart-capture | 100 | 90 | 88 | 100 |
+| /ai-scanner | 100 | 90 | 82 | 100 |
 
+The signed-in rows were re-measured on the Next.js 16 build (roadmap 7.2, Turbopack); the public rows are from the Next 14 build and were not re-run.
 Every best-practices audit passes on every page, the security ones included
 (`csp-xss`, `has-hsts`, `is-on-https`, `deprecations`, `third-party-cookies`,
 `inspector-issues`, `errors-in-console`). The first public-page run scored

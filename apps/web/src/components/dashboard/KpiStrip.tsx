@@ -1,6 +1,5 @@
 'use client';
 
-import React from 'react';
 import { Activity } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
 import { SkeletonBox } from '@/components/ui/Skeleton';

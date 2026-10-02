@@ -64,7 +64,7 @@ function accessTokenExpiryFor(accessToken: string): number {
 async function forwardedClientHeaders(): Promise<Record<string, string>> {
   try {
     const { headers } = await import('next/headers');
-    const forwardedFor = headers().get('x-forwarded-for');
+    const forwardedFor = (await headers()).get('x-forwarded-for');
     return forwardedFor ? { 'X-Forwarded-For': forwardedFor } : {};
   } catch {
     // next/headers unavailable outside a request scope — nothing to forward
