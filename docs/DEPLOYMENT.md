@@ -97,7 +97,7 @@ the tuning values, so a container needs only these):
 | `JWT_SECRET` | yes | 32+ characters, no template value (boot refuses otherwise) |
 | `FRONTEND_URL` | yes | browser origin(s), comma-separated: CORS and sockets |
 | `TRUST_PROXY` | recommended | hop count of proxies in front; the web server is one hop on sign-in |
-| `STORAGE_ROOT`, `UPLOAD_TEMP_DIR` | recommended | persistent volume (billing evidence) and a writable temp dir |
+| `STORAGE_ROOT`, `UPLOAD_TEMP_DIR` | `STORAGE_ROOT` required in production | an absolute path on a persistent volume (billing evidence; a relative or placeholder root refuses to boot) and a writable temp dir |
 | `SMTP_URL`, `EMAIL_FROM` | for invitations / password reset | production refuses to issue an invitation without SMTP |
 | `GEMINI_API_KEY`, `OCR_MODEL` | for the AI scanner | 503 `OCR_NOT_CONFIGURED` otherwise |
 | `SHUTDOWN_*`, `HTTP_KEEP_ALIVE_TIMEOUT_MS`, `QUEUE_READY_TIMEOUT_MS` | optional | above |

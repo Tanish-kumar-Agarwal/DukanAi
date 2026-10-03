@@ -141,6 +141,9 @@
     "testEnvironment": "node",
     "setupFilesAfterEnv": [
       "<rootDir>/test/jest-unit.setup.ts"
-    ]
+    ],
+    "moduleNameMapper": {
+      "^archiver$": "<rootDir>/test/stubs/archiver.stub.js"
+    }
   }
 }

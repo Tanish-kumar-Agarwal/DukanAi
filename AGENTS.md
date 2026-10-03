@@ -839,6 +839,40 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   idempotent migrate -> probes -> register -> API + web sign-in -> stock,
   shift, sale -> dashboard -> `compose stop` exits 0 with the shutdown lines.
 
+## CI hardening and storage (roadmap 7.4, 7.5)
+
+- 7.4: every `uses:` in `.github/workflows/*.yml` is pinned to a commit SHA
+  with a `# vX.Y.Z` comment; `.github/dependabot.yml` (github-actions,
+  weekly, grouped) moves the pins. Never put a floating tag back. The
+  Pullfrog agent workflow is `workflow_dispatch` only, `contents: read` +
+  `id-token: write` (it acts through Pullfrog's GitHub App), checkout with
+  `persist-credentials: false`, and passes only `ANTHROPIC_API_KEY` /
+  `CLAUDE_CODE_OAUTH_TOKEN`; another provider is added with its own secret
+  there, never the whole list. Runtime artifacts are never tracked: the
+  turbo daemon logs and `apps/api/data/storage/System/*.json` were
+  untracked (the ignore rules already covered them), and
+  `scripts/check-tracked-artifacts.sh` (lint job) fails CI if anything under
+  `.turbo/`, an `uploads/` directory, `data/storage/`, a `*.log` or
+  `dump.rdb` is tracked.
+- 7.5: `StoragePathBuilder` resolves `STORAGE_ROOT` once (`path.resolve`,
+  logged at boot) and contains every join with `path.relative`
+  (`isContained`: `..`, absolute segments and sibling prefixes such as
+  `<root>2` are refused); `relativeToShop` is the only form a response may
+  carry (`Customers/<id>/Profile`, `Deleted/<file>`, `Backups/Daily/<zip>`),
+  never an absolute path. Production requires an absolute, non-placeholder
+  `STORAGE_ROOT` (`IsProductionAbsolutePath`, boot refuses otherwise); the
+  dev / test templates keep `./data/storage`, resolved against the working
+  directory (the start scripts, Docker and Playwright all run from
+  `apps/api`). Every storage route checks the customer with `assertOwned`
+  (404 for a foreign or unknown id; `Walk-in` is the no-row customer).
+  Billing evidence is written once: every target is checked, then created
+  with the `wx` flag; a repeat is 409 `STORAGE_EVIDENCE_EXISTS` and nothing
+  is replaced or partially written; statements get a unique file name per
+  generation. `test/stubs/archiver.stub.js` is a functional fake (placeholder
+  payload, real stream close) mapped in every jest config, so the backup
+  flow runs in tests. `src/storage/storage.service.spec.ts` (temp root) and
+  `test/integration/storage.integration-spec.ts` cover the row.
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and

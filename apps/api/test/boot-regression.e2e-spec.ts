@@ -74,6 +74,8 @@ describe('production boot regressions', () => {
       ['a short JWT_SECRET', { ...validProduction, JWT_SECRET: 'tooshort' }, /jwtSecret is shorter than 32 characters/],
       ['a placeholder FRONTEND_URL', { ...validProduction, FRONTEND_URL: '___REPLACE_ME_IN_PRODUCTION___' }, /frontendUrl is a template placeholder/],
       ['AUTH_DISABLED=true in production', { ...validProduction, AUTH_DISABLED: 'true' }, /AUTH_DISABLED=true is only accepted when NODE_ENV is development or test/],
+      // Roadmap 7.5: a relative root would depend on the working directory of whoever starts the process.
+      ['a relative STORAGE_ROOT', { ...validProduction, STORAGE_ROOT: './data/storage' }, /storageRoot is relative/],
     ])('%s', (_label, env, reason) => {
       const result = boot(env);
 

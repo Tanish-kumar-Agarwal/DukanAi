@@ -33,4 +33,22 @@ describe('StoragePathBuilder', () => {
     expect(() => b.secureJoin('/srv/store', '../store2')).toThrow(BadRequestException);
     expect(b.secureJoin('/srv/store', '.')).toBe('/srv/store');
   });
+
+  it('containment is path.relative, not a string prefix (roadmap 7.5)', () => {
+    expect(StoragePathBuilder.isContained('/srv/store', '/srv/store')).toBe(true);
+    expect(StoragePathBuilder.isContained('/srv/store', '/srv/store/shop1/Customers')).toBe(true);
+    expect(StoragePathBuilder.isContained('/srv/store', '/srv/store2')).toBe(false);
+    expect(StoragePathBuilder.isContained('/srv/store', '/srv')).toBe(false);
+    expect(StoragePathBuilder.isContained('/srv/store', '/etc/passwd')).toBe(false);
+    expect(StoragePathBuilder.isContained('/srv/store', path.resolve('/srv/store', '..', 'store', 'x'))).toBe(true);
+  });
+
+  it('turns an absolute path under the shop root into its shop-relative form and refuses one outside', () => {
+    const b = builder('/srv/store');
+    expect(b.relativeToShop('shop1', '/srv/store/shop1/Customers/c1/Profile')).toBe('Customers/c1/Profile');
+    expect(b.relativeToShop('shop1', '/srv/store/shop1')).toBe('');
+    expect(() => b.relativeToShop('shop1', '/srv/store/shop2/Customers/c1')).toThrow(BadRequestException);
+    expect(() => b.relativeToShop('shop1', '/srv/store/shop10/x')).toThrow(BadRequestException);
+    expect(b.root).toBe(path.resolve('/srv/store'));
+  });
 });

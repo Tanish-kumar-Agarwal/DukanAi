@@ -1,5 +1,5 @@
 import { validateSync } from 'class-validator';
-import { IsProductionSecret, IsUrlList, isPlaceholderValue, productionSecretProblem, urlListProblem } from './env-rules';
+import { IsProductionSecret, IsUrlList, isPlaceholderValue, productionAbsolutePathProblem, productionSecretProblem, urlListProblem } from './env-rules';
 
 class Secrets {
   @IsProductionSecret()
@@ -77,5 +77,14 @@ describe('environment value rules', () => {
       // Not a URL either way, so still refused, but for the URL reason.
       expect(validateSync(Object.assign(new Origins(), { origins: '___REPLACE_ME___' }))[0].constraints?.isUrlList).toMatch(/not an absolute/);
     });
+  });
+
+  it('a production storage root must be absolute and real (roadmap 7.5)', () => {
+    expect(productionAbsolutePathProblem('/var/lib/dukaanai/storage')).toBeNull();
+    expect(productionAbsolutePathProblem('./data/storage')).toMatch(/relative/);
+    expect(productionAbsolutePathProblem('data/storage')).toMatch(/relative/);
+    expect(productionAbsolutePathProblem('___REPLACE_ME_IN_PRODUCTION___')).toMatch(/placeholder/);
+    expect(productionAbsolutePathProblem('')).toMatch(/not set/);
+    expect(productionAbsolutePathProblem(undefined)).toMatch(/not set/);
   });
 });
