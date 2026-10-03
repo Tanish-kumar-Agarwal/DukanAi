@@ -287,6 +287,7 @@ Use the checklist in [DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md). Googl
 - [Tech Stack Architecture](./TECH_STACK_ARCHITECTURE.md) - Detailed tech decisions
 - [Deployment](./docs/DEPLOYMENT.md) - Images, probes, shutdown, compose from a fresh clone
 - [Observability](./docs/OBSERVABILITY.md) - JSON logs, `/api/metrics`, error tracking, alert runbook
+- [Backups and restore](./docs/BACKUP_RESTORE.md) - MySQL 8 backup, restore, the rehearsed drill
 - [Component Library](./docs/COMPONENTS.md) - Coming soon
 - [API Documentation](./docs/API.md) - Coming soon
 - [Database Schema](./docs/DATABASE.md) - Coming soon

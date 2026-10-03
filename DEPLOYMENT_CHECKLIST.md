@@ -13,6 +13,7 @@ This checklist enforces the exact execution order required to deploy Epic 1 safe
 
 ## Phase 2: Database Orchestration
 - [ ] Halt all cron workers and BullMQ consumers in the existing environment.
+- [ ] Take a backup first (`scripts/db/backup.sh --label pre-<version>`, or `docker compose --profile ops run --rm db-ops backup --label pre-<version>`) and note its path in the release record; the restore drill (`scripts/db/restore-drill.sh`, CI job "Integration tests") passed on this revision — see docs/BACKUP_RESTORE.md.
 - [ ] Run the release step `prisma migrate deploy` from the API image (compose: the `migrate` service; Kubernetes: a Job) before the new API starts — see docs/DEPLOYMENT.md.
   - Must create tables: `LedgerTransaction`, `OutboxEvent`, `InventoryDriftLog`
   - Must create triggers: `prevent_ledger_update`, `prevent_ledger_delete`

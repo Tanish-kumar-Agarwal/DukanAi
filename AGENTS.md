@@ -917,6 +917,34 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   Tests mock `@sentry/node` (`error-tracking.spec.ts`); integration:
   `test/integration/observability.integration-spec.ts` (installs the
   middleware through `bootApp`'s `beforeInit`).
+- 7.7 backups: `scripts/db/` (`lib.sh` parses `DATABASE_URL` or `MYSQL_*`,
+  password via `MYSQL_PWD`, clients via `MYSQL_BIN` / `MYSQLDUMP_BIN`):
+  `backup.sh` (mysqldump `--single-transaction --routines --triggers --events
+  --hex-blob --no-tablespaces`, MySQL-only flags detected from `--help`,
+  DEFINER clauses stripped so the triggers restore under any user, written to
+  `.partial` then renamed, trailer checked, `.sha256` sidecar, `--keep`
+  pruning; default dir `/var/backups/dukaanai`, never inside the repo),
+  `restore.sh` (dry run unless `--yes`; `--database` / `--create`; the dump
+  drops and re-creates its tables), `restore-drill.sh` (backup -> restore into
+  `<db>_drill_<stamp>` -> `migrate status` up to date -> `migrate diff`
+  clean -> every table's row count equal -> ledger triggers present -> drop;
+  CI runs it in the integration job after the suites, on MySQL 8). Compose:
+  `db-ops` service (profile `ops`, `mysql:8.0` image, `scripts/db` mounted,
+  `db-backups` volume, `db-ops.sh` entrypoint). Runbooks:
+  `docs/BACKUP_RESTORE.md` (rehearsal record) and the "Rolling back a
+  release" section of `prisma/MIGRATIONS.md` (additive: redeploy the old
+  image; otherwise a forward migration; destructive: restore the pre-release
+  backup, so destructive changes ship expand-then-contract).
+  `DEPLOYMENT_CHECKLIST.md` puts the backup before `migrate deploy`.
+  Finding of the first drill: Prisma applies a migration to MySQL as one
+  multi-statement script, and MySQL 8 stored the bare single-statement
+  body of `prevent_ledger_update` (migration `20260929090200`) WITH its
+  terminator, so mysqldump wrote `...; */;;` and the restore failed on a
+  syntax error. `20261003090100_ledger_triggers_portable_bodies` recreates
+  both triggers with `BEGIN ... END` bodies (never `DELIMITER` in a
+  migration; a compound body ends at END on MySQL 8 and MariaDB alike) and
+  `backup.sh` drops such a terminator so pre-fix backups restore too. Give
+  every future trigger a compound body.
 - 7.8 retention: `RetentionSweepService` (`src/common/retention`, cron
   `RetentionSweep` on `CRON_RETENTION_SWEEP`, default `30 3 * * *`, lock
   `cron:retention-sweep` 15 min, `runAsSuperAdmin`) deletes with
