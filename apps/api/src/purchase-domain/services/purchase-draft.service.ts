@@ -63,7 +63,7 @@ export class PurchaseDraftService {
         where: { purchaseOrderId }
       });
       const taxMode = (poUpdates.taxMode ?? currentPo.taxMode) === 'INCLUSIVE' ? 'INCLUSIVE' : 'EXCLUSIVE';
-      const taxedItems = this.tax.calculateTaxes(items, taxMode, poUpdates.currency ?? currentPo.currency ?? 'USD', poUpdates.exchangeRate ?? Number(currentPo.exchangeRate ?? 1));
+      const taxedItems = this.tax.calculateTaxes(items, taxMode, poUpdates.currency ?? currentPo.currency ?? 'INR', poUpdates.exchangeRate ?? Number(currentPo.exchangeRate ?? 1));
       await tx.purchaseOrderItem.createMany({
         data: taxedItems.map((item) => ({
           shopId,

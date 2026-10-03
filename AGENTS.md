@@ -964,6 +964,29 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   job and overrides its cron; `test/integration/retention.integration-spec.ts`
   seeds every table on both sides of each window.
 
+## Data model (roadmap phase 8)
+
+- 8.1 (`20261003130000_data_model_integrity`): every model with a `shopId`
+  column (except `GLOBAL_MODELS`) is a `shop Shop @relation(...)`, the 65
+  that lacked one with `onDelete: Restrict` (the majority convention; a Shop
+  is never hard-deleted, and a stray delete must fail rather than cascade
+  through ledger rows); every owning relation names its `onDelete` (the 72
+  that relied on Prisma's default now say `Restrict` / `SetNull`, which
+  generates the same constraint); the implicit `_AssetTags` table is the
+  explicit `MediaAssetTag` model (`@@id([assetId, tagId])`, `shopId` so the
+  tenant extension scopes it, cascades from asset and tag; the migration
+  copies the rows before dropping the old table and
+  `ProductMediaService.getGallery` maps the join rows back to tag objects so
+  the response is unchanged); stock quantities on Product, ProductVariant,
+  InventoryLog and InventoryDriftLog are `Decimal(12, 3)` like
+  `InventoryItem.onHand`; `Notification.message` and `OutboxEvent.error` are
+  TEXT (the outbox cap is 4000 chars); every `currency` column defaults to
+  INR and the migration backfills the old `USD` default. `src/prisma/
+  schema-conventions.spec.ts` reads the DMMF and fails on a regression of
+  any of these (a tenant model without a Shop relation, a silent onDelete,
+  an implicit many-to-many, a non-INR default). Adding a Shop foreign key
+  fails on orphan rows: the migration header has the check query.
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and

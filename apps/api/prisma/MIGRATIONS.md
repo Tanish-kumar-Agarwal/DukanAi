@@ -67,6 +67,20 @@ Rehearse: `docs/BACKUP_RESTORE.md` records the drill, and
 `scripts/db/restore-drill.sh` runs it against any MySQL 8 (CI does, after
 the integration suites).
 
+## Adding a foreign key to a populated table
+
+`ALTER TABLE ... ADD FOREIGN KEY` fails on a row whose key names no parent,
+and MySQL auto-commits the statements before it. Before deploying such a
+migration (`20261003130000_data_model_integrity` added a Shop key to 65
+tables) to a database of unknown history, count the orphans per table:
+
+```sql
+SELECT COUNT(*) FROM <table> t LEFT JOIN Shop s ON s.id = t.shopId WHERE s.id IS NULL;
+```
+
+and move or delete them deliberately; a migration never deletes rows on
+its own. The restore drill in CI proves the migration on a clean history.
+
 ## Triggers in a migration
 
 Prisma sends a migration to MySQL as one multi-statement script, so a

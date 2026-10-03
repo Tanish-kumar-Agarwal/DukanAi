@@ -17,7 +17,8 @@ export interface ClaimedOutboxRow {
 }
 
 /** OutboxEvent.error is a plain Prisma String, i.e. VARCHAR(191) on MySQL. */
-const MAX_ERROR_LENGTH = 191;
+/** `OutboxEvent.error` is TEXT (roadmap 8.1); the cap keeps a runaway stack trace out of the row. */
+const MAX_ERROR_LENGTH = 4000;
 
 /** Statuses a relay may have left a row in without finishing it (PROCESSING is the pre-4.7 claim). */
 export const OUTBOX_CLAIMED_STATUSES = ['CLAIMED', 'PROCESSING'] as const;
