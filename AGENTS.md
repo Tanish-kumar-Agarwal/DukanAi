@@ -751,7 +751,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `prisma` to 6.12 and stops on the peer conflict; apply fixes as explicit
   versions instead. `prisma` and `@prisma/client` are pinned to the same
   exact version (6.19.3): bump both together, then `npx prisma generate`.
-  Every package is declared where it is imported: `axios` in apps/api
+  The gate audits production dependencies only, so build-time tooling must
+  live in `devDependencies`: `tailwindcss-animate` (a Tailwind plugin used
+  by `tailwind.config.js`) was a production dependency and pulled Tailwind's
+  chokidar / micromatch / braces chain into the gate when a `braces`
+  advisory with no fix landed. Every package is declared where it is imported: `axios` in apps/api
   (`webhook-http-client.ts`) as well as apps/web, `mysql2` as a
   devDependency of both apps (only tests open a raw connection), `dotenv`
   as an apps/api devDependency (scripts and tests; the API reads env through
@@ -842,7 +846,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ## CI hardening and storage (roadmap 7.4, 7.5)
 
 - 7.4: every `uses:` in `.github/workflows/*.yml` is pinned to a commit SHA
-  with a `# vX.Y.Z` comment; `.github/dependabot.yml` (github-actions,
+  with a `# vX.Y.Z` comment (checkout v6, setup-node v6, upload-artifact v6:
+  the v4 majors run on the Node 20 runtime GitHub is retiring); `.github/dependabot.yml` (github-actions,
   weekly, grouped) moves the pins. Never put a floating tag back. The
   Pullfrog agent workflow is `workflow_dispatch` only, `contents: read` +
   `id-token: write` (it acts through Pullfrog's GitHub App), checkout with
