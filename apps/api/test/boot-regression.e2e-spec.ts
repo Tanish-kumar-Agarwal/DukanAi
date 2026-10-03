@@ -13,7 +13,8 @@ import * as path from 'path';
  *    were unattributable from deployment logs.
  * 3. Roadmap phase 2 boot matrix: a missing or placeholder secret, no
  *    NODE_ENV, a placeholder FRONTEND_URL and AUTH_DISABLED in production
- *    each refuse to start with a message naming the variable.
+ *    each refuse to start with a message naming the variable (later rows add
+ *    a relative STORAGE_ROOT, LOG_LEVEL=debug and a placeholder SENTRY_DSN).
  *
  * Reverting any fix makes the corresponding test fail. Every boot here fails
  * at configuration validation, before anything dials the database or Redis.
@@ -76,6 +77,9 @@ describe('production boot regressions', () => {
       ['AUTH_DISABLED=true in production', { ...validProduction, AUTH_DISABLED: 'true' }, /AUTH_DISABLED=true is only accepted when NODE_ENV is development or test/],
       // Roadmap 7.5: a relative root would depend on the working directory of whoever starts the process.
       ['a relative STORAGE_ROOT', { ...validProduction, STORAGE_ROOT: './data/storage' }, /storageRoot is relative/],
+      // Roadmap 7.6: no debug output in production, and a placeholder DSN would silently disable error tracking.
+      ['LOG_LEVEL=debug in production', { ...validProduction, LOG_LEVEL: 'debug' }, /logLevel is "debug": production prints at most the "log" level/],
+      ['a placeholder SENTRY_DSN', { ...validProduction, SENTRY_DSN: '___REPLACE_ME_IN_PRODUCTION___' }, /sentryDsn is a template placeholder/],
     ])('%s', (_label, env, reason) => {
       const result = boot(env);
 

@@ -878,6 +878,64 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   flow runs in tests. `src/storage/storage.service.spec.ts` (temp root) and
   `test/integration/storage.integration-spec.ts` cover the row.
 
+## Observability, backups and retention (roadmap 7.6, 7.7, 7.8)
+
+- 7.6 logs: `LoggingConfig` (`LOG_LEVEL`, `src/config/domains/logging.config.ts`)
+  is the most verbose level `CorrelationLogger` prints; the default is
+  `debug` outside production and `log` in production, where `debug`/`verbose`
+  refuse to boot (`IsNotDebugInProduction`; boot-matrix case). `main.ts`
+  passes `logLevels` to the logger; `PRISMA_LOG_QUERIES` stays the separate
+  query-log switch.
+- 7.6 metrics: `src/common/observability/metrics.ts` is the one prom-client
+  registry (`metricsRegistry`, default label `service=dukaanai-api`, process
+  metrics under `dukaanai_`); metrics are module-level objects a service
+  imports (no injection): `httpRequestsTotal` / `httpRequestDurationSeconds`
+  (`httpMetricsMiddleware`, `app.use` in `main.ts` BEFORE the routers so
+  guard rejections and 404s count; `routeLabel` collapses to the Express
+  pattern or `unmatched`, never a raw path), `checkoutDurationSeconds{outcome}`
+  (`BillingService.createInvoice` wraps `checkout()`), `ledgerPostingFailuresTotal{source}`
+  (`LedgerPostingService.post` wraps `postEntries()`), the outbox / queue
+  gauges (`ObservabilityCollectorsService.refresh` on each scrape, outbox from
+  raw SQL under `runAsSuperAdmin`, queues from `queueInstances`),
+  `retentionRowsPurgedTotal{table}`, `errorsTrackedTotal{kind}`. Labels stay
+  low-cardinality: never an id, shop or user. `GET /api/metrics`
+  (`MetricsController`, `@Public() @SkipThrottle()`, `ObservabilityModule`)
+  answers `metricsRegistry.contentType`, 404 under `METRICS_ENABLED=false`,
+  401 unless the bearer token equals `METRICS_TOKEN` (`crypto.timingSafeEqual`).
+  Rules: `deploy/prometheus/alerts.yml` (+ `prometheus.yml`; `promtool check`
+  in the CI deploy job; compose `prometheus` service under profile `ops`);
+  runbook `docs/OBSERVABILITY.md`.
+- 7.6 error tracking: `ErrorTracking` (`src/common/observability/error-tracking.ts`)
+  is a static facade over `@sentry/node` 11, a no-op until `SENTRY_DSN` is
+  set (`MonitoringConfig`: DSN must be an http(s) URL and never a placeholder,
+  `IsNotPlaceholder` in `env-rules.ts`; `METRICS_TOKEN` likewise). Sentry 11
+  has no `sendDefaultPii`: request data is switched off with `dataCollection`.
+  `GlobalExceptionFilter` captures only what it answers as 500 (unhandled,
+  deliberate 500, unmapped Prisma code) with `correlationId`, shop, user,
+  route pattern, method and status as tags; expected 4xx/5xx are not errors.
+  `bootstrap().catch` captures `startup` and flushes before `exit(1)`.
+  Tests mock `@sentry/node` (`error-tracking.spec.ts`); integration:
+  `test/integration/observability.integration-spec.ts` (installs the
+  middleware through `bootApp`'s `beforeInit`).
+- 7.8 retention: `RetentionSweepService` (`src/common/retention`, cron
+  `RetentionSweep` on `CRON_RETENTION_SWEEP`, default `30 3 * * *`, lock
+  `cron:retention-sweep` 15 min, `runAsSuperAdmin`) deletes with
+  `DELETE ... LIMIT` batches (`RetentionConfig`: `RETENTION_*_DAYS`,
+  `RETENTION_BATCH_SIZE` 100..10000, `RETENTION_MAX_BATCHES_PER_RUN`; a table
+  whose budget runs out is reported in `truncated` and continues next run):
+  RefreshToken by `expiresAt` (consumed tokens must outlive their idle life
+  for reuse detection, so the window is past expiry), PasswordResetToken by
+  `expiresAt` / `usedAt`, OutboxEvent `status = 'DONE'` by `createdAt`
+  (FAILED rows stay for `POST /sales/events/retry`), SearchHistory by
+  `createdAt` (`RETENTION_SEARCH_HISTORY_DAYS` >= 7: the popular-searches card
+  reads seven days), ProductEventLog by `timestamp`. Migration
+  `20261003090000_retention_indexes` adds `RefreshToken(expiresAt)`,
+  `SearchHistory(createdAt)`, `ProductEventLog(timestamp)` (`OutboxEvent
+  (status, createdAt)` existed): a purge column without an index scans the
+  table on every batch. `scheduler-enabled.integration-spec.ts` lists the
+  job and overrides its cron; `test/integration/retention.integration-spec.ts`
+  seeds every table on both sides of each window.
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and

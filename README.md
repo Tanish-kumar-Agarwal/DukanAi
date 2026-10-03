@@ -199,7 +199,7 @@ Set both flags together, and never enable them for a production deployment.
 - [x] Docker containerization (`docker compose up`, see docs/DEPLOYMENT.md)
 - [ ] CI/CD pipeline
 - [ ] Security hardening
-- [ ] Monitoring setup
+- [x] Monitoring setup (`/api/metrics`, alert rules, error tracking: see docs/OBSERVABILITY.md)
 
 ## 🎨 UI Components
 
@@ -285,6 +285,8 @@ Use the checklist in [DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md). Googl
 ## 📚 Documentation
 
 - [Tech Stack Architecture](./TECH_STACK_ARCHITECTURE.md) - Detailed tech decisions
+- [Deployment](./docs/DEPLOYMENT.md) - Images, probes, shutdown, compose from a fresh clone
+- [Observability](./docs/OBSERVABILITY.md) - JSON logs, `/api/metrics`, error tracking, alert runbook
 - [Component Library](./docs/COMPONENTS.md) - Coming soon
 - [API Documentation](./docs/API.md) - Coming soon
 - [Database Schema](./docs/DATABASE.md) - Coming soon

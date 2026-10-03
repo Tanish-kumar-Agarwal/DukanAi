@@ -24,6 +24,7 @@ import { InvoiceNumberService } from './services/invoice-number.service';
 import { LedgerPostingService, LedgerEntryInput } from '../ledger/ledger-posting.service';
 import { BillingActor, INVOICE_INCLUDE, InvoiceWithRelations, StockOutcome, isManager, money, qty, splitRevenue } from './billing.types';
 import { BillingCheckpoints } from './billing-checkpoints';
+import { checkoutDurationSeconds } from '../common/observability/metrics';
 import { isSerializationFailure } from '../common/db/serialization-retry';
 import { financialYearLabel, safeTimeZone } from '../common/time/business-day';
 
@@ -149,6 +150,19 @@ export class BillingService {
   // ---------------------------------------------------------------------------
 
   async createInvoice(dto: CreateInvoiceDto, actor: BillingActor): Promise<CreateInvoiceResult> {
+    // Checkout latency by outcome (roadmap 7.6): a replay, a completed sale or a rejection.
+    const stopTimer = checkoutDurationSeconds.startTimer();
+    try {
+      const result = await this.checkout(dto, actor);
+      stopTimer({ outcome: result.replayed ? 'replayed' : 'completed' });
+      return result;
+    } catch (error) {
+      stopTimer({ outcome: 'rejected' });
+      throw error;
+    }
+  }
+
+  private async checkout(dto: CreateInvoiceDto, actor: BillingActor): Promise<CreateInvoiceResult> {
     const lines = this.normaliseLines(dto.items);
     const paymentInput = this.toPaymentInput(dto.payments ?? this.legacyPayments(dto), dto.udharAmount ?? (dto.payments ? 0 : this.legacyUdhar(dto)));
     const requestHash = this.hashRequest({ lines, dto, paymentInput });

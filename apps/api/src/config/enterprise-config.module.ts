@@ -33,6 +33,7 @@ import { CorsConfig } from './domains/cors.config';
 import { SwaggerConfig } from './domains/swagger.config';
 import { HealthConfig } from './domains/health.config';
 import { CronConfig } from './domains/cron.config';
+import { RetentionConfig } from './domains/retention.config';
 
 // Feature Domains
 import { SalesFeatureConfig } from './domains/features/sales-feature.config';
@@ -229,17 +230,11 @@ function validateConfig<T extends object>(configClass: T): T {
     },
     {
       provide: MonitoringConfig,
-      useFactory: () => {
-        const config = new MonitoringConfig();
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(MonitoringConfig)),
     },
     {
       provide: LoggingConfig,
-      useFactory: () => {
-        const config = new LoggingConfig();
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(LoggingConfig)),
     },
     {
       provide: PerformanceConfig,
@@ -277,6 +272,7 @@ function validateConfig<T extends object>(configClass: T): T {
       provide: CronConfig,
       useFactory: () => validateConfig(hydrateFromEnv(CronConfig)),
     },
+    { provide: RetentionConfig, useFactory: () => validateConfig(hydrateFromEnv(RetentionConfig)) },
     { provide: SalesFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(SalesFeatureConfig)) },
     { provide: PurchaseFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(PurchaseFeatureConfig)) },
     { provide: AnalyticsFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(AnalyticsFeatureConfig)) },
@@ -320,6 +316,7 @@ function validateConfig<T extends object>(configClass: T): T {
     SwaggerConfig,
     HealthConfig,
     CronConfig,
+    RetentionConfig,
     SalesFeatureConfig,
     PurchaseFeatureConfig,
     AnalyticsFeatureConfig,

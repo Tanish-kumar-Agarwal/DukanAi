@@ -101,6 +101,10 @@ the tuning values, so a container needs only these):
 | `SMTP_URL`, `EMAIL_FROM` | for invitations / password reset | production refuses to issue an invitation without SMTP |
 | `GEMINI_API_KEY`, `OCR_MODEL` | for the AI scanner | 503 `OCR_NOT_CONFIGURED` otherwise |
 | `SHUTDOWN_*`, `HTTP_KEEP_ALIVE_TIMEOUT_MS`, `QUEUE_READY_TIMEOUT_MS` | optional | above |
+| `LOG_LEVEL` | optional | most verbose level printed (default `log` in production, which refuses `debug`/`verbose`); JSON lines with the correlation id |
+| `METRICS_ENABLED`, `METRICS_TOKEN` | optional | `GET /api/metrics` (Prometheus); the token (16+ characters) makes the scrape require a bearer token. See `docs/OBSERVABILITY.md` |
+| `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`, `APP_RELEASE` | optional | error tracking is off until the DSN is set; set `APP_RELEASE` to the image tag or commit at deploy time |
+| `CRON_RETENTION_SWEEP`, `RETENTION_*` | optional | the nightly purge of expired tokens, DONE outbox rows and old history (roadmap 7.8; windows in `apps/api/.env.example`) |
 
 Web:
 
@@ -135,8 +139,14 @@ stock, an open shift, a cash sale, the dashboard figure, then stops the API
 with `SIGTERM` and asserts exit code 0 and the shutdown log lines, and tears
 the stack down (`KEEP=1` leaves it running).
 
-## Not in this row
+## Operations
 
-Backups and the restore drill are roadmap 7.7; structured log shipping,
-metrics and alerts are 7.6; retention jobs 7.8. `DEPLOYMENT_CHECKLIST.md`
-keeps the go-live order.
+- Logs, metrics, error tracking and the alert rules: `docs/OBSERVABILITY.md`
+  (`deploy/prometheus/` holds the rules and a scrape configuration;
+  `docker compose --profile ops up -d prometheus` runs them against the stack).
+- Retention: the `RetentionSweep` cron (`CRON_RETENTION_SWEEP`, 03:30 by
+  default, one instance at a time under the `cron:retention-sweep` lock)
+  deletes expired refresh and password-reset tokens, DONE outbox rows, old
+  `SearchHistory` and `ProductEventLog` rows in bounded batches
+  (`RETENTION_*`); `retention_rows_purged_total` counts what it removed.
+- `DEPLOYMENT_CHECKLIST.md` keeps the go-live order.

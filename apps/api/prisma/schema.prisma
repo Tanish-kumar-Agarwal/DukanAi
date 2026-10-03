@@ -716,6 +716,8 @@ model RefreshToken {
 
   @@index([userId])
   @@index([familyId])
+  /// Retention sweep (roadmap 7.8) deletes expired rows by this column alone.
+  @@index([expiresAt])
 }
 
 /// `inviterId` is the user who issued the invitation (null on rows from
@@ -3540,6 +3542,8 @@ model SearchHistory {
 
   @@index([shopId, query])
   @@index([shopId, createdAt])
+  /// Retention sweep (roadmap 7.8).
+  @@index([createdAt])
 }
 
 model SavedSearch {
@@ -3826,6 +3830,8 @@ model ProductEventLog {
   @@index([shopId, eventType])
   @@index([entityId, entityType])
   @@index([shopId, timestamp])
+  /// Retention sweep (roadmap 7.8).
+  @@index([timestamp])
 }
 
 model WebhookEndpoint {

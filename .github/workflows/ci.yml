@@ -198,6 +198,12 @@ jobs:
       # Phase 7 exit gate (roadmap 7.3): fresh clone -> images built from the
       # Dockerfiles -> `docker compose up` -> migrations -> login -> a sale,
       # then a graceful stop of the API (SIGTERM, readiness 503, exit 0).
+      # Roadmap 7.6: the alert rules and the example scrape config must parse
+      # before they can be mounted into Prometheus.
+      - name: Alert rules are valid (promtool)
+        run: |
+          docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" --entrypoint promtool prom/prometheus:v3.5.0 check rules /rules/alerts.yml
+          docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" --entrypoint promtool prom/prometheus:v3.5.0 check config /rules/prometheus.yml
       - name: Fresh clone -> compose up -> migrate -> login -> sale
         run: bash scripts/compose-smoke.sh
       - name: Container logs

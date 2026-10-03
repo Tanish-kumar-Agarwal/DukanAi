@@ -10,6 +10,10 @@ import { AuthenticatedIoAdapter } from './iam/websockets/authenticated-io.adapte
 import { AppConfig, Environment } from './config/domains/app.config';
 import { applyTrustProxy } from './common/http/trust-proxy';
 import { waitForQueueConnections } from './common/lifecycle/queue-readiness';
+import { LoggingConfig } from './config/domains/logging.config';
+import { MonitoringConfig } from './config/domains/monitoring.config';
+import { ErrorTracking } from './common/observability/error-tracking';
+import { httpMetricsMiddleware } from './common/observability/http-metrics.middleware';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -18,9 +22,16 @@ async function bootstrap() {
     abortOnError: false,
   });
   
-  // 1. Global Logger Binding
-  const correlationLogger = new CorrelationLogger();
+  // 1. Global Logger Binding: JSON lines with the correlation id, at the
+  //    configured level (LOG_LEVEL; production prints at most "log", roadmap 7.6).
+  const correlationLogger = new CorrelationLogger('', { logLevels: app.get(LoggingConfig).levels });
   app.useLogger(correlationLogger);
+
+  const appConfig = app.get(AppConfig);
+  const monitoringConfig = app.get(MonitoringConfig);
+
+  // Error tracking (roadmap 7.6): a no-op until SENTRY_DSN is set.
+  ErrorTracking.init(monitoringConfig, appConfig.nodeEnv);
 
   // WebSocket Authentication Adapter
   app.useWebSocketAdapter(new AuthenticatedIoAdapter(app));
@@ -39,7 +50,8 @@ async function bootstrap() {
   // Helmet Security
   app.use(helmet());
 
-  const appConfig = app.get(AppConfig);
+  // Request metrics (roadmap 7.6): every answer, guard rejections included.
+  app.use(httpMetricsMiddleware);
 
   // Reverse proxies: decides what req.ip is (rate limiting, login audit rows).
   applyTrustProxy(app, appConfig.trustProxy, logger);
@@ -91,9 +103,18 @@ async function bootstrap() {
   const port = appConfig.port;
   await app.listen(port);
   logger.log(`Application is running on: http://localhost:${port} (readiness: /api/health/ready)`);
+  logger.log(
+    `Logging at level ${app.get(LoggingConfig).logLevel}; metrics ${
+      monitoringConfig.metricsEnabled
+        ? `at GET /api/metrics (${monitoringConfig.metricsToken ? 'bearer token required' : 'no token: keep the port off the public internet'})`
+        : 'disabled (METRICS_ENABLED=false)'
+    }`,
+  );
 }
-bootstrap().catch((error) => {
+bootstrap().catch(async (error) => {
   const msg = `\n\n[Bootstrap FATAL]: ${error?.stack || error?.message || error}\n\n`;
   writeSync(2, msg);
+  ErrorTracking.capture(error, { kind: 'startup' });
+  await ErrorTracking.flush();
   process.exit(1);
 });

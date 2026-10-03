@@ -84,6 +84,26 @@ export function IsUrlList(options?: ValidationOptions): PropertyDecorator {
   };
 }
 
+/**
+ * A value the committed templates leave behind (`___REPLACE_ME___`, `your_…`,
+ * `CHANGE_ME`) is never a usable token, DSN or key, in any environment: a
+ * placeholder that validates silently becomes "the" secret (roadmap 7.6).
+ */
+export function IsNotPlaceholder(options?: ValidationOptions): PropertyDecorator {
+  return (target, propertyKey) => {
+    registerDecorator({
+      name: 'isNotPlaceholder',
+      target: target.constructor,
+      propertyName: String(propertyKey),
+      options,
+      validator: {
+        validate: (value: unknown) => !isPlaceholderValue(value),
+        defaultMessage: (args: ValidationArguments) => `${args.property} is a template placeholder`,
+      },
+    });
+  };
+}
+
 /** Reason a filesystem root is unfit for production, or `null`. */
 export function productionAbsolutePathProblem(value: unknown): string | null {
   if (typeof value !== 'string' || value.trim() === '') return 'is not set';

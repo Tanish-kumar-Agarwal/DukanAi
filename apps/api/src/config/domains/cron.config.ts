@@ -99,4 +99,11 @@ export class CronConfig {
   @StringFromEnv()
   @EnvVariable('CRON_RESERVATION_EXPIRY_SWEEP')
   reservationExpirySweepCron: string = '* * * * *'; // EVERY_MINUTE
+
+  /** Nightly retention sweep (roadmap 7.8): expired tokens, DONE outbox rows, old SearchHistory / ProductEventLog, under a cron lock. */
+  @IsString()
+  @IsCronExpression()
+  @StringFromEnv()
+  @EnvVariable('CRON_RETENTION_SWEEP')
+  retentionSweepCron: string = '30 3 * * *'; // EVERY_DAY_AT_03:30
 }

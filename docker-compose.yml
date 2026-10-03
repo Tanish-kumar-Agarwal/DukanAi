@@ -84,6 +84,13 @@ services:
       SMTP_URL: ${SMTP_URL:-}
       EMAIL_FROM: ${EMAIL_FROM:-DukaanAI <no-reply@dukaanai.local>}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Observability (roadmap 7.6): JSON logs at this level, GET /api/metrics
+      # (bearer token when METRICS_TOKEN is set), error tracking once SENTRY_DSN is set.
+      LOG_LEVEL: ${LOG_LEVEL:-log}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      APP_RELEASE: ${APP_RELEASE:-}
     ports:
       - "${API_PORT:-3002}:3002"
     volumes:
@@ -138,8 +145,27 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # Optional (profile "ops"): Prometheus with the alert rules in
+  # deploy/prometheus, scraping the API over the compose network.
+  #   docker compose --profile ops up -d prometheus   -> http://localhost:9090
+  # With METRICS_TOKEN set, uncomment the `authorization` block in
+  # deploy/prometheus/prometheus.yml and mount the token file it names.
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: ["ops"]
+    volumes:
+      - ./deploy/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   mysql-data:
   redis-data:
   api-storage:
   api-uploads:
+  prometheus-data:
