@@ -1,6 +1,5 @@
 'use client';
 
-import React from 'react';
 import { SkeletonBox } from '@/components/ui/Skeleton';
 import { ErrorState } from '@/components/customers/States';
 

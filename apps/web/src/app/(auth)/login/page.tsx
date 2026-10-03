@@ -8,6 +8,7 @@ import { motion } from 'framer-motion';
 import { ShoppingBag, Lock, Mail, ArrowRight, AlertCircle } from 'lucide-react';
 import { useToast } from '@/components/ui/Toast';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
+import { sanitizeCallbackUrl } from '@/lib/safe-callback-url';
 
 // Never statically generated — searchParams driven error display and real-time auth state.
 export const dynamic = 'force-dynamic';
@@ -24,9 +25,9 @@ function LoginPageContent() {
   const { toast } = useToast();
 
   // Where to go after sign-in: the protected page the middleware bounced from,
-  // restricted to same-origin paths so the parameter cannot redirect off-site.
-  const rawCallback = searchParams.get('callbackUrl');
-  const callbackUrl = rawCallback && rawCallback.startsWith('/') && !rawCallback.startsWith('//') ? rawCallback : '/dashboard';
+  // parsed against this origin so the parameter cannot redirect off-site
+  // (`//evil`, `/\evil` and absolute URLs all fall back, roadmap 6.4).
+  const callbackUrl = sanitizeCallbackUrl(searchParams.get('callbackUrl'), typeof window === 'undefined' ? '' : window.location.origin);
 
   // If already authenticated (or auth is bypassed), redirect away from login
   useEffect(() => {
@@ -205,12 +206,12 @@ function LoginPageContent() {
                 <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide">
                   Password
                 </label>
-                <a
-                  href="#"
+                <Link
+                  href="/forgot-password"
                   className="text-xs font-bold text-[#8B5CF6] hover:text-purple-700 transition-colors"
                 >
                   Forgot?
-                </a>
+                </Link>
               </div>
               <div className="relative">
                 <Lock

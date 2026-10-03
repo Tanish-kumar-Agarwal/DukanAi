@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
 import { ArrowLeft, Printer, RefreshCw } from 'lucide-react';
@@ -9,6 +9,7 @@ import { billingApi } from '@/lib/api-client';
 import type { ReceiptPayload } from '@/types';
 import { extractApiError } from '@/components/pos/api-errors';
 import { ReceiptPrintPortal, ReceiptView } from '@/components/invoices/ReceiptView';
+import { PrintPageStyle } from '@/components/print/PrintPageStyle';
 
 function ReceiptContent() {
   const params = useParams<{ id: string }>();
@@ -48,6 +49,7 @@ function ReceiptContent() {
 
   return (
     <ReceiptPrintPortal>
+      <PrintPageStyle size="80mm auto" margin="4mm" />
       <div className="print-hidden sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-gray-200 bg-white/95 backdrop-blur px-4 py-3">
         <Link href={id ? `/invoices/${id}` : '/invoices'} className="inline-flex items-center gap-1.5 text-sm font-medium text-gray-600 hover:text-[#8B5CF6]">
           <ArrowLeft size={16} /> Back to invoice

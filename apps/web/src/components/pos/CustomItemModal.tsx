@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { PenLine } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { CUSTOM_ITEM_NAME_MAX, allowsDecimalQuantity, lineFromCustomItem, quantityStep, type CustomItemInput } from '@/store/pos';

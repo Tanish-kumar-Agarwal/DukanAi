@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, RefreshCw, Undo2 } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { billingApi } from '@/lib/api-client';

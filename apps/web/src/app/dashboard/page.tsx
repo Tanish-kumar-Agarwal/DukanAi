@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Database, FileText, Package, RefreshCw, ShoppingBag, TrendingUp, Users, Wallet,
 } from 'lucide-react';

@@ -1,6 +1,5 @@
 'use client';
 
-import React from 'react';
 import Link from 'next/link';
 import { CheckCircle2, ExternalLink, Printer } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { AlertTriangle, CreditCard, Keyboard, Pause, PenLine } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
@@ -11,7 +11,7 @@ import type { CreateInvoiceRequest, InvoiceLineRequest } from '@/lib/api-client'
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { useHotkeys } from '@/hooks/useHotkeys';
-import { hydratePosStore, scopePosStoreToShop, usePosStore, type CartLine, type CustomItemInput } from '@/store/pos';
+import { hydratePosStore, scopePosStoreToShop, usePosScope, usePosStore, type CartLine, type CustomItemInput } from '@/store/pos';
 import type { CreateInvoiceResponse, GstRate, ProductUnit, SearchResult, Shift, ShopProfile } from '@/types';
 import { ShiftBanner } from '@/components/pos/ShiftBanner';
 import { ProductSearch, isSellable } from '@/components/pos/ProductSearch';
@@ -38,6 +38,8 @@ function BillingContent() {
   const discount = usePosStore((s) => s.discount);
   const notes = usePosStore((s) => s.notes);
   const heldCarts = usePosStore((s) => s.heldCarts);
+  // Scanning waits until the cart is persisted under this shop (roadmap 6.5): a scan into the anonymous scope could land in another shop's session.
+  const scopedShopId = usePosScope((s) => s.shopId);
   const addProduct = usePosStore((s) => s.addProduct);
   const addCustomItem = usePosStore((s) => s.addCustomItem);
   const setQuantity = usePosStore((s) => s.setQuantity);
@@ -185,7 +187,7 @@ function BillingContent() {
     [handleAdd, toast],
   );
 
-  useBarcodeScanner(handleScan, { enabled: !receipt && !paymentOpen && !holdOpen && !customOpen });
+  useBarcodeScanner(handleScan, { enabled: scopedShopId !== null && !receipt && !paymentOpen && !holdOpen && !customOpen });
 
   const handleAddCustom = useCallback(
     (input: CustomItemInput): string | null => {

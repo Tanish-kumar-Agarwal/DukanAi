@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnApplicationShutdown, Logger } from '@nestjs/common';
 import { writeSync } from 'node:fs';
 import { PrismaClient } from '@prisma/client';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
@@ -8,7 +8,7 @@ import { AppConfig, Environment } from '../config/domains/app.config';
 import { PrismaConfig } from '../config/domains/prisma.config';
 
 @Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+export class PrismaService extends PrismaClient implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(PrismaService.name);
 
   /**
@@ -105,7 +105,13 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     }
   }
 
-  async onModuleDestroy() {
+  /**
+   * Disconnects in `onApplicationShutdown`, the last shutdown phase, after the
+   * HTTP server has stopped and the BullMQ workers have finished their active
+   * jobs (roadmap 7.3). As an `onModuleDestroy` hook it ran first, and every
+   * request still in flight failed against a closed client.
+   */
+  async onApplicationShutdown() {
     await this.$disconnect();
     this.logger.log('Database connection closed');
   }

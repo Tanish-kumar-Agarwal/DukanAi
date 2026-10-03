@@ -10,6 +10,7 @@ import { AuthController } from './auth.controller';
 import { RolesGuard } from './roles.guard';
 import { AuthBypassModule } from './auth-bypass.module';
 import { GoogleIdentityService } from './google-identity.service';
+import { PasswordResetService } from './password-reset.service';
 
 @Module({
   imports: [
@@ -25,7 +26,7 @@ import { GoogleIdentityService } from './google-identity.service';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, LocalStrategy, JwtStrategy, RolesGuard, GoogleIdentityService],
+  providers: [AuthService, LocalStrategy, JwtStrategy, RolesGuard, GoogleIdentityService, PasswordResetService],
   exports: [AuthService, RolesGuard],
 })
 export class AuthModule {}

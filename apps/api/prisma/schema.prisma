@@ -661,6 +661,7 @@ model User {
   shop              Shop               @relation(fields: [shopId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   ownedShop         Shop?              @relation("ShopOwner")
   refreshTokens     RefreshToken[]
+  passwordResets    PasswordResetToken[]
   loginAttempts     LoginAttempt[]
   shiftsOpened      Shift[]            @relation("ShiftOpenedBy")
   shiftsClosed      Shift[]            @relation("ShiftClosedBy")
@@ -676,6 +677,22 @@ model User {
   searchClicks      SearchClick[]
 
   @@index([shopId])
+}
+
+/// A forgot-password request (roadmap 6.7): the raw token reaches the user by
+/// email only, the row keeps its SHA-256. One use, one hour; a new request
+/// voids the earlier unused rows of the user.
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 /// One row per refresh token; a login opens a session family (familyId = the
@@ -699,6 +716,8 @@ model RefreshToken {
 
   @@index([userId])
   @@index([familyId])
+  /// Retention sweep (roadmap 7.8) deletes expired rows by this column alone.
+  @@index([expiresAt])
 }
 
 /// `inviterId` is the user who issued the invitation (null on rows from
@@ -3523,6 +3542,8 @@ model SearchHistory {
 
   @@index([shopId, query])
   @@index([shopId, createdAt])
+  /// Retention sweep (roadmap 7.8).
+  @@index([createdAt])
 }
 
 model SavedSearch {
@@ -3809,6 +3830,8 @@ model ProductEventLog {
   @@index([shopId, eventType])
   @@index([entityId, entityType])
   @@index([shopId, timestamp])
+  /// Retention sweep (roadmap 7.8).
+  @@index([timestamp])
 }
 
 model WebhookEndpoint {

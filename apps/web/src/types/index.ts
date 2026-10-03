@@ -1,20 +1,3 @@
-export type User = {
-  id: string;
-  name: string;
-  email: string;
-  avatar?: string;
-  role: 'admin' | 'manager' | 'cashier' | 'owner';
-  shopId: string;
-};
-
-export type Shop = {
-  id: string;
-  name: string;
-  location: string;
-  owner: string;
-  phone: string;
-};
-
 export type Product = {
   id: string;
   name: string;
@@ -33,7 +16,7 @@ export type Product = {
   currentStock?: number;
   brand?: string;
   aliases?: string[];
-  variants?: any[];
+  variants?: unknown[];
   tax?: number;
   /** ProductUnit enum value (PCS, KG, GM, LTR, ML, BOX, PACK, DOZEN, BUNDLE). */
   unit?: string;
@@ -43,6 +26,10 @@ export type Product = {
   sellingPrice?: number;
   /** Cess percentage on the taxable amount (0 for most products). */
   cessRate?: number;
+  categoryId?: string | null;
+  /** Low-stock threshold the API and dashboard use (`currentStock <= reorderPoint`). */
+  reorderPoint?: number;
+  hsnCode?: string | null;
 };
 
 export type Customer = {
@@ -58,83 +45,6 @@ export type Customer = {
   joinedAt?: string;
 };
 
-export type Invoice = {
-  id: string;
-  invoiceNo: string;
-  customerId: string;
-  items: InvoiceItem[];
-  subtotal: number;
-  tax: number;
-  total: number;
-  paymentMethod: 'cash' | 'card' | 'upi' | 'udhar';
-  status: 'draft' | 'completed' | 'paid' | 'pending';
-  createdAt: string;
-  dueDate?: string;
-};
-
-export type InvoiceItem = {
-  productId: string;
-  productName: string;
-  quantity: number;
-  price: number;
-  total: number;
-};
-
-export type DashboardStats = {
-  totalSales: number;
-  totalProfit: number;
-  totalUdhar: number;
-  lowStockItems: number;
-  todayOrders: number;
-  topCustomers: Customer[];
-};
-
-export type SalesData = {
-  date: string;
-  sales: number;
-};
-
-export type AnalyticsData = {
-  period: 'daily' | 'weekly' | 'monthly';
-  sales: SalesData[];
-  products: ProductSalesData[];
-  customers: CustomerAnalytics[];
-};
-
-export type ProductSalesData = {
-  id: string;
-  name: string;
-  sales: number;
-  revenue: number;
-  quantity: number;
-};
-
-export type CustomerAnalytics = {
-  id: string;
-  name: string;
-  spent: number;
-  frequency: number;
-};
-
-export type Notification = {
-  id: string;
-  title: string;
-  message: string;
-  type: 'info' | 'success' | 'warning' | 'error';
-  createdAt: string;
-  read: boolean;
-};
-
-export type Transaction = {
-  id: string;
-  invoiceNo: string;
-  customerName: string;
-  amount: number;
-  method: string;
-  status: string;
-  timestamp: string;
-};
-
 // ---------------------------------------------------------------------------
 // POS / Billing contract shapes (docs/POS_BILLING_CONTRACT.md)
 // All money fields are numbers (coerced from Prisma Decimal strings in the API
@@ -148,7 +58,6 @@ export type InvoiceStatus = 'DRAFT' | 'COMPLETED' | 'CANCELLED';
 export type ShiftStatus = 'OPEN' | 'CLOSED';
 export type DiscountType = 'FIXED_AMOUNT' | 'PERCENTAGE';
 export type ProductUnit = 'PCS' | 'KG' | 'GM' | 'LTR' | 'ML' | 'BOX' | 'PACK' | 'DOZEN' | 'BUNDLE';
-export type ProductType = 'SIMPLE' | 'VARIABLE' | 'BUNDLE' | 'COMBO' | 'SERVICE' | 'DIGITAL';
 export type GstRate = 'ZERO' | 'FIVE' | 'TWELVE' | 'EIGHTEEN' | 'TWENTYEIGHT';
 
 /** Lean product row from `GET /search`, `GET /search/barcode/:code` and the POS grid. */

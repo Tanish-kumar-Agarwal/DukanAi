@@ -7,8 +7,16 @@ import { decodeJwtExpiryMs } from './jwt';
 
 const API_URL = clientConfig.NEXT_PUBLIC_API_URL;
 
+/**
+ * Every request gives up after this long unless the call sets its own
+ * (uploads and checkout do), so a stalled API never leaves a page spinning
+ * forever (roadmap 6.5).
+ */
+export const DEFAULT_API_TIMEOUT_MS = 15_000;
+
 const apiClient: AxiosInstance = axios.create({
   baseURL: API_URL,
+  timeout: DEFAULT_API_TIMEOUT_MS,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -110,12 +118,18 @@ async function resolveToken(): Promise<string | null> {
   }
 }
 
-// ---- Request interceptor — inject Bearer token ----
+// ---- Request interceptor — inject Bearer token; multipart bodies keep their boundary ----
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
     const token = await resolveToken();
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
+    }
+    // The instance default is JSON, and axios serialises a FormData body as JSON
+    // under that type (`{"file":{}}`). Dropping the header lets the browser send
+    // multipart/form-data with its boundary (roadmap 6.1 uploads).
+    if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+      config.headers.setContentType(false);
     }
     return config;
   },

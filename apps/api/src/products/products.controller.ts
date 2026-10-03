@@ -2,14 +2,10 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, HttpCode, Query } fr
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/create-product.dto';
+import { ProductListQueryDto } from './dto/product-list-query.dto';
 import { Roles } from '../auth/roles.decorator';
 import { Role } from '@prisma/client';
-
-function parseIntParam(value: string | undefined): number | undefined {
-  if (value === undefined || value === '') return undefined;
-  const parsed = parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
+import { PagedList } from '../common/pagination';
 
 @Controller('products')
 export class ProductsController {
@@ -21,19 +17,16 @@ export class ProductsController {
     return this.productsService.create(createProductDto);
   }
 
-  /** `GET /products?q&limit&offset` (limit max 200) — returns an array (contract §5). */
+  /**
+   * `GET /products?q&limit&offset&categoryId&stock` (limit max 200) — an array
+   * body with the page in `X-Total-Count` / `X-Page-Skip` / `X-Page-Take`
+   * (contract §5, roadmap 6.2).
+   */
   @Get()
+  @PagedList()
   @Roles(Role.ADMIN, Role.MANAGER, Role.OWNER, Role.CASHIER, Role.VIEWER)
-  findAll(
-    @Query('q') q?: string,
-    @Query('limit') limit?: string,
-    @Query('offset') offset?: string,
-  ) {
-    return this.productsService.findAll({
-      q,
-      limit: parseIntParam(limit),
-      offset: parseIntParam(offset),
-    });
+  findAll(@Query() query: ProductListQueryDto) {
+    return this.productsService.findAll(query);
   }
 
   @Get(':id')

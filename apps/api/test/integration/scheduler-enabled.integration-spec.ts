@@ -21,6 +21,7 @@ describe('background schedulers with CRON_ENABLED=true', () => {
     'ProductOutboxProcessorWorker',
     'PurchaseOutboxRelayCron',
     'ReservationExpirySweep',
+    'RetentionSweep',
   ];
   let app: INestApplication;
 
@@ -35,6 +36,7 @@ describe('background schedulers with CRON_ENABLED=true', () => {
       analyticsJobCron: FAR_AWAY,
       batchExpirySweepCron: FAR_AWAY,
       reservationExpirySweepCron: FAR_AWAY,
+      retentionSweepCron: FAR_AWAY,
     });
     app = await bootApp((builder) => builder.overrideProvider(CronConfig).useValue(config));
   });

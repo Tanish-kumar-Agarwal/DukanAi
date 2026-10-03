@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { PackageCheck, Search } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
 import { analyticsApi, type LowStockList } from '@/lib/api-client';

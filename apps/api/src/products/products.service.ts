@@ -1,16 +1,20 @@
 import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import { rethrowUniqueViolation } from '../common/db/unique-violation';
-import { Prisma } from '@prisma/client';
+import { Prisma, ProductType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/create-product.dto';
 import { ProductEventPublisher } from '../product-events/services/product-event-publisher.service';
 import { clampSearchQuery } from '../product-search/search-term';
-import { MAX_LIST_TAKE } from '../common/pagination';
+import { clampSkip, clampTake, MAX_LIST_TAKE, PagedResult } from '../common/pagination';
+import { NumberSequenceService } from '../common/numbering/number-sequence.service';
+import { ProductStockFilter } from './dto/product-list-query.dto';
 
 export const PRODUCT_LIST_DEFAULT_LIMIT = 50;
-export const PRODUCT_LIST_MAX_LIMIT = 200;
+export const PRODUCT_LIST_MAX_LIMIT = MAX_LIST_TAKE;
+
+const PRODUCT_LIST_INCLUDE = { category: { select: { id: true, name: true } }, brand: { select: { id: true, name: true } } } as const;
 
 /** Fields whose change on PATCH is recorded as `PRODUCT_PRICE_CHANGED` in AuditLog. */
 const PRICE_FIELDS = ['sellingPrice', 'costPrice', 'mrp', 'wholesalePrice', 'gstRate', 'cessRate'] as const;
@@ -28,10 +32,18 @@ interface ProductPriceRow {
 }
 
 export interface ProductListQuery {
-  q?: string;
+  q?: unknown;
   limit?: number;
   offset?: number;
+  categoryId?: string;
+  stock?: ProductStockFilter;
 }
+
+/** Products the stock filters and the dashboard's stock alerts consider (services and digital goods carry no stock). */
+const STOCKLESS_TYPES: ProductType[] = ['SERVICE', 'DIGITAL'];
+
+/** Sequence key of the server-generated SKU (`SKU-000001`, one counter per shop). */
+export const SKU_SEQUENCE = { entityType: 'PRODUCT_SKU', prefix: 'SKU-' } as const;
 
 /** Normalises a barcode from a DTO: trimmed string, or null when absent/blank. */
 export function normalizeBarcode(value: string | null | undefined): string | null {
@@ -57,22 +69,26 @@ export class ProductsService {
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
     private readonly eventPublisher: ProductEventPublisher,
+    private readonly numberSequence: NumberSequenceService,
   ) {}
 
   async create(createProductDto: CreateProductDto) {
     const shopId = this.tenantContext.getShopId();
     const userId = this.tenantContext.getUserId();
     const barcode = normalizeBarcode(createProductDto.barcode);
+    const requestedSku = createProductDto.sku?.trim() || undefined;
 
     // MySQL allows multiple NULL values in a composite unique key, so a
     // findUnique lookup with deletedAt: null is invalid and can throw before
     // creation. Check the active record explicitly instead.
-    const activeExisting = await this.prisma.product.findFirst({
-      where: { shopId, sku: createProductDto.sku, isDeleted: false, isActive: true },
-      select: { id: true },
-    });
-    if (activeExisting) {
-      throw new BadRequestException(`Product with SKU ${createProductDto.sku} already exists.`);
+    if (requestedSku) {
+      const activeExisting = await this.prisma.product.findFirst({
+        where: { shopId, sku: requestedSku, isDeleted: false, isActive: true },
+        select: { id: true },
+      });
+      if (activeExisting) {
+        throw new BadRequestException(`Product with SKU ${requestedSku} already exists.`);
+      }
     }
 
     if (barcode) await this.assertBarcodeAvailable(shopId, barcode);
@@ -80,9 +96,14 @@ export class ProductsService {
     let product;
     try {
       product = await this.prisma.$transaction(async (tx) => {
+        // Roadmap 6.2: the SKU is never invented by a client. Without one the
+        // shop's sequence numbers it under the same row lock as every other
+        // document number, so two concurrent creates cannot collide.
+        const sku = requestedSku ?? (await this.numberSequence.next(tx, shopId, SKU_SEQUENCE.entityType, SKU_SEQUENCE.prefix)).number;
         const newProduct = await tx.product.create({
           data: {
             ...createProductDto,
+            sku,
             barcode,
             shopId,
             createdBy: userId,
@@ -101,7 +122,7 @@ export class ProductsService {
       });
     } catch (error) {
       rethrowUniqueViolation(error, [
-        { index: 'Product_shopId_sku', code: 'PRODUCT_SKU_IN_USE', message: `Product with SKU ${createProductDto.sku} already exists.` },
+        { index: 'Product_shopId_sku', code: 'PRODUCT_SKU_IN_USE', message: `Product with SKU ${requestedSku ?? '(generated)'} already exists.` },
         { index: 'Product_shopId_barcode', code: 'BARCODE_IN_USE', message: `Barcode ${barcode} is already assigned to another product` },
       ]);
     }
@@ -109,14 +130,16 @@ export class ProductsService {
     return product;
   }
 
-  /** `GET /products?q&limit&offset` — active, non-deleted products with category (contract §5). */
-  async findAll(query: ProductListQuery = {}) {
+  /**
+   * `GET /products?q&limit&offset&categoryId&stock` — active, non-deleted
+   * products with category, as a page (contract §5, roadmap 6.2). The stock
+   * filter shares the dashboard's definitions (`stockAlertProductFilter`):
+   * `out` is no stock, `low` is at or below the reorder point.
+   */
+  async findAll(query: ProductListQuery = {}): Promise<PagedResult<Prisma.ProductGetPayload<{ include: typeof PRODUCT_LIST_INCLUDE }>>> {
     const shopId = this.tenantContext.getShopId();
-    const take = Math.min(
-      Math.max(Number.isFinite(query.limit) ? Math.floor(query.limit as number) : PRODUCT_LIST_DEFAULT_LIMIT, 1),
-      PRODUCT_LIST_MAX_LIMIT,
-    );
-    const skip = Math.max(Number.isFinite(query.offset) ? Math.floor(query.offset as number) : 0, 0);
+    const take = clampTake(query.limit, PRODUCT_LIST_DEFAULT_LIMIT);
+    const skip = clampSkip(query.offset);
     // Same cap as the search box (roadmap 5.3): a repeated or over-long `q` is cut, never a 500 or an unbounded contains.
     const q = clampSearchQuery(query.q);
 
@@ -124,14 +147,32 @@ export class ProductsService {
     if (q) {
       where.OR = [{ name: { contains: q } }, { sku: { contains: q } }, { barcode: { contains: q } }];
     }
+    if (query.categoryId) where.categoryId = query.categoryId;
+    if (query.stock) where.AND = [this.stockCondition(query.stock)];
 
-    return this.prisma.product.findMany({
-      where,
-      include: { category: { select: { id: true, name: true } }, brand: { select: { id: true, name: true } } },
-      orderBy: { createdAt: 'desc' },
-      take,
-      skip,
-    });
+    const [items, total] = await Promise.all([
+      this.prisma.product.findMany({
+        where,
+        include: PRODUCT_LIST_INCLUDE,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        take,
+        skip,
+      }),
+      this.prisma.product.count({ where }),
+    ]);
+    return { items, total, skip, take };
+  }
+
+  private stockCondition(stock: ProductStockFilter): Prisma.ProductWhereInput {
+    const reorderPoint = this.prisma.product.fields.reorderPoint;
+    switch (stock) {
+      case 'out':
+        return { type: { notIn: STOCKLESS_TYPES }, currentStock: { lte: 0 } };
+      case 'low':
+        return { type: { notIn: STOCKLESS_TYPES }, currentStock: { gt: 0, lte: reorderPoint } };
+      case 'in':
+        return { OR: [{ type: { in: STOCKLESS_TYPES } }, { currentStock: { gt: reorderPoint } }] };
+    }
   }
 
   async findOne(id: string) {

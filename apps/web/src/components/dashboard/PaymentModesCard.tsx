@@ -1,6 +1,5 @@
 'use client';
 
-import React from 'react';
 import { Card } from '@/components/ui/Card';
 import { formatMoney, labelFor, PAYMENT_MODE_LABELS } from '@/components/customers/format';
 import { CardSkeletonRows, CardUnavailable } from './CardStates';

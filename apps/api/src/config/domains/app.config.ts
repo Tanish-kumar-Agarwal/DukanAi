@@ -49,4 +49,50 @@ export class AppConfig {
   @StringFromEnv()
   @EnvVariable('TRUST_PROXY')
   readonly trustProxy: string = 'false';
+
+  /**
+   * Deployment settings (roadmap 7.3). Shutdown: on SIGTERM/SIGINT the
+   * readiness probe answers 503 at once, the process waits
+   * `shutdownDrainDelayMs` for the load balancer to stop routing to it (0 in
+   * compose; a few seconds behind a Kubernetes Service), then stops
+   * listening, finishes in-flight requests and active jobs, and closes
+   * BullMQ, Redis and Prisma. `shutdownTimeoutMs` is the watchdog: a drain
+   * still running after it exits 1 so a hung connection cannot keep a
+   * terminating instance alive. Keep the orchestrator's grace period above
+   * `shutdownDrainDelayMs + shutdownTimeoutMs`.
+   */
+  @IsInt()
+  @Min(1000)
+  @IntegerFromEnv()
+  @EnvVariable('SHUTDOWN_TIMEOUT_MS')
+  readonly shutdownTimeoutMs: number = 30_000;
+
+  @IsInt()
+  @Min(0)
+  @IntegerFromEnv()
+  @EnvVariable('SHUTDOWN_DRAIN_DELAY_MS')
+  readonly shutdownDrainDelayMs: number = 0;
+
+  /**
+   * How long the HTTP server keeps an idle keep-alive connection. Must exceed
+   * the idle timeout of the proxy or load balancer in front (60 s on most),
+   * or the proxy reuses a connection the server just closed and answers 502.
+   */
+  @IsInt()
+  @Min(1000)
+  @IntegerFromEnv()
+  @EnvVariable('HTTP_KEEP_ALIVE_TIMEOUT_MS')
+  readonly httpKeepAliveTimeoutMs: number = 65_000;
+
+  /**
+   * At boot the process waits this long for every BullMQ queue and worker to
+   * open its Redis connection before it starts listening (so a probe that
+   * passes means the instance can serve and consume). Past it, boot continues
+   * with a warning and readiness reports Redis down until it connects.
+   */
+  @IsInt()
+  @Min(1000)
+  @IntegerFromEnv()
+  @EnvVariable('QUEUE_READY_TIMEOUT_MS')
+  readonly queueReadyTimeoutMs: number = 30_000;
 }

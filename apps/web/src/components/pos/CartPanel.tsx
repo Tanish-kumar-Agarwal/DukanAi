@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Minus, Plus, ShoppingCart, Trash2 } from 'lucide-react';
 import type { CartLine, QuantityResult } from '@/store/pos';
 import { allowsDecimalQuantity, quantityStep } from '@/store/pos';

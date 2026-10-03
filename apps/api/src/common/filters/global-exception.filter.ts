@@ -9,6 +9,8 @@ import {
 import { Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
+import { ErrorContext, ErrorTracking } from '../observability/error-tracking';
+import { routeLabel } from '../observability/metrics';
 
 interface ErrorResponseBody {
   statusCode: number;
@@ -39,18 +41,24 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     // The middleware settles req.correlationId before guards run, so a 401/403
     // thrown by a guard (before the tenant interceptor opened its context) still
     // carries the id the client can quote; the ALS store is the fallback.
-    const request = ctx.getRequest<{ correlationId?: string } | undefined>();
-    const correlationId =
-      request?.correlationId || TenantContextService.asAsyncLocalStorage.getStore()?.correlationId || 'unknown';
+    const request = ctx.getRequest<ExpressRequestLike | undefined>();
+    const store = TenantContextService.asAsyncLocalStorage.getStore();
+    const correlationId = request?.correlationId || store?.correlationId || 'unknown';
 
     let statusCode: number;
     let message: string;
     let error: string;
     let code: string | undefined;
     let details: unknown;
+    // Server-side failures go to error tracking (roadmap 7.6): a 500 thrown
+    // on purpose, an unmapped Prisma error, or anything that is not an
+    // HttpException. Expected 5xx answers (503 draining / not configured,
+    // 502 upstream) are operational and show up in the 5xx-rate metric instead.
+    let trackAs: ErrorContext['kind'] | undefined;
 
     if (exception instanceof HttpException) {
       statusCode = exception.getStatus();
+      if (statusCode === HttpStatus.INTERNAL_SERVER_ERROR) trackAs = 'unhandled';
       const exceptionResponse = exception.getResponse();
 
       if (typeof exceptionResponse === 'string') {
@@ -95,6 +103,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       message = mapped?.message ?? 'Internal server error';
       error = HttpStatus[statusCode] || 'InternalServerError';
       code = mapped ? `DB_${exception.code}` : undefined;
+      if (!mapped) trackAs = 'prisma';
       if (exception.code === 'P2002') {
         // The unique index that rejected the write, so clients can point at the field (roadmap 3.10).
         const target = (exception.meta as { target?: unknown } | undefined)?.target;
@@ -108,10 +117,23 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       statusCode = HttpStatus.INTERNAL_SERVER_ERROR;
       message = 'Internal server error';
       error = 'InternalServerError';
+      trackAs = 'unhandled';
       this.logger.error(
         `Unhandled exception [correlationId=${correlationId}]`,
         exception instanceof Error ? exception.stack : String(exception),
       );
+    }
+
+    if (trackAs) {
+      ErrorTracking.capture(exception, {
+        kind: trackAs,
+        correlationId: String(correlationId),
+        shopId: store?.shopId,
+        userId: store?.userId,
+        route: routeLabel(request?.baseUrl, request?.route?.path),
+        method: request?.method,
+        statusCode,
+      });
     }
 
     const body: ErrorResponseBody = {
@@ -126,6 +148,14 @@ export class GlobalExceptionFilter implements ExceptionFilter {
 
     response.status(statusCode).json(body);
   }
+}
+
+/** The parts of the Express request the filter reads; `route` is set once the router matched. */
+interface ExpressRequestLike {
+  correlationId?: string;
+  method?: string;
+  baseUrl?: string;
+  route?: { path?: string | string[] };
 }
 
 const INVENTORY_STATUS: Record<string, number> = {

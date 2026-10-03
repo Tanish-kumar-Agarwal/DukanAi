@@ -336,8 +336,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `mode: 'insensitive'` is PostgreSQL-only and answered 500 here), five
   candidates, four lookups in flight, and the Dice similarity against
   `OCR_FUZZY_MATCH_THRESHOLD` is the reported `confidence`. Items are capped
-  at `OCR_MAX_ITEMS`. The web has no caller yet (the AI scanner page is a
-  mock). `src/ocr/ocr.service.spec.ts` and
+  at `OCR_MAX_ITEMS`. The web caller is the AI scanner page (roadmap 6.1).
+  `src/ocr/ocr.service.spec.ts` and
   `test/integration/ocr.integration-spec.ts` (stubbed `fetch`) cover it.
 - 4.5 / 4.6: the enterprise-invoice (`/invoices/generate`), returns-domain
   (`/returns/initiate`), payment-domain (`/payments/capture`), sales-domain
@@ -551,6 +551,419 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `docs/LOAD_TEST_BASELINE.md`; re-run and update it after a change to the
   checkout transaction, the dashboard queries or the upload path.
 
+## Web application (roadmap phase 6)
+
+- 6.1 no fake flows: every mutating page action either calls the API or is
+  gone. Employees (`/employees`) lists `GET /users/employees`, suspends /
+  reinstates through `PATCH /users/:id/suspend`, removes through
+  `DELETE /users/:id` (OWNER/ADMIN only, never self) and invites through
+  `POST /invitations/generate` (`employeesApi` in `src/lib/api-client.ts`,
+  roles from `INVITABLE_ROLES`); the code reaches the invitee by email only,
+  and the register page (`/register?invite=<code>`, or the code pasted into
+  the "Invitation Code" field) switches to join mode and calls
+  `POST /invitations/accept` (the page posts it itself; there is no client
+  wrapper). Payroll, attendance and shift columns are not
+  modelled by the API and were removed, not stubbed. Suppliers edit through
+  `PATCH /suppliers/:id` (MANAGER+), delete through `DELETE /suppliers/:id`
+  (ADMIN+, row removed only after the API answers) and send the chosen
+  payment mode as `tender`; "Record Purchase" is an honest info toast because
+  the web has no purchase-order UI. Smart Capture posts the JPEG (and, for
+  "Convert to PDF", a one-page PDF built client-side by `src/lib/jpeg-pdf.ts`,
+  no dependency) to `POST /storage/bills/:customerId/:billId`
+  (`storageApi.storeCapturedBill`, `Walk-in` when no customer is chosen);
+  "Try OCR Extraction" hands the frame to the AI scanner through
+  sessionStorage (`PENDING_SCAN_KEY`, `src/lib/smart-capture.ts`). The AI
+  scanner calls `POST /ocr/scan-bill` (`ocrApi.scanBill`), renders the API's
+  matched lines with their confidence, offers a CSV export and shows 503
+  `OCR_NOT_CONFIGURED` / 502 `OCR_UNREADABLE_RESPONSE` as failures; it never
+  claims to update stock (stock moves only through purchase orders / GRNs).
+  The AI Assistant and Database Manager pages had no backend and are deleted
+  with their sidebar entries. Role gates on these pages use the pattern in
+  `src/components/customers/permissions.ts` and treat `AUTH_DISABLED` as
+  OWNER. Never re-introduce a `setTimeout` "save" or a toast without a
+  request behind it.
+- 6.2 products page: the list is a server page (`productsApi.listPage`,
+  `GET /products?q&limit&offset&categoryId&stock`, 50 per page, total from
+  `X-Total-Count`); the search box is debounced and every filter is applied
+  by the API (`stock` shares the dashboard's reorder-point rule, so the row
+  badges use `reorderPoint` too), never by trimming the loaded page. The
+  four tiles read `GET /dashboard/summary` (`totalProducts`, `lowStockCount`,
+  `outOfStockCount`, `inventoryValue`) and show a failed section as
+  unavailable. Add / edit send exactly the typed fields (`productPayload`):
+  a blank SKU is omitted and numbered by the API (`SKU-000001`, per-shop
+  `NumberSequence` under the same row lock as invoice numbers), the cost
+  price is required and never derived, MRP defaults to the selling price and
+  may not be below it, GST slab and unit are selects from the Prisma enums.
+  Delete goes through a confirmation modal and re-reads the page. Create /
+  edit are MANAGER+, delete ADMIN+/OWNER (mirrors the API's `@Roles`).
+- 6.3 settings: "Shop Profile" writes every `UpdateShopProfileDto` field
+  (`shopApi.update`); the state is a picker from
+  `components/pos/indian-states.ts` because `BillingService.resolveInterState`
+  compares `Shop.state` with `Customer.state` to decide IGST, and a shop
+  without a state can never bill IGST (the save toast says so). The side
+  menu holds two panels (Shop Profile, Account & Security: the caller's
+  sessions from `GET /auth/sessions` with revoke and sign-out) and two links
+  (Notifications, Team Management); "Billing & Plans" is gone because no plan
+  model exists. `test/integration/products-settings.integration-spec.ts`
+  proves the SKU sequence, the paged filters and the IGST split over HTTP;
+  `apps/web/e2e/products-settings.spec.ts` proves the pages.
+- 6.4 web security: `next.config.js` sets `poweredByHeader: false` and the
+  static headers (HSTS, `X-Content-Type-Options`, `X-Frame-Options: DENY`,
+  `Referrer-Policy`, `Permissions-Policy` with `camera=(self)` for Smart
+  Capture) and refuses to build or start with `NEXT_PUBLIC_AUTH_DISABLED`
+  under `NODE_ENV=production`; `src/lib/auth-bypass.ts` compiles the flag to
+  false in a production bundle regardless, and the proxy answers 503.
+  The Content-Security-Policy is per request in `src/proxy.ts` (Next 16's
+  name for the middleware convention; it runs on the Node.js runtime): a fresh
+  script nonce with `'strict-dynamic'` (no `'unsafe-inline'` for scripts;
+  `'unsafe-eval'` only under `NODE_ENV=development` for React Refresh),
+  `connect-src` = self + the `NEXT_PUBLIC_API_URL` origin, `frame-ancestors
+  'none'`, `form-action 'self'`. Next.js reads the nonce from the request's
+  CSP header, which requires dynamic rendering: the root layout exports
+  `dynamic = 'force-dynamic'`, so never prerender a page (a static page would
+  carry un-nonced inline scripts and be blocked). The middleware verifies the
+  session with `getToken` (signature, expiry, no `RefreshAccessTokenError`),
+  not cookie presence, and builds `callbackUrl` from the path; the login
+  page parses it with `sanitizeCallbackUrl` (`src/lib/safe-callback-url.ts`)
+  against `window.location.origin`, so `//evil`, `/\evil`, absolute URLs and
+  `/login` fall back to `/dashboard`. Style attributes still need
+  `style-src 'unsafe-inline'` (framer-motion, inline styles). A
+  `fetch('data:…')` is a connection under `connect-src` and is refused:
+  decode data URLs with `dataUrlToBlob` (`src/lib/data-url.ts`), never fetch
+  them.
+- 6.5 web robustness: `app/error.tsx` (page segment, keeps the shell) and
+  `app/global-error.tsx` (root layout, inline styles only). `src/lib/uuid.ts`
+  is the one uuid v4 (falls back from `crypto.randomUUID` to
+  `getRandomValues`); the POS store and `RecordPaymentModal` use it. The POS
+  store starts in the per-tab anonymous scope (`dukaanai-pos:anon`) and
+  `scopePosStoreToShop` moves it to `dukaanai-pos:<shopId>`, carrying an
+  anonymous cart into an empty shop scope and deleting the anonymous copy;
+  `usePosScope` says which shop is active and the barcode scanner is enabled
+  only once it is set. Any store write before `hydratePosStore()` persists
+  the empty state over the saved cart: `useIdempotencyKey` waits for
+  `persist.hasHydrated()` / `onFinishHydration`, and a new hook that writes
+  to the store at mount must do the same. ShiftBanner, the navbar
+  notification poll and the notifications page carry stale-response guards
+  (request sequence / cancelled flag): only the newest answer lands, none
+  after unmount. `apiClient` has `DEFAULT_API_TIMEOUT_MS` (15 s); uploads and
+  checkout set their own. Smart Capture stops the camera stream on unmount.
+- 6.6: the navbar search pushes `/products?q=<term>`; the products page reads
+  `q` from `useSearchParams` (initial state and on change while mounted).
+  `apps/web/e2e/web-hardening.spec.ts` covers headers, the nonce, the
+  production guard (loads `next.config.js` under `NODE_ENV=production`),
+  callback sanitising, navbar `q` and the anonymous-cart migration; the
+  production CSP with a real sign-in was smoke-tested with `next build` +
+  `next start` against an API without the bypass.
+- 6.7 correctness: the receipt and the invoice page show a Cess row when the
+  document carries cess (summed from the lines: `Invoice` has no cess column).
+  Print CSS is per page: `globals.css` hides `.print-hidden` (the shell) on
+  every page, applies the 80 mm receipt rules only while the receipt portal
+  is mounted (`body:has(.receipt-print-root)`), and each printable page
+  mounts its own `@page` through `PrintPageStyle`
+  (`src/components/print`; receipt 80 mm, invoice detail A4 under
+  `.print-document`). A customer edit sends '' for a blanked optional field
+  (the API stores null; `UpdateCustomerDto.email` skips `IsEmail` for '')
+  and the form lengths match the DTO (name 100, city 100, address 500, notes
+  1000). Expenses tiles read `GET /expenses/summary` (this month in the
+  shop's timezone over every expense, pending over every unpaid one) and the
+  Edit action is real (`PATCH /expenses/:id`). Batch dates go through
+  `formatBatchDate` (null = "Not recorded"). The viewport allows pinch-zoom.
+  Low-stock badges use each product's reorder point (6.2). The inventory page
+  keeps only the tabs with a module (Batches & Expiry, Low Stock); stock
+  moves are recorded from Products › Update Stock, so the transfer /
+  adjustment placeholders are gone. Forgot password: `POST
+  /auth/forgot-password` (public, auth-throttled) always answers the same
+  message and emails `<FRONTEND_URL>/reset-password?token=…` when the address
+  has a password account (never a Google-only one); the token is hashed at
+  rest (`PasswordResetToken`, migration `20260930090000`), single use, one
+  hour, and a new request voids the older ones; `POST /auth/reset-password`
+  sets the password, bumps `tokenVersion`, revokes the refresh tokens and
+  drops the sockets, so every session ends. Production without SMTP answers
+  503 like invitations. Web pages `/forgot-password` and `/reset-password`
+  are public in the middleware and shell-less in `RootLayout`.
+  `test/integration/web-correctness.integration-spec.ts` and
+  `apps/web/e2e/correctness.spec.ts` cover the row.
+- 6.8 dead code: the 13 unused web dependencies are gone (radix, react-hook-form,
+  react-query, next-themes, class-variance-authority, tailwind-merge, …) plus
+  `@types/uuid`; `data/customers.json`, `eslint_output.txt`, the unused
+  `Button`, `Input`, `StatCard`, `DataTable`, `Charts` components, the hooks
+  barrel (`useTheme` now lives in `src/hooks/useTheme.ts`) and the unused
+  exports in `lib/utils.ts`, `types/index.ts`, `store/index.ts`
+  (sidebar state only) are removed (`lib/utils.ts` is `clsx` only). ts-prune
+  does not resolve the `@/` alias, so it reports every `@/types` import as
+  unused: confirm a candidate with `grep -rlw <name> src` before deleting it,
+  and never add an export nobody imports. recharts is loaded
+  with `next/dynamic` (`SalesTrendChart`, `components/analytics/AnalyticsCharts`),
+  never imported from a page. `SkeletonBox` pulses with the CSS keyframe
+  `skeleton-pulse` (globals.css, reduced-motion aware), not a JS loop.
+- 6.9 gate evidence: `playwright.auth.config.ts` (`npm run test:e2e:auth`,
+  CI step "Playwright (real auth)") boots the API without `AUTH_DISABLED` and
+  the web with the bypass off on ports 3005 / 3012, sequentially after the
+  bypass suite (both use the `.next` dev cache). `e2e-auth/real-auth.spec.ts`
+  registers through the form, proves the middleware bounce and callback, a
+  wrong password, sign-out, every repaired page under a real session, and a
+  VIEWER (inserted with a bcrypt hash through `E2E_DATABASE_URL`) who sees no
+  write buttons while the API answers 403. `docs/WEB_GATE_EVIDENCE.md` holds
+  the exit-gate record (persistence suite, headers, Lighthouse).
+- The shared axios instance (`src/lib/api.ts`) defaults to JSON and axios
+  serialises a `FormData` body as JSON under that header (`{"file":{}}`); its
+  request interceptor drops the content type for `FormData` so the browser
+  sends multipart with a boundary. Post uploads through `apiClient`, never
+  through a second instance. `StoragePathBuilder` resolves `STORAGE_ROOT` to
+  an absolute path once (the committed relative `./data/storage` used to trip
+  the traversal guard on every upload) and the guard requires the base or a
+  child of it, not a string prefix.
+- `apps/web/e2e/fake-flows.spec.ts` and `persistence.spec.ts` are the phase 6
+  persistence suite: every mutating UI action (the repaired ones and the ones
+  that were already real: invoice cancel / return, customers incl. payments
+  and the POS picker, shifts, employees, expenses, notifications, suppliers,
+  stock adjustments) is asserted after a reload AND against the API or the
+  API's disk (`E2E_STORAGE_ROOT`, default `apps/api/data/storage`);
+  `e2e-auth/real-auth.spec.ts` adds the two that need a real session (ending
+  another session, the reset-password link). Chromium does not expose blob
+  multipart bodies to Playwright, so upload tests assert the multipart
+  header and the server-side effect, not the request body. A JPEG fixture is
+  rendered in the page with a canvas (the API sniffs magic bytes).
+  `products-settings.spec.ts` continues it for 6.2 / 6.3; add a test for
+  every new mutating UI action. Match the products list request by exact
+  pathname: `/dashboard/products` and `/inventory/products` also end in
+  `/products`. Sharp edges the suite met: cancelling or refunding cash
+  needs the actor's open shift (409 `SHIFT_REQUIRED`; `GET /shifts/current`
+  answers an empty body when there is none), `DELETE /customers/:id` is 204,
+  the cancel and shift-close routes answer 200, `POST /billing/returns`
+  wraps the document in `{ invoice }`, and `POST /customers/:id/payments`
+  needs an `idempotencyKey`.
+
+## Dependencies (roadmap phase 7)
+
+- 7.1 / 7.2: `npm audit --omit=dev` is clean (the `next` 14 advisory went
+  with the Next 16 upgrade) and CI's lint job fails on any high or critical
+  production advisory (`npm audit --omit=dev --audit-level=high`); re-check
+  after any dependency change and keep it that way. The root `overrides`
+  carry the fixes that upstream pins block, each with its reason in
+  `package.json`: next-auth 4's `nodemailer` (its unused Email provider) is
+  forced to 10.x, `@prisma/config`'s `deepmerge-ts` to 8.x (CJS build,
+  same `deepmerge` export; `prisma generate` / `migrate` run on it),
+  `@nestjs/swagger`'s `js-yaml` to 5.4.x, and `postcss` to 8.5.28 (next 16
+  pins 8.5.23; the override keeps every copy on the patched line). Keep an override scoped to its consumer: a blanket
+  `js-yaml` override breaks eslint 8 and the istanbul loader (they need
+  3.x / 4.x). `npm audit fix` is not usable here: it tries to downgrade
+  `prisma` to 6.12 and stops on the peer conflict; apply fixes as explicit
+  versions instead. `prisma` and `@prisma/client` are pinned to the same
+  exact version (6.19.3): bump both together, then `npx prisma generate`.
+  The gate audits production dependencies only, so build-time tooling must
+  live in `devDependencies`: `tailwindcss-animate` (a Tailwind plugin used
+  by `tailwind.config.js`) was a production dependency and pulled Tailwind's
+  chokidar / micromatch / braces chain into the gate when a `braces`
+  advisory with no fix landed. Every package is declared where it is imported: `axios` in apps/api
+  (`webhook-http-client.ts`) as well as apps/web, `mysql2` as a
+  devDependency of both apps (only tests open a raw connection), `dotenv`
+  as an apps/api devDependency (scripts and tests; the API reads env through
+  `@nestjs/config`). `xlsx`, `joi`, `lodash`, `fluent-ffmpeg`, `fuse.js`,
+  `bull` and `@nestjs/bull` are gone (nothing imported them; the media
+  worker's video branch is a comment). The API image installs the API
+  workspace alone, so a package the API imports but only reaches
+  node_modules through another workspace (`uuid` via next-auth) is missing
+  there and boot dies with MODULE_NOT_FOUND: `src/dependency-declarations.spec.ts`
+  scans `src/` (specs excluded) and fails on any import not in the API's
+  `dependencies` (`uuid`, `cache-manager`, `cron`, `express`,
+  `@nestjs/mapped-types` are declared for that reason). Node 22 is the floor
+  everywhere (`engines`, `.nvmrc`).
+
+- 7.2: the web runs Next.js 16 on React 19 (`react`/`react-dom`/`@types/react`
+  19, framer-motion 14, lucide-react 1.x, recharts 2.15). What the major
+  changed here: `next lint` is gone, so `npm run lint` in apps/web is
+  `eslint .` over `eslint.config.mjs` (ESLint 9 flat config: `eslint-config-next`
+  core-web-vitals + typescript; the React Compiler rules of
+  eslint-plugin-react-hooks 7, `set-state-in-effect` and `refs`, are off
+  until the compiler is adopted; CommonJS `*.config.js` may `require`).
+  `src/middleware.ts` is `src/proxy.ts` exporting `proxy` (same matcher,
+  Node.js runtime). Request APIs are async (`await headers()` /
+  `await cookies()`). `next build` and `next dev` use Turbopack, whose CSS
+  parser is strict: Tailwind scans source files (comments included) and a
+  bracket token with a leading hyphen such as a regex character class
+  `[-:.TZ]` becomes an arbitrary-property class that fails the build; put the
+  hyphen last. Next rewrote tsconfig to `jsx: react-jsx`, so an unused
+  `import React` fails the build's type check: import only what is used.
+  `@playwright/test` stays pinned (1.56.1); Next lists it as an optional peer.
+  In `next dev` the Next 16 overlay echoes every `console.error` (the dev
+  tools button's name contains "Next"), so a Playwright text locator for an
+  error message must be scoped to the page's own `role=alert` and a "Next"
+  button locator needs `exact: true`, or strict mode resolves two elements.
+  `apps/web/AGENTS.md` and `apps/web/CLAUDE.md` are written by `next dev`
+  (they point at the bundled Next 16 docs under `node_modules/next/dist/docs`)
+  and are committed because Next re-creates them on every dev start.
+
+## Deployment (roadmap 7.3)
+
+- Images: `apps/api/Dockerfile` and `apps/web/Dockerfile` build from the
+  repository root (`.dockerignore` there) on one pinned Node
+  (`NODE_VERSION`, the major of `.nvmrc`; bump together), Debian slim
+  (glibc for the Prisma engines, sharp, bcrypt; `openssl` + `ca-certificates`
+  via apt), non-root `node`, `HEALTHCHECK` on the liveness route, no env
+  file copied in. The API image holds only the API's production
+  `node_modules` (`npm ci --omit=dev -w api -w @dukaanai/invoice-math`
+  + `prisma generate`), `dist`, and `prisma/` so the same image runs the
+  release step `npx prisma migrate deploy`. The web image is Next's
+  standalone output: `NEXT_STANDALONE=true` switches `output: 'standalone'`
+  on in `next.config.js` (opt-in because `next start` refuses it) with
+  `outputFileTracingRoot` at the monorepo root; `NEXT_PUBLIC_API_URL` is a
+  build arg (inlined) and also runtime env (the proxy's CSP reads it);
+  `API_INTERNAL_URL` (server-only, `serverConfig`) is where `auth.ts`
+  reaches the API from inside the network. `docker-compose.yml` + root
+  `.env.example` (two required secrets, `:?` otherwise) is the reference
+  stack: mysql 8 (`--log-bin-trust-function-creators=1` for the ledger
+  triggers), redis 7 AOF, `migrate` one-shot, `api` healthy on readiness,
+  `web`. `docs/DEPLOYMENT.md` is the runbook (probes, env, Kubernetes sketch).
+- Probes: `HealthModule` (`src/health`, `@Public()` + `@SkipThrottle()`):
+  `GET /api/health` and `/health/live` are liveness (no dependency; the
+  Playwright web servers and the `HEALTHCHECK`s poll the first);
+  `GET /api/health/ready` is 200 only when `SELECT 1`, Redis `PING` (2 s
+  probe timeout each) and `GracefulShutdownService.isDraining === false`,
+  else 503 `{ status: 'draining' | 'unavailable', checks }`. The web has
+  `app/api/health/route.ts` (excluded in the proxy matcher).
+- Shutdown (`src/common/lifecycle`): `main.ts` calls `app.init()`, waits
+  for every BullMQ queue/worker connection (`waitForQueueConnections`,
+  bounded by `QUEUE_READY_TIMEOUT_MS`; the integration fixture uses the
+  same helper unbounded), sets `keepAliveTimeout`
+  (`HTTP_KEEP_ALIVE_TIMEOUT_MS`, above the LB idle timeout), then listens;
+  `enableShutdownHooks(undefined, { useProcessExit: true })` exits 0 after a
+  clean close instead of re-raising the signal (143).
+  `GracefulShutdownService.beforeApplicationShutdown(signal)`: draining
+  flag -> watchdog (`SHUTDOWN_TIMEOUT_MS`, exit 1, armed only on a real
+  signal) -> `SHUTDOWN_DRAIN_DELAY_MS` (signal only; 0 compose, 5 s k8s) ->
+  close every worker (active jobs finish) -> Nest closes the servers ->
+  `onApplicationShutdown` closes queues, Redis (QUIT) and Prisma.
+  `PrismaService` disconnects in `onApplicationShutdown`, never in
+  `onModuleDestroy` (which runs before the server closes and failed
+  in-flight requests). `test/integration/deployment.integration-spec.ts`
+  covers the probes in-process and sends a real SIGTERM to `node dist/main`
+  (built on demand). `scripts/compose-smoke.sh` is the phase 7 exit gate
+  (CI job "Deployment (compose smoke)"): fresh clone -> `compose up` ->
+  idempotent migrate -> probes -> register -> API + web sign-in -> stock,
+  shift, sale -> dashboard -> `compose stop` exits 0 with the shutdown lines.
+
+## CI hardening and storage (roadmap 7.4, 7.5)
+
+- 7.4: every `uses:` in `.github/workflows/*.yml` is pinned to a commit SHA
+  with a `# vX.Y.Z` comment (checkout v6, setup-node v6, upload-artifact v6:
+  the v4 majors run on the Node 20 runtime GitHub is retiring); `.github/dependabot.yml` (github-actions,
+  weekly, grouped) moves the pins. Never put a floating tag back. The
+  Pullfrog agent workflow is `workflow_dispatch` only, `contents: read` +
+  `id-token: write` (it acts through Pullfrog's GitHub App), checkout with
+  `persist-credentials: false`, and passes only `ANTHROPIC_API_KEY` /
+  `CLAUDE_CODE_OAUTH_TOKEN`; another provider is added with its own secret
+  there, never the whole list. Runtime artifacts are never tracked: the
+  turbo daemon logs and `apps/api/data/storage/System/*.json` were
+  untracked (the ignore rules already covered them), and
+  `scripts/check-tracked-artifacts.sh` (lint job) fails CI if anything under
+  `.turbo/`, an `uploads/` directory, `data/storage/`, a `*.log` or
+  `dump.rdb` is tracked.
+- 7.5: `StoragePathBuilder` resolves `STORAGE_ROOT` once (`path.resolve`,
+  logged at boot) and contains every join with `path.relative`
+  (`isContained`: `..`, absolute segments and sibling prefixes such as
+  `<root>2` are refused); `relativeToShop` is the only form a response may
+  carry (`Customers/<id>/Profile`, `Deleted/<file>`, `Backups/Daily/<zip>`),
+  never an absolute path. Production requires an absolute, non-placeholder
+  `STORAGE_ROOT` (`IsProductionAbsolutePath`, boot refuses otherwise); the
+  dev / test templates keep `./data/storage`, resolved against the working
+  directory (the start scripts, Docker and Playwright all run from
+  `apps/api`). Every storage route checks the customer with `assertOwned`
+  (404 for a foreign or unknown id; `Walk-in` is the no-row customer).
+  Billing evidence is written once: every target is checked, then created
+  with the `wx` flag; a repeat is 409 `STORAGE_EVIDENCE_EXISTS` and nothing
+  is replaced or partially written; statements get a unique file name per
+  generation. `test/stubs/archiver.stub.js` is a functional fake (placeholder
+  payload, real stream close) mapped in every jest config, so the backup
+  flow runs in tests. `src/storage/storage.service.spec.ts` (temp root) and
+  `test/integration/storage.integration-spec.ts` cover the row.
+
+## Observability, backups and retention (roadmap 7.6, 7.7, 7.8)
+
+- 7.6 logs: `LoggingConfig` (`LOG_LEVEL`, `src/config/domains/logging.config.ts`)
+  is the most verbose level `CorrelationLogger` prints; the default is
+  `debug` outside production and `log` in production, where `debug`/`verbose`
+  refuse to boot (`IsNotDebugInProduction`; boot-matrix case). `main.ts`
+  passes `logLevels` to the logger; `PRISMA_LOG_QUERIES` stays the separate
+  query-log switch.
+- 7.6 metrics: `src/common/observability/metrics.ts` is the one prom-client
+  registry (`metricsRegistry`, default label `service=dukaanai-api`, process
+  metrics under `dukaanai_`); metrics are module-level objects a service
+  imports (no injection): `httpRequestsTotal` / `httpRequestDurationSeconds`
+  (`httpMetricsMiddleware`, `app.use` in `main.ts` BEFORE the routers so
+  guard rejections and 404s count; `routeLabel` collapses to the Express
+  pattern or `unmatched`, never a raw path), `checkoutDurationSeconds{outcome}`
+  (`BillingService.createInvoice` wraps `checkout()`), `ledgerPostingFailuresTotal{source}`
+  (`LedgerPostingService.post` wraps `postEntries()`), the outbox / queue
+  gauges (`ObservabilityCollectorsService.refresh` on each scrape, outbox from
+  raw SQL under `runAsSuperAdmin`, queues from `queueInstances`),
+  `retentionRowsPurgedTotal{table}`, `errorsTrackedTotal{kind}`. Labels stay
+  low-cardinality: never an id, shop or user. `GET /api/metrics`
+  (`MetricsController`, `@Public() @SkipThrottle()`, `ObservabilityModule`)
+  answers `metricsRegistry.contentType`, 404 under `METRICS_ENABLED=false`,
+  401 unless the bearer token equals `METRICS_TOKEN` (`crypto.timingSafeEqual`).
+  Rules: `deploy/prometheus/alerts.yml` (+ `prometheus.yml`; `promtool check`
+  in the CI deploy job; compose `prometheus` service under profile `ops`);
+  runbook `docs/OBSERVABILITY.md`.
+- 7.6 error tracking: `ErrorTracking` (`src/common/observability/error-tracking.ts`)
+  is a static facade over `@sentry/node` 11, a no-op until `SENTRY_DSN` is
+  set (`MonitoringConfig`: DSN must be an http(s) URL and never a placeholder,
+  `IsNotPlaceholder` in `env-rules.ts`; `METRICS_TOKEN` likewise). Sentry 11
+  has no `sendDefaultPii`: request data is switched off with `dataCollection`.
+  `GlobalExceptionFilter` captures only what it answers as 500 (unhandled,
+  deliberate 500, unmapped Prisma code) with `correlationId`, shop, user,
+  route pattern, method and status as tags; expected 4xx/5xx are not errors.
+  `bootstrap().catch` captures `startup` and flushes before `exit(1)`.
+  Tests mock `@sentry/node` (`error-tracking.spec.ts`); integration:
+  `test/integration/observability.integration-spec.ts` (installs the
+  middleware through `bootApp`'s `beforeInit`).
+- 7.7 backups: `scripts/db/` (`lib.sh` parses `DATABASE_URL` or `MYSQL_*`,
+  password via `MYSQL_PWD`, clients via `MYSQL_BIN` / `MYSQLDUMP_BIN`):
+  `backup.sh` (mysqldump `--single-transaction --routines --triggers --events
+  --hex-blob --no-tablespaces`, MySQL-only flags detected from `--help`,
+  DEFINER clauses stripped so the triggers restore under any user, written to
+  `.partial` then renamed, trailer checked, `.sha256` sidecar, `--keep`
+  pruning; default dir `/var/backups/dukaanai`, never inside the repo),
+  `restore.sh` (dry run unless `--yes`; `--database` / `--create`; the dump
+  drops and re-creates its tables), `restore-drill.sh` (backup -> restore into
+  `<db>_drill_<stamp>` -> `migrate status` up to date -> `migrate diff`
+  clean -> every table's row count equal -> ledger triggers present -> drop;
+  CI runs it in the integration job after the suites, on MySQL 8). Compose:
+  `db-ops` service (profile `ops`, `mysql:8.0` image, `scripts/db` mounted,
+  `db-backups` volume, `db-ops.sh` entrypoint). Runbooks:
+  `docs/BACKUP_RESTORE.md` (rehearsal record) and the "Rolling back a
+  release" section of `prisma/MIGRATIONS.md` (additive: redeploy the old
+  image; otherwise a forward migration; destructive: restore the pre-release
+  backup, so destructive changes ship expand-then-contract).
+  `DEPLOYMENT_CHECKLIST.md` puts the backup before `migrate deploy`.
+  Finding of the first drill: Prisma applies a migration to MySQL as one
+  multi-statement script, and MySQL 8 stored the bare single-statement
+  body of `prevent_ledger_update` (migration `20260929090200`) WITH its
+  terminator, so mysqldump wrote `...; */;;` and the restore failed on a
+  syntax error. `20261003090100_ledger_triggers_portable_bodies` recreates
+  both triggers with `BEGIN ... END` bodies (never `DELIMITER` in a
+  migration; a compound body ends at END on MySQL 8 and MariaDB alike) and
+  `backup.sh` drops such a terminator so pre-fix backups restore too. Give
+  every future trigger a compound body.
+- 7.8 retention: `RetentionSweepService` (`src/common/retention`, cron
+  `RetentionSweep` on `CRON_RETENTION_SWEEP`, default `30 3 * * *`, lock
+  `cron:retention-sweep` 15 min, `runAsSuperAdmin`) deletes with
+  `DELETE ... LIMIT` batches (`RetentionConfig`: `RETENTION_*_DAYS`,
+  `RETENTION_BATCH_SIZE` 100..10000, `RETENTION_MAX_BATCHES_PER_RUN`; a table
+  whose budget runs out is reported in `truncated` and continues next run):
+  RefreshToken by `expiresAt` (consumed tokens must outlive their idle life
+  for reuse detection, so the window is past expiry), PasswordResetToken by
+  `expiresAt` / `usedAt`, OutboxEvent `status = 'DONE'` by `createdAt`
+  (FAILED rows stay for `POST /sales/events/retry`), SearchHistory by
+  `createdAt` (`RETENTION_SEARCH_HISTORY_DAYS` >= 7: the popular-searches card
+  reads seven days), ProductEventLog by `timestamp`. Migration
+  `20261003090000_retention_indexes` adds `RefreshToken(expiresAt)`,
+  `SearchHistory(createdAt)`, `ProductEventLog(timestamp)` (`OutboxEvent
+  (status, createdAt)` existed): a purge column without an index scans the
+  table on every batch. `scheduler-enabled.integration-spec.ts` lists the
+  job and overrides its cron; `test/integration/retention.integration-spec.ts`
+  seeds every table on both sides of each window.
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and
@@ -660,8 +1073,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   refuses to issue an invitation without SMTP (503). Integration specs
   override the provider (`bootApp(b => b.overrideProvider(EmailService)...)`)
   and read the token from the recorded message. The email links to
-  `<FRONTEND_URL>/register?invite=<token>`; the web register page does not
-  read that parameter yet (the invitee pastes the code).
+  `<FRONTEND_URL>/register?invite=<token>`, which the web register page reads
+  into its join mode (roadmap 6.1; the code can also be pasted).
 - Google sign-in: the web sends only `{ idToken: account.id_token }` to
   `POST /auth/google`, and registers the provider only with real credentials
   (`hasGoogleCredentials`, placeholder-aware). The API never links a Google
@@ -694,7 +1107,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   authentication for demos/dev. OFF by default and accepted only under
   `NODE_ENV=development` or `test` (`assertAuthBypassPermitted` refuses boot
   otherwise, and `AuthBypassService.isEnabled` stays false); no committed
-  template sets it, put it in an untracked `.env.local`. See `AuthBypassService`
+  API template sets it (put it in an untracked `.env.local`), and the web's
+  `.env.development` sets `NEXT_PUBLIC_AUTH_DISABLED=true` for local work
+  only (`next build`/`next start` refuse it, roadmap 6.4). See `AuthBypassService`
   (`apps/api/src/auth/auth-bypass.service.ts`), `AuthConfig`
   (`apps/api/src/config/domains/auth.config.ts`), and `apps/web/src/lib/auth-bypass.ts`.
   When on, every request runs as a provisioned system user

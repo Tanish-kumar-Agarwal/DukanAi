@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LedgerAccount, LedgerEntryType, Prisma } from '@prisma/client';
+import { ledgerPostingFailuresTotal } from '../common/observability/metrics';
 
 export interface LedgerEntryInput {
   account: LedgerAccount;
@@ -62,6 +63,16 @@ const DEBIT_NORMAL: ReadonlySet<LedgerAccount> = new Set<LedgerAccount>([
 @Injectable()
 export class LedgerPostingService {
   async post(tx: Prisma.TransactionClient, posting: LedgerPosting): Promise<LedgerPostingResult> {
+    try {
+      return await this.postEntries(tx, posting);
+    } catch (error) {
+      // Counted for the alert (roadmap 7.6); the caller's transaction still rolls back.
+      ledgerPostingFailuresTotal.inc({ source: posting.source.type });
+      throw error;
+    }
+  }
+
+  private async postEntries(tx: Prisma.TransactionClient, posting: LedgerPosting): Promise<LedgerPostingResult> {
     const entries = posting.entries
       .map((e) => ({ ...e, amount: new Prisma.Decimal(e.amount.toString()).toDecimalPlaces(2) }))
       .filter((e) => e.amount.greaterThan(0));

@@ -1,4 +1,3 @@
-import React from 'react';
 import Badge from '@/components/ui/Badge';
 import type { InvoiceStatus, InvoiceType, PaymentMode } from '@/types';
 import { tenderLabel } from '@/components/pos/format';

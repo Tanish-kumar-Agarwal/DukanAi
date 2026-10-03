@@ -1,4 +1,5 @@
 import { registerDecorator, ValidationArguments, ValidationOptions } from 'class-validator';
+import * as path from 'path';
 
 /**
  * Environment-value rules shared by the config domains: what counts as a
@@ -78,6 +79,56 @@ export function IsUrlList(options?: ValidationOptions): PropertyDecorator {
       validator: {
         validate: (value: unknown) => urlListProblem(value) === null,
         defaultMessage: (args: ValidationArguments) => `${args.property} ${urlListProblem(args.value) ?? 'is invalid'}`,
+      },
+    });
+  };
+}
+
+/**
+ * A value the committed templates leave behind (`___REPLACE_ME___`, `your_…`,
+ * `CHANGE_ME`) is never a usable token, DSN or key, in any environment: a
+ * placeholder that validates silently becomes "the" secret (roadmap 7.6).
+ */
+export function IsNotPlaceholder(options?: ValidationOptions): PropertyDecorator {
+  return (target, propertyKey) => {
+    registerDecorator({
+      name: 'isNotPlaceholder',
+      target: target.constructor,
+      propertyName: String(propertyKey),
+      options,
+      validator: {
+        validate: (value: unknown) => !isPlaceholderValue(value),
+        defaultMessage: (args: ValidationArguments) => `${args.property} is a template placeholder`,
+      },
+    });
+  };
+}
+
+/** Reason a filesystem root is unfit for production, or `null`. */
+export function productionAbsolutePathProblem(value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim() === '') return 'is not set';
+  if (isPlaceholderValue(value)) return 'is a template placeholder';
+  if (!path.isAbsolute(value)) return `is relative (${JSON.stringify(value)}); a relative root depends on the working directory of whoever starts the process`;
+  return null;
+}
+
+/**
+ * A filesystem root (roadmap 7.5, `STORAGE_ROOT`) that production must set to
+ * an absolute, non-placeholder path. Outside production a relative value is
+ * accepted and resolved once at boot against the working directory (the
+ * committed dev / test templates say `./data/storage`).
+ */
+export function IsProductionAbsolutePath(options?: ValidationOptions): PropertyDecorator {
+  return (target, propertyKey) => {
+    registerDecorator({
+      name: 'isProductionAbsolutePath',
+      target: target.constructor,
+      propertyName: String(propertyKey),
+      options,
+      validator: {
+        validate: (value: unknown) => !isProductionEnv() || productionAbsolutePathProblem(value) === null,
+        defaultMessage: (args: ValidationArguments) =>
+          `${args.property} ${productionAbsolutePathProblem(args.value) ?? 'is invalid'}: production needs an absolute path such as /var/lib/dukaanai/storage`,
       },
     });
   };

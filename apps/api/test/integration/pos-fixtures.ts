@@ -3,17 +3,15 @@
  * against the local MySQL + Redis (apps/api/.env.test) and creates isolated
  * shops so suites never see each other's data.
  */
-import { WorkerHost } from '@nestjs/bullmq';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
-import { ModulesContainer } from '@nestjs/core';
 import { Test, TestingModuleBuilder } from '@nestjs/testing';
-import { QueueBase } from 'bullmq';
 import { Prisma, Role } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { AppModule } from '../../src/app.module';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { TenantContextService } from '../../src/iam/tenant-context/tenant-context.service';
 import { GlobalExceptionFilter } from '../../src/common/filters/global-exception.filter';
+import { waitForQueueConnections } from '../../src/common/lifecycle/queue-readiness';
 import { InventoryDomainService } from '../../src/inventory-domain/services/inventory-domain.service';
 import { InventoryLocationService } from '../../src/inventory-domain/services/inventory-location.service';
 import { BillingActor } from '../../src/billing/billing.types';
@@ -50,28 +48,6 @@ export async function bootApp(
   await app.init();
   await waitForQueueConnections(app);
   return app;
-}
-
-/**
- * `app.init()` returns while every BullMQ queue and worker is still opening its
- * Redis connections (bullmq starts them in the constructor and never awaits
- * them). Closing the app inside that window makes each in-flight connect
- * reject with "Connection is closed", which bullmq re-emits as an 'error'
- * event after its listeners were removed: an unhandled error that fails the
- * suite even though every assertion passed. Defining "booted" as "every queue
- * connection is ready" makes a boot-assert-close suite as deterministic as a
- * long one.
- */
-async function waitForQueueConnections(app: INestApplication): Promise<void> {
-  const ready: Promise<unknown>[] = [];
-  for (const module of app.get(ModulesContainer).values()) {
-    for (const wrapper of module.providers.values()) {
-      const instance: unknown = wrapper.instance;
-      if (instance instanceof QueueBase) ready.push(instance.waitUntilReady());
-      else if (instance instanceof WorkerHost) ready.push(instance.worker.waitUntilReady());
-    }
-  }
-  await Promise.all(ready);
 }
 
 /** Runs `fn` with the query awaited inside the tenant AsyncLocalStorage scope (Prisma promises are lazy). */

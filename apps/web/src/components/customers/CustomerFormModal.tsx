@@ -54,6 +54,14 @@ function optional(value: string): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/**
+ * Edit mode sends the trimmed value even when blank: the API turns '' into
+ * null, so a field can be cleared (roadmap 6.7). Create mode omits blanks.
+ */
+function editable(mode: 'create' | 'edit', value: string): string | undefined {
+  return mode === 'edit' ? value.trim() : optional(value);
+}
+
 interface CustomerFormModalProps {
   isOpen: boolean;
   mode: 'create' | 'edit';
@@ -104,12 +112,12 @@ export function CustomerFormModal({ isOpen, mode, customer, onClose, onSaved }: 
     const payload: CustomerInput = {
       name,
       phone,
-      email: optional(form.email),
-      address: optional(form.address),
-      city: optional(form.city),
-      state: optional(form.state),
+      email: editable(mode, form.email),
+      address: editable(mode, form.address),
+      city: editable(mode, form.city),
+      state: editable(mode, form.state),
       creditLimit,
-      notes: optional(form.notes),
+      notes: editable(mode, form.notes),
     };
 
     setSubmitting(true);
@@ -143,7 +151,7 @@ export function CustomerFormModal({ isOpen, mode, customer, onClose, onSaved }: 
               value={form.name}
               onChange={(e) => update('name', e.target.value)}
               required
-              maxLength={120}
+              maxLength={100}
               autoFocus
               className={inputClass}
               disabled={submitting}
@@ -167,6 +175,7 @@ export function CustomerFormModal({ isOpen, mode, customer, onClose, onSaved }: 
             <label htmlFor="customer-email" className={labelClass}>Email</label>
             <input
               id="customer-email"
+              maxLength={191}
               type="email"
               value={form.email}
               onChange={(e) => update('email', e.target.value)}
@@ -195,6 +204,7 @@ export function CustomerFormModal({ isOpen, mode, customer, onClose, onSaved }: 
           <label htmlFor="customer-address" className={labelClass}>Address</label>
           <textarea
             id="customer-address"
+              maxLength={500}
             value={form.address}
             onChange={(e) => update('address', e.target.value)}
             rows={2}
@@ -210,7 +220,7 @@ export function CustomerFormModal({ isOpen, mode, customer, onClose, onSaved }: 
               id="customer-city"
               value={form.city}
               onChange={(e) => update('city', e.target.value)}
-              maxLength={80}
+              maxLength={100}
               className={inputClass}
               disabled={submitting}
             />
@@ -237,6 +247,7 @@ export function CustomerFormModal({ isOpen, mode, customer, onClose, onSaved }: 
           <label htmlFor="customer-notes" className={labelClass}>Notes</label>
           <textarea
             id="customer-notes"
+              maxLength={1000}
             value={form.notes}
             onChange={(e) => update('notes', e.target.value)}
             rows={2}

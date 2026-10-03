@@ -75,6 +75,10 @@ import { SuppliersModule } from './suppliers/suppliers.module';
 import { ExpensesModule } from './expenses/expenses.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { HealthModule } from './health/health.module';
+import { LifecycleModule } from './common/lifecycle/lifecycle.module';
+import { ObservabilityModule } from './common/observability/observability.module';
+import { RetentionModule } from './common/retention/retention.module';
 
 @Module({
   imports: [
@@ -165,6 +169,13 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     ExpensesModule,
     NotificationsModule,
     DiscoveryModule,
+    // Deployment (roadmap 7.3): probes and shutdown ordering.
+    LifecycleModule,
+    HealthModule,
+    // Observability (roadmap 7.6): /api/metrics and its collectors.
+    ObservabilityModule,
+    // Retention (roadmap 7.8): the nightly purge of expired tokens, DONE outbox rows and old history.
+    RetentionModule,
   ],
   controllers: [AppController],
   providers: [

@@ -25,7 +25,9 @@ function isDukaanUser(u: User): u is DukaanUser {
 // API helper — called from both the Credentials authorize and the Google
 // signIn callback so the backend is always the single source of truth.
 // ---------------------------------------------------------------------------
-const API_URL = clientConfig.NEXT_PUBLIC_API_URL;
+// Server-side calls may take a private route to the API (API_INTERNAL_URL,
+// roadmap 7.3); the public URL is what the browser, and this message, use.
+const API_URL = serverConfig.API_INTERNAL_URL ?? clientConfig.NEXT_PUBLIC_API_URL;
 
 /** Values the committed templates leave behind; a provider registered with them only produces confusing OAuth errors. */
 const PLACEHOLDER = /replace_me|your_|change_?me|placeholder/i;
@@ -38,7 +40,7 @@ export function hasGoogleCredentials<T extends { GOOGLE_CLIENT_ID?: string; GOOG
 }
 
 /** Message surfaced on the login form when the backend cannot be reached. */
-export const API_UNREACHABLE_MESSAGE = `The DukaanAI API at ${API_URL} is unreachable. Make sure the backend server is running, then try again.`;
+export const API_UNREACHABLE_MESSAGE = `The DukaanAI API at ${clientConfig.NEXT_PUBLIC_API_URL} is unreachable. Make sure the backend server is running, then try again.`;
 
 /** Refresh this long before the access token actually expires. */
 const REFRESH_LEEWAY_MS = 60 * 1000;
@@ -64,7 +66,7 @@ function accessTokenExpiryFor(accessToken: string): number {
 async function forwardedClientHeaders(): Promise<Record<string, string>> {
   try {
     const { headers } = await import('next/headers');
-    const forwardedFor = headers().get('x-forwarded-for');
+    const forwardedFor = (await headers()).get('x-forwarded-for');
     return forwardedFor ? { 'X-Forwarded-For': forwardedFor } : {};
   } catch {
     // next/headers unavailable outside a request scope — nothing to forward

@@ -280,9 +280,16 @@ Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
 
 ## 5. Products and search
 
-- `GET /products?q&limit&offset` (limit max 200) returns an array of products
-  with `currentStock`, `gstRate`, `unit`, `sellingPrice`, `mrp`, `barcode`,
-  `type`, `isActive`, `category`.
+- `GET /products?q&limit&offset&categoryId&stock` (limit max 200, default 50)
+  returns an array of products with `currentStock`, `reorderPoint`, `gstRate`,
+  `unit`, `sellingPrice`, `mrp`, `barcode`, `type`, `isActive`, `category`,
+  and describes the page in `X-Total-Count` / `X-Page-Skip` / `X-Page-Take`
+  (roadmap 6.2). `stock` is `out` (no stock), `low` (at or below the
+  product's reorder point) or `in`; services and digital goods are never
+  `out` or `low`. A `limit`/`offset`/`stock` outside its range is 400.
+- `POST /products`: `sku` is optional; without one the API numbers it
+  `SKU-000001`… per shop (`NumberSequence`, entity `PRODUCT_SKU`). A client
+  never invents a SKU or a cost price.
 - `GET /search?q&limit` returns lean results `{ id, name, sku, barcode,
   sellingPrice, mrp, gstRate, cessRate, unit, currentStock, type, isActive,
   imageUrl, categoryName }` ranked by relevance (exact barcode/SKU first,

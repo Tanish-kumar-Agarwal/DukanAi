@@ -174,8 +174,11 @@ test.describe('Dashboard', () => {
   test('a malformed response is an error, never a dashboard of zeros', async ({ page }) => {
     await page.route(/\/api\/dashboard\/summary/, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<html>proxy error</html>' }));
     await page.goto('/dashboard');
-    await expect(page.getByText("Today's figures are unavailable")).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByText(/unexpected response/)).toBeVisible();
+    // Scoped to the page's own alert: in development Next's overlay also
+    // echoes the console.error line, which would match an unscoped locator twice.
+    const banner = page.getByRole('alert').filter({ hasText: "Today's figures are unavailable" });
+    await expect(banner).toBeVisible({ timeout: 60_000 });
+    await expect(banner.getByText(/unexpected response/)).toBeVisible();
   });
 
   test('a section the API reports as failed is marked unavailable, the rest stays', async ({ page }) => {

@@ -7,10 +7,7 @@ import {
   TrendingUp, TrendingDown, Users, Package, Wallet, Download, Calendar, BarChart3,
   PieChart as PieChartIcon, Activity, ChevronDown, FileText, Receipt, Table,
 } from 'lucide-react';
-import {
-  ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip,
-  BarChart, Bar, PieChart, Pie, Cell,
-} from 'recharts';
+import dynamic from 'next/dynamic';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useToast } from '@/components/ui/Toast';
 import { SkeletonBox } from '@/components/ui/Skeleton';
@@ -24,6 +21,12 @@ import {
 import { describeApiError } from '@/lib/api-error';
 import { ErrorState } from '@/components/customers/States';
 import { formatDate, formatMoney, labelFor, PAYMENT_MODE_LABELS, toIsoDate } from '@/components/customers/format';
+
+// recharts is loaded after the shell (roadmap 6.8); each chart shows a placeholder until then.
+const chartLoading = () => <SkeletonBox className="h-full w-full rounded-lg" />;
+const RevenueTrendChart = dynamic(() => import('@/components/analytics/AnalyticsCharts').then((m) => m.RevenueTrendChart), { ssr: false, loading: chartLoading });
+const PaymentModesChart = dynamic(() => import('@/components/analytics/AnalyticsCharts').then((m) => m.PaymentModesChart), { ssr: false, loading: chartLoading });
+const CategorySalesChart = dynamic(() => import('@/components/analytics/AnalyticsCharts').then((m) => m.CategorySalesChart), { ssr: false, loading: chartLoading });
 
 const RANGE_OPTIONS: Array<{ label: string; value: AnalyticsRange; days: number }> = [
   { label: 'Today', value: 'today', days: 1 },
@@ -146,22 +149,6 @@ export default function AnalyticsPage() {
   };
 
   // Custom Tooltip for Recharts
-  const CustomTooltip = ({ active, payload, label }: any) => {
-    if (active && payload && payload.length) {
-      return (
-        <div className="bg-gray-900 border border-gray-700 text-white p-3 rounded-xl shadow-xl">
-          <p className="font-bold text-sm mb-1">{label}</p>
-          {payload.map((entry: any, index: number) => (
-            <p key={index} className="text-xs flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }}></span>
-              {entry.name}: <span className="font-bold">₹{Number(entry.value).toLocaleString('en-IN')}</span>
-            </p>
-          ))}
-        </div>
-      );
-    }
-    return null;
-  };
 
   const paymentModes = (data?.paymentModes ?? []).map((mode, i) => ({
     ...mode,
@@ -340,21 +327,7 @@ export default function AnalyticsPage() {
               </div>
               <div className="h-[300px] w-full">
                 {data.revenueTrend.some((point) => point.sales > 0) ? (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={data.revenueTrend} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="colorSales" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#8B5CF6" stopOpacity={0.3}/>
-                          <stop offset="95%" stopColor="#8B5CF6" stopOpacity={0}/>
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                      <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} dy={10} minTickGap={24} />
-                      <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} tickFormatter={(val) => `₹${val >= 1000 ? `${Math.round(val / 100) / 10}k` : val}`} />
-                      <RechartsTooltip content={<CustomTooltip />} />
-                      <Area type="monotone" dataKey="sales" name="Sales" stroke="#8B5CF6" strokeWidth={3} fillOpacity={1} fill="url(#colorSales)" />
-                    </AreaChart>
-                  </ResponsiveContainer>
+                  <RevenueTrendChart data={data.revenueTrend} />
                 ) : (
                   <div className="h-full flex items-center justify-center rounded-lg border border-dashed border-gray-200 bg-gray-50 text-sm text-gray-500">
                     No completed invoices in this period yet.
@@ -374,25 +347,7 @@ export default function AnalyticsPage() {
               {paymentModes.length > 0 ? (
                 <>
                   <div className="h-[250px] w-full flex justify-center">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={paymentModes}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={60}
-                          outerRadius={90}
-                          paddingAngle={5}
-                          dataKey="value"
-                          stroke="none"
-                        >
-                          {paymentModes.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={entry.color} />
-                          ))}
-                        </Pie>
-                        <RechartsTooltip formatter={(value: number, name: string) => [`${value}%`, name]} />
-                      </PieChart>
-                    </ResponsiveContainer>
+                    <PaymentModesChart data={paymentModes} />
                   </div>
                   <div className="grid grid-cols-2 gap-y-3 mt-4">
                     {paymentModes.map((mode, i) => (
@@ -420,19 +375,7 @@ export default function AnalyticsPage() {
               </div>
               <div className="h-[300px] w-full">
                 {categorySales.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={categorySales} layout="vertical" margin={{ top: 0, right: 30, left: 20, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
-                      <XAxis type="number" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b' }} />
-                      <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#334155', fontWeight: 600 }} width={100} />
-                      <RechartsTooltip formatter={(value: number, _name: string, item: any) => [`${value}% (₹${Number(item?.payload?.amount ?? 0).toLocaleString('en-IN')})`, 'Share']} cursor={{fill: '#f8fafc'}} />
-                      <Bar dataKey="value" name="Sales (%)" radius={[0, 4, 4, 0]} barSize={24}>
-                        {categorySales.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
+                  <CategorySalesChart data={categorySales} />
                 ) : (
                   <div className="h-full flex items-center justify-center rounded-lg border border-dashed border-gray-200 bg-gray-50 text-sm text-gray-500">
                     Category sales appear after the first completed invoice.
