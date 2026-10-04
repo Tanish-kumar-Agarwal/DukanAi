@@ -280,6 +280,8 @@ export class InventoryDomainService {
    */
   async getAdjustmentHistory(inventoryItemId: string) {
     const shopId = this.tenantContext.getShopId();
+    // An unknown or foreign item is 404, not an empty list (phase 4 gate: ids answer like every other route).
+    await assertOwned(this.prisma, 'inventoryItem', inventoryItemId, shopId, { isDeleted: false });
     return this.prisma.inventoryAdjustment.findMany({
       where: { inventoryItemId, shopId },
       orderBy: { createdAt: 'desc' },

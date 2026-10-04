@@ -141,8 +141,8 @@ export class OutboxClaimService {
   }
 
   /** Operator recovery: a FAILED row goes back to PENDING under a fresh job id. */
-  async retryFailed(shopId: string, id: string): Promise<boolean> {
-    const updated = await this.prisma.outboxEvent.updateMany({
+  async retryFailed(shopId: string, id: string, db: Pick<PrismaService, 'outboxEvent'> = this.prisma): Promise<boolean> {
+    const updated = await db.outboxEvent.updateMany({
       where: { id, shopId, status: 'FAILED' },
       data: { status: 'PENDING', claimedAt: null, nextAttemptAt: null, error: null, retryCount: { increment: 1 } },
     });

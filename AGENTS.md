@@ -70,8 +70,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - `Shop.ownerId` and `User.shopId` are mutually-required foreign keys; creating
   the pair needs FK checks deferred within the transaction (MySQL). See
   `AuthBypassService.provisionSystemUser`.
-- The `archiver` dependency is ESM-only; jest maps it to
-  `apps/api/test/stubs/archiver.stub.js` in the e2e/integration configs.
+- `archiver` is pinned to the 7.x line (CommonJS, `archiver('zip', …)`, the
+  API the code and `@types/archiver` 7 target). 8.0 is ESM-only and exports
+  classes, so `POST /storage/backup` crashed in the built API while a jest
+  stub hid it; the stub is gone and every test, unit and integration, builds
+  a real zip. Never map a production dependency to a fake in jest.
 - MySQL `LIKE` is case-insensitive: outbox relays partition event types with
   `LIKE BINARY` (`'Invoice%'` must not match `'INVOICE_CREATED'`).
 - Prisma promises are lazy: code that relies on the tenant AsyncLocalStorage
@@ -434,6 +437,24 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `INSERT ... ON DUPLICATE KEY UPDATE` (`engines/batch-write.ts`, 500 rows);
   never write these tables one upsert per product. The forecast stub is out
   of the chain (dashboard insights compute their own forecast live).
+
+- Phase 4 exit gate: `test/integration/route-walker.integration-spec.ts`
+  enumerates every handler from the Nest discovery metadata (the source
+  `RouteAuthorizationAssertion` uses) and walks it as nobody, a VIEWER, the
+  OWNER and another shop's OWNER with an empty body and random ids: never a
+  5xx, 401 everywhere but `@Public`, 403 for the VIEWER on every role-gated
+  write, no 2xx for a foreign id (the barcode render route is the recorded
+  exception: it reads no row). A client-facing condition on a request path
+  is an `HttpException` with a `code` (`NotFoundException` for an unknown or
+  foreign id, `ConflictException` for a wrong state, a validated DTO for a
+  missing parameter); a plain `Error` is for invariants only and the walker
+  fails on it. The first walk found four: the barcode search query was
+  unvalidated, the ledger integrity and purchase draft services threw plain
+  errors for not-found, and the backup route crashed on the archiver import.
+  `POST /purchase-events/retry/:id` was a stub that answered success without
+  touching anything; it now resets the FAILED outbox row through
+  `OutboxClaimService.retryFailed` and resolves the dead letter in one
+  transaction (404 / 409 otherwise).
 
 ## Denial of service and performance (roadmap phase 5)
 
@@ -889,9 +910,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   Billing evidence is written once: every target is checked, then created
   with the `wx` flag; a repeat is 409 `STORAGE_EVIDENCE_EXISTS` and nothing
   is replaced or partially written; statements get a unique file name per
-  generation. `test/stubs/archiver.stub.js` is a functional fake (placeholder
-  payload, real stream close) mapped in every jest config, so the backup
-  flow runs in tests. `src/storage/storage.service.spec.ts` (temp root) and
+  generation. The backup flow runs against the real `archiver` in every
+  jest config (the former stub masked a broken import, phase 4 gate). `src/storage/storage.service.spec.ts` (temp root) and
   `test/integration/storage.integration-spec.ts` cover the row.
 
 ## Observability, backups and retention (roadmap 7.6, 7.7, 7.8)

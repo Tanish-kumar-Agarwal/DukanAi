@@ -133,6 +133,9 @@ export class ProductMediaService {
    */
   async getGallery(shopId: string, productId?: string, variantId?: string, query?: ListQueryDto) {
     if (!productId && !variantId) throw new NotFoundException('Must provide productId or variantId');
+    // The gallery of an unknown or foreign product is 404, not an empty page (phase 4 gate).
+    await assertOwned(this.prisma, 'product', productId, shopId);
+    await assertOwned(this.prisma, 'productVariant', variantId, shopId);
     const { skip, take } = pageArgs(query);
     const where = { shopId, productId, variantId };
     const [rows, total] = await Promise.all([

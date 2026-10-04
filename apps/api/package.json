@@ -50,7 +50,7 @@
     "@nestjs/websockets": "^11.1.21",
     "@prisma/client": "6.19.3",
     "@sentry/node": "^11.4.0",
-    "archiver": "^8.0.0",
+    "archiver": "^7.0.1",
     "axios": "^1.20.0",
     "bcrypt": "^6.0.0",
     "bullmq": "^5.78.0",
@@ -144,9 +144,6 @@
     "testEnvironment": "node",
     "setupFilesAfterEnv": [
       "<rootDir>/test/jest-unit.setup.ts"
-    ],
-    "moduleNameMapper": {
-      "^archiver$": "<rootDir>/test/stubs/archiver.stub.js"
-    }
+    ]
   }
 }

@@ -51,6 +51,34 @@ UTC; p95 in ms):
 
 The API log of the run holds no error, no rollback and no lock-wait retry.
 
+## Re-run after phases 7 and 8 (2026-10-04, commit b7d9183)
+
+The checkout transaction changed after the baseline (roadmap 8.2 moved its
+raw SQL onto the application clock, 7.6 wrapped it with the
+`checkoutDurationSeconds` timer), so the scenario was run again on the same
+machine class with `load/run.sh`, unchanged, against the integration
+database as it stood after every suite of phases 5-8 had written to it (far
+more rows than the baseline run saw) and with a second MySQL 8 server
+running on the host for the drift checks.
+
+| Endpoint | Requests | 2xx | Errors | 5xx | Error rate | p50 ms | p95 ms | p99 ms | max ms |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| checkout | 953 | 953 | 0 | 0 | 0.00 % | 210.6 | **361.5** | 478.3 | 645 |
+| dashboard-summary | 1902 | 1902 | 0 | 0 | 0.00 % | 30.9 | **59.7** | 77.5 | 132 |
+| login | 185 | 185 | 0 | 0 | 0.00 % | 127.8 | **252.2** | 415.8 | 484 |
+
+3,040 requests, 3,040 responses, 0 transport errors, 0 non-2xx, 0 5xx,
+48.0 req/s over the busiest five 10 s windows, 3,040 virtual users created
+and completed. **Gate: PASS** (`summarize.mjs`). The checkout p95 is higher
+than the baseline's 214.9 ms; the data volume and the second database
+server are the visible differences, and the gate margin (500 ms) holds with
+room. Compare the next run against this row, not the 2026-09-29 one.
+
+The upload half was re-run the same day (`load/upload-gate.sh`, 12 x 300 MB):
+12 x HTTP 413 in 0.31-0.55 s, RSS 256.8 MB before, 292.4 MB peak, 277.8 MB
+after (growth 21.0 MB, allowed 64 MB), 0 temp files left, the 5 KB control
+PNG answered 201. **Upload gate: PASS.**
+
 ## Environment
 
 The numbers are from a development container, not production hardware,

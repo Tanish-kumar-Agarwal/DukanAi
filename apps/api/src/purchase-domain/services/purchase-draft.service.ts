@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PurchaseAuditService } from './purchase-audit.service';
 import { Prisma } from '@prisma/client';
@@ -41,11 +41,15 @@ export class PurchaseDraftService {
 
     const currentPo = await tx.purchaseOrder.findUnique({ where: { id: purchaseOrderId } });
     if (!currentPo || currentPo.shopId !== shopId) {
-      throw new Error('Purchase Order not found.');
+      throw new NotFoundException({ message: 'Purchase order not found', code: 'PURCHASE_ORDER_NOT_FOUND' });
     }
 
     if (currentPo.status !== 'DRAFT') {
-      throw new Error('Can only modify Purchase Orders in DRAFT status.');
+      throw new ConflictException({
+        message: `Only a DRAFT purchase order can be edited; this one is ${currentPo.status}.`,
+        code: 'PURCHASE_ORDER_STATE_CONFLICT',
+        details: { status: currentPo.status },
+      });
     }
 
     const updatedPo = await tx.purchaseOrder.update({

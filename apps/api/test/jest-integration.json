@@ -15,9 +15,6 @@
   ],
   "testTimeout": 120000,
   "maxWorkers": 1,
-  "moduleNameMapper": {
-    "^archiver$": "<rootDir>/test/stubs/archiver.stub.js"
-  },
   "forceExit": true,
   "globalSetup": "<rootDir>/test/jest-integration.global-setup.ts"
 }

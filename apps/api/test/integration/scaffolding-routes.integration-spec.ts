@@ -74,7 +74,8 @@ describe('scaffolding routes (roadmap 4.1): media, validation, identity, imports
       expect(viewerUpload.status).toBe(403);
       const foreignUpload = await request(app.getHttpServer()).post(`/api/media/upload/product/${productA}`).set('Authorization', `Bearer ${foreignToken}`).attach('file', PNG, { filename: 'a.png', contentType: 'image/png' });
       expect(foreignUpload.status).toBe(404);
-      expect((await foreign.get(`/api/media/product/${productA}`)).body).toEqual([]);
+      // A foreign product's gallery is 404, never an empty page (phase 4 gate: ids answer like every other route).
+      expect((await foreign.get(`/api/media/product/${productA}`)).status).toBe(404);
       expect((await owner.get(`/api/media/variant/${variantA}`)).status).toBe(200);
     });
 
