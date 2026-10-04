@@ -58,8 +58,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - MySQL treats NULLs as distinct in unique indexes: a unique key that includes
   a nullable column (`deletedAt`, `variantId`) never blocks duplicates. Never
   rely on such a key; `InventoryItem` carries `variantKey = variantId ?? '-'`
-  for its real unique index, and the default warehouse/bin bootstrap runs
-  under a `SELECT ... FOR UPDATE` on the Shop row.
+  for its real unique index (`PurchaseCategorySpendSnapshot.departmentKey` and
+  `PriceListItem.variantKey` follow the same pattern, migration
+  `20261004120000`), and the default warehouse/bin bootstrap runs under a
+  `SELECT ... FOR UPDATE` on the Shop row. `src/prisma/schema-conventions.spec.ts`
+  lists every unique key that still contains a nullable column with the reason
+  NULL means "absent" there (optional identifiers, optional idempotency keys,
+  optional 1:1 pointers, the `Shift.openToken` partial key); a new one fails
+  the spec until it is either given a token column or added there with its
+  reason. Writers set the nullable column and its token together.
 - `Shop.ownerId` and `User.shopId` are mutually-required foreign keys; creating
   the pair needs FK checks deferred within the transaction (MySQL). See
   `AuthBypassService.provisionSystemUser`.
@@ -1030,6 +1037,16 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   their defaults; `apps/web/.env.example` adds `API_INTERNAL_URL`,
   `NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED` (the Google button is hidden until it is
   `true`) and `NEXT_STANDALONE`.
+- Phase 8 exit gate: `prisma migrate diff` is zero on MySQL 8 and MariaDB
+  after every migration (CI runs it on MySQL 8), and the schema lint is
+  `schema-conventions.spec.ts` in `npm test`: every `shopId` has a Shop
+  foreign key and no unique key relies on a nullable column except the
+  recorded exceptions. Migration `20261004120000_unique_key_tokens` moved the
+  two keys that used a nullable dimension onto NOT NULL tokens, creating the
+  new index before dropping the old one (the foreign key on the leading
+  column needs an index at all times, MySQL error 1553), normalising the
+  snapshot writer's `''` sentinel to NULL + `'-'` and reducing colliding rows
+  to one survivor.
 - 8.6 docs: the two claims the audit flagged in this file are now true and
   guarded. Cron env: `CronConfig` is hydrated from `CRON_*` through
   `hydrateFromEnv`, the integration setup sets `CRON_ENABLED=false`, and

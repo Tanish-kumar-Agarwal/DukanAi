@@ -7,8 +7,15 @@ import { GLOBAL_MODELS } from './tenant-scope';
  * migration: every tenant model is a Shop relation (the foreign key is the
  * isolation guard), every owning relation says what a delete does, no
  * implicit many-to-many table (no primary key, no shop column), stock
- * quantities share one width, free-text columns are TEXT, and money
- * defaults to the rupee.
+ * quantities share one width, free-text columns are TEXT, money defaults to
+ * the rupee, and no unique key relies on a nullable column (phase 8 exit
+ * gate): MySQL never compares NULLs in a unique index, so such a key admits
+ * any number of rows whose nullable part is NULL. A key whose nullable column
+ * is a real dimension of the row carries a NOT NULL `*Key` token instead
+ * (`InventoryItem.variantKey`, `PurchaseCategorySpendSnapshot.departmentKey`,
+ * `PriceListItem.variantKey`). The remaining nullable keys are listed below
+ * with the reason NULL means "absent" there; adding one is a design decision
+ * that belongs in this list with its reason, never a silent schema edit.
  */
 const models = Prisma.dmmf.datamodel.models;
 const model = (name: string) => {
@@ -17,7 +24,62 @@ const model = (name: string) => {
   return found;
 };
 
+/** Unique keys that deliberately include a nullable column, and why NULL is right there. */
+const NULLABLE_UNIQUE_KEYS: Record<string, string> = {
+  'Shift(shopId,openedById,openToken)': "the partial key of roadmap 8.3: 'OPEN' while open, NULL once closed, so one open shift per cashier",
+  'User(googleId)': 'optional identity: present only for Google accounts, unique when present',
+  'Shop(ownerId)': 'optional 1:1 pointer, set once the owner row exists (Shop.ownerId and User.shopId are created as a deferred pair)',
+  'Product(currentPublishedRevId)': 'optional 1:1 pointer to the published revision',
+  'Product(currentDraftRevId)': 'optional 1:1 pointer to the draft revision',
+  'Product(shopId,barcode,deletedToken)': 'optional identifier: products without a barcode are many, a present barcode is unique per shop',
+  'ProductVariant(shopId,barcode,deletedToken)': 'optional identifier: variants without a barcode are many, a present barcode is unique per shop',
+  'ProductIdentity(globalProductId)': 'optional external identifier, unique when present',
+  'ProductIdentity(internalProductId)': 'optional internal identifier, unique when present',
+  'SupplierPayment(shopId,idempotencyKey)': 'optional idempotency key: a request without one is never replayed by design',
+  'UdharTransaction(shopId,idempotencyKey)': 'optional idempotency key: a request without one is never replayed by design',
+  'PurchaseCategorySpendSnapshot(shopId,categoryId,departmentId)': 'REPLACED by departmentKey (migration 20261004120000); listed so a revert fails',
+  'PriceListItem(versionId,productId,variantId)': 'REPLACED by variantKey (migration 20261004120000); listed so a revert fails',
+};
+
+/** Nullable column -> the NOT NULL token that carries the unique key instead. */
+const TOKEN_KEYS: Array<[model: string, nullable: string, token: string]> = [
+  ['InventoryItem', 'variantId', 'variantKey'],
+  ['PurchaseCategorySpendSnapshot', 'departmentId', 'departmentKey'],
+  ['PriceListItem', 'variantId', 'variantKey'],
+];
+
+function nullableUniqueKeys(): string[] {
+  const found: string[] = [];
+  for (const m of models) {
+    const byName = new Map(m.fields.map((f) => [f.name, f]));
+    const keys = [...m.uniqueFields, ...m.fields.filter((f) => f.isUnique).map((f) => [f.name])];
+    for (const key of keys) {
+      if (key.some((name) => !byName.get(name)?.isRequired)) found.push(`${m.name}(${key.join(',')})`);
+    }
+  }
+  return found.sort();
+}
+
 describe('schema conventions (roadmap 8.1)', () => {
+  it('no unique key relies on a nullable column unless its reason is recorded here (phase 8 exit gate)', () => {
+    const found = nullableUniqueKeys();
+    const unexplained = found.filter((k) => !(k in NULLABLE_UNIQUE_KEYS) || NULLABLE_UNIQUE_KEYS[k].startsWith('REPLACED'));
+    expect(unexplained).toEqual([]);
+    const stale = Object.keys(NULLABLE_UNIQUE_KEYS).filter((k) => !NULLABLE_UNIQUE_KEYS[k].startsWith('REPLACED') && !found.includes(k));
+    expect(stale).toEqual([]);
+  });
+
+  it.each(TOKEN_KEYS)('%s.%s is mirrored by the NOT NULL token %s that carries the unique key', (modelName, nullable, token) => {
+    const m = model(modelName);
+    const nullableField = m.fields.find((f) => f.name === nullable);
+    const tokenField = m.fields.find((f) => f.name === token);
+    expect(nullableField?.isRequired).toBe(false);
+    expect(tokenField?.isRequired).toBe(true);
+    expect(tokenField?.default).toBe('-');
+    expect(m.uniqueFields.some((key) => key.includes(token))).toBe(true);
+    expect(m.uniqueFields.some((key) => key.includes(nullable))).toBe(false);
+  });
+
   it('every model with a shopId column has a relation to Shop', () => {
     const missing = models
       .filter((m) => !GLOBAL_MODELS.has(m.name) && m.fields.some((f) => f.name === 'shopId'))

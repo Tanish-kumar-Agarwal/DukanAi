@@ -2927,6 +2927,9 @@ model PurchaseCategorySpendSnapshot {
   shopId       String
   categoryId   String
   departmentId String?
+  /// `departmentId ?? '-'`: the unique key needs a NOT NULL column because MySQL
+  /// never compares NULLs in a unique index (phase 8 exit gate). Writers set both.
+  departmentKey String @default("-")
 
   totalSpend Decimal @default(0) @db.Decimal(15, 2)
   growthPct  Decimal @default(0) @db.Decimal(5, 2)
@@ -2935,7 +2938,7 @@ model PurchaseCategorySpendSnapshot {
 
   shop Shop @relation(fields: [shopId], references: [id], onDelete: Restrict)
 
-  @@unique([shopId, categoryId, departmentId])
+  @@unique([shopId, categoryId, departmentKey])
 }
 
 model PurchaseAnalyticsJob {
@@ -5135,6 +5138,9 @@ model PriceListItem {
   shopId    String
   productId String
   variantId String?
+  /// `variantId ?? '-'` (see InventoryItem.variantKey): carries the unique key
+  /// because MySQL never compares NULLs in a unique index. Writers set both.
+  variantKey String @default("-")
   basePrice Decimal  @db.Decimal(15, 4)
   createdAt DateTime @default(now())
 
@@ -5142,7 +5148,7 @@ model PriceListItem {
   shop    Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
   tiers   PricingTier[]
 
-  @@unique([versionId, productId, variantId])
+  @@unique([versionId, productId, variantKey])
   @@index([shopId, productId])
 }
 
