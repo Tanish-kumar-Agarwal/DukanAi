@@ -1030,6 +1030,22 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   their defaults; `apps/web/.env.example` adds `API_INTERNAL_URL`,
   `NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED` (the Google button is hidden until it is
   `true`) and `NEXT_STANDALONE`.
+- 8.6 docs: the two claims the audit flagged in this file are now true and
+  guarded. Cron env: `CronConfig` is hydrated from `CRON_*` through
+  `hydrateFromEnv`, the integration setup sets `CRON_ENABLED=false`, and
+  `test/integration/scheduler-{disabled,enabled}.integration-spec.ts` assert
+  both switch positions. Boot failures: every refusal throws, `bootstrap()
+  .catch` writes the reason to stderr with `fs.writeSync`, and
+  `test/boot-regression.e2e-spec.ts` asserts the message for each case (the
+  only other `process.exit` is the shutdown watchdog, after a logged timeout).
+  `docs/POS_BILLING_CONTRACT.md` documents no route phase 4 removed; it now
+  names the detached surface (conventions), the outbox lifecycle and the
+  `/sales/events` operator routes (§7). `docs/architecture/
+  environment-architecture.md` (ENV-1) and `ENVIRONMENT_REQUIREMENTS.md` are
+  rewritten against the code (no Joi, no refresh secret, committed templates,
+  8 queues); `TECH_STACK_ARCHITECTURE.md` keeps the original rationale under
+  a status banner. A doc that describes the platform points at
+  `.env.example`, this file and the contract rather than repeating them.
 - 8.3 shifts: `Shift.openToken` is `'OPEN'` while open and NULL once closed,
   and `@@unique([shopId, openedById, openToken])` is the guard
   (`20261004090000_shift_open_token`: adds the column, closes older duplicate

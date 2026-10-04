@@ -9,7 +9,7 @@ This checklist enforces the exact execution order required to deploy Epic 1 safe
 - [ ] Verify `JWT_SECRET` (32+ characters, no template value), `JWT_EXPIRES_IN`, `JWT_REFRESH_EXPIRES_IN` and `SESSION_ABSOLUTE_LIFETIME` are set; there is no refresh secret (refresh tokens are opaque and stored hashed).
 - [ ] Configure `NEXTAUTH_SECRET` and `NEXTAUTH_URL` in the web application.
 - [ ] If Google OAuth is enabled, set `GOOGLE_CLIENT_ID` in both applications, `GOOGLE_CLIENT_SECRET` in the web application, and add `https://YOUR_WEB_ORIGIN/api/auth/callback/google` to Google Cloud's authorized redirect URIs.
-- [ ] Verify `NODE_ENV=production` to disable Swagger and SQL query logging.
+- [ ] Verify `NODE_ENV=production` (disables Swagger and query logging; production also refuses `LOG_LEVEL=debug`, a relative `STORAGE_ROOT`, a placeholder `SENTRY_DSN` and `AUTH_DISABLED`).
 
 ## Phase 2: Database Orchestration
 - [ ] Halt all cron workers and BullMQ consumers in the existing environment.
@@ -35,7 +35,7 @@ This checklist enforces the exact execution order required to deploy Epic 1 safe
 - [ ] Authenticate and obtain a JWT token.
 - [ ] Send a POST to `/api/billing/invoice` with valid data.
   - Verify the response contains an invoice with items.
-  - Verify `LedgerTransaction` table has exactly 2 entries (DEBIT + CREDIT) for this invoice.
+  - Verify one `LedgerPosting` header with `sourceType = 'SALE'` and the invoice id exists, and that its `LedgerTransaction` rows balance (Σ debits = Σ credits: CASH/BANK or ACCOUNTS_RECEIVABLE and COST_OF_GOODS against SALES_REVENUE, GST_PAYABLE and INVENTORY; see docs/POS_BILLING_CONTRACT.md §9).
   - Verify `OutboxEvent` was created with status `PENDING`, then processed to `DONE`.
 - [ ] Fire a test POST with a `VIEWER` role token.
   - Verify HTTP 403 Forbidden is returned.

@@ -16,6 +16,15 @@ Conventions
 - Business day and financial year are computed in the shop timezone
   (`ShopSettings.timezone`, default `Asia/Kolkata`). Financial year runs
   April to March.
+- Removed surface (roadmap 4.5, 4.7): the parallel stacks that once answered
+  `/invoices/generate`, `/returns/initiate`, `/payments/capture`,
+  `/sales/orders`, `/sales/workflow`, `/pricing/simulate`, `/events/replay`
+  and the duplicate `/events/webhooks` are detached from the application and
+  answer 404, and the `sales-events` / `sales-webhooks` queues are gone.
+  `/billing/*` is the only sale, return and cancellation path,
+  `POST /customers/:id/payments` the only repayment path, and `/webhooks` +
+  `/events` (product events) the only webhook path. `GET /sales/events` (§7)
+  is the operator view of the outbox and the one route left under `/sales`.
 
 ## 1. Shared math engine (`@dukaanai/invoice-math`)
 
@@ -383,6 +392,21 @@ All payloads carry `eventId`, `correlationId`, `shopId`, `userId`, `createdAt`.
 - `INVOICE_CANCELLED`: `{ invoiceId, invoiceNumber, amount, items: [...] }`
 - `CUSTOMER_PAYMENT_RECORDED`: `{ customerId, transactionId, amount, tender }`
 
+Lifecycle (roadmap 4.7): a row is staged `PENDING` inside the business
+transaction. After the commit the system-events relay claims a batch
+(`CLAIMED`, one `READ COMMITTED` transaction with `FOR UPDATE SKIP LOCKED`),
+enqueues it, and the `system-events` worker ends it: `DONE`, or `PENDING`
+again with an exponential backoff (`EVENTS_OUTBOX_RETRY_BACKOFF_MS`, capped by
+`EVENTS_OUTBOX_RETRY_BACKOFF_MAX_MS`) until `EVENTS_OUTBOX_MAX_RETRIES`
+attempts are spent, then `FAILED`. A claim no worker finished within
+`EVENTS_OUTBOX_STALE_CLAIM_MS` is reaped back to `PENDING`.
+
+Operator routes: `GET /sales/events?status=` lists the shop's rows, newest
+first (`SALES_RECENT_EVENTS_LIMIT`); `GET /sales/events/:id` returns one
+(`404 OUTBOX_EVENT_NOT_FOUND`); `POST /sales/events/retry { eventId }`
+(`MANAGER`+) resets a `FAILED` row to `PENDING` under a fresh job id, and is
+`409 OUTBOX_EVENT_NOT_FAILED` for any other status.
+
 ## 8. Shop
 
 `GET /shops/me` returns `{ id, name, address, city, state, pincode, phone,
@@ -456,9 +480,11 @@ costing layer.
 - Redis stock keys are advisory. The sale path may pre-decrement them, the
   database decides, and every rejected or failed request restores its
   decrement. Redis being down or wrong never blocks or corrupts a sale.
-- Outbox rows are staged inside the business transaction and relayed to
-  BullMQ afterwards; the processor is idempotent per event id (audit marker
-  inside its own transaction), so a duplicate delivery is a no-op.
+- Outbox rows are staged inside the business transaction and claimed by the
+  relay after the commit (§7); the `system-events` worker is idempotent per
+  event id (audit marker inside its own transaction), so a duplicate
+  delivery is a no-op, and a row is never marked `DONE` before the worker
+  has finished it.
 - Post-commit work (Redis sync, websockets, low-stock notifications) is
   best-effort and never changes money or stock.
 - `BillingCheckpoints` names sixteen points inside these transactions
