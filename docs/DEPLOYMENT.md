@@ -113,7 +113,7 @@ Web:
 | `NEXT_PUBLIC_API_URL` | build (inlined) and runtime (CSP `connect-src`) | the API as the browser reaches it |
 | `API_INTERNAL_URL` | runtime, optional | the API as the web server reaches it (sign-in, refresh); defaults to the public URL |
 | `NEXTAUTH_SECRET`, `NEXTAUTH_URL` | runtime | 32+ character secret; the web's public origin |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | runtime, optional | Google sign-in is registered only with real values |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED` | runtime, optional (the flag is inlined at build) | Google sign-in is registered only with real values; the button shows only when the flag is `true` at build time |
 
 `NEXT_PUBLIC_AUTH_DISABLED` and `AUTH_DISABLED` are never set in a container:
 both builds and the API refuse them under `NODE_ENV=production`.

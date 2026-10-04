@@ -103,10 +103,10 @@ the rules; `severity` is `critical` for the two the roadmap requires and
 | `DukaanAiHigh5xxRate` | > 1 % of answers are 5xx over 5 min, with traffic | JSON logs: `"statusCode":500` lines carry the correlation id; the error tracker has the stack. A 503 wave means readiness is failing (database / Redis down or an instance draining too long). |
 | `DukaanAiUnhandledErrors` | > 5 tracked errors in 15 min | same as above when the ratio alert is quiet (low traffic). |
 | `DukaanAiLedgerPostingFailures` | any posting threw in 10 min | `Unbalanced ledger posting` in the logs is a code defect (money math changed outside `@dukaanai/invoice-math`); a database error means the sale / return / receipt rolled back and the client saw an error. The ledger stayed consistent: nothing was written. |
-| `DukaanAiCheckoutSlow` | completed-checkout p95 > 500 ms for 10 min | MySQL lock waits (one shop bills serially: shift, number sequence and product rows are locked in order), `PRISMA_SLOW_QUERY_THRESHOLD` log lines, Redis latency, CPU of the instance. Re-run the load test after a fix (`apps/api/load`). |
+| `DukaanAiCheckoutSlow` | completed-checkout p95 > 500 ms for 10 min | MySQL lock waits (one shop bills serially: shift, number sequence and product rows are locked in order), the MySQL slow query log, Redis latency, CPU of the instance. Re-run the load test after a fix (`apps/api/load`). |
 | `DukaanAiOutboxLag` | oldest waiting outbox row > 5 min for 10 min | `CRON_ENABLED` must be true on at least one instance; the relay crons run under Redis locks (`cron:*`), so a dead pod's lock expires after its TTL. Check `queue_jobs{state="active"}` for a stuck worker and Redis. |
 | `DukaanAiOutboxFailedRows` | FAILED rows for 15 min | `GET /sales/events?status=FAILED` lists them with their last error; fix the cause (a webhook target, a listener bug) and `POST /sales/events/retry` with the id. |
-| `DukaanAiQueueBacklog` | > 1000 waiting jobs on a queue for 15 min | the worker is not keeping up (raise `QUEUE_CONCURRENCY`, add an instance) or is crashing on every job (its errors are in the logs). |
+| `DukaanAiQueueBacklog` | > 1000 waiting jobs on a queue for 15 min | the worker is not keeping up (add an API instance: every instance runs every worker) or is crashing on every job (its errors are in the logs). |
 | `DukaanAiQueueFailedJobs` | failed jobs on a queue for 30 min | the failed set in Redis holds the job data and the last error; outbox-backed jobs also marked their row FAILED (above). |
 
 ## Verification

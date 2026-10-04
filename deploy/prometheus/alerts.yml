@@ -68,7 +68,7 @@ groups:
           severity: warning
         annotations:
           summary: "Checkout p95 above 500 ms"
-          description: "The 95th percentile of completed checkouts is {{ $value | humanizeDuration }} over 10 minutes (baseline: under 500 ms at 3x peak). Check MySQL lock waits (one shop bills serially by design), slow queries (PRISMA_SLOW_QUERY_THRESHOLD) and Redis latency."
+          description: "The 95th percentile of completed checkouts is {{ $value | humanizeDuration }} over 10 minutes (baseline: under 500 ms at 3x peak). Check MySQL lock waits (one shop bills serially by design), the MySQL slow query log and Redis latency."
 
       # ---- outbox -------------------------------------------------------
       # The relays claim PENDING rows every few seconds; a row older than five
@@ -100,7 +100,7 @@ groups:
           severity: warning
         annotations:
           summary: "BullMQ queue {{ $labels.queue }} has a backlog"
-          description: "{{ $value }} jobs are waiting on {{ $labels.queue }} for 15 minutes: the worker is not keeping up or not running. Check QUEUE_CONCURRENCY and the worker's errors in the logs."
+          description: "{{ $value }} jobs are waiting on {{ $labels.queue }} for 15 minutes: the worker is not keeping up or not running. Check the worker's errors in the logs and add an API instance."
 
       - alert: DukaanAiQueueFailedJobs
         expr: max by (queue) (queue_jobs{job="dukaanai-api", state="failed"}) > 0

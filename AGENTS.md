@@ -8,9 +8,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - `nest build` uses `tsconfig.build.json` (`include: ["src/**/*"]`), so the
   entrypoint compiles to `dist/main.js` and `start:prod` is `node dist/main`.
-  If the root-level `check-db.ts` (or any other root-level script) ever gets
-  pulled into the build, tsc widens rootDir and the output moves to `dist/src/main.js`;
-  `test/boot-regression.e2e-spec.ts` guards the script/output agreement.
+  If a root-level `.ts` file ever gets pulled into the build (`tsconfig.json`
+  excludes `*.ts` at the root for that reason; the one that existed,
+  `check-db.ts`, is gone), tsc widens rootDir and the output moves to
+  `dist/src/main.js`; `test/boot-regression.e2e-spec.ts` guards the
+  script/output agreement. `scripts/**/*.ts` is type-checked and linted but
+  never built.
 - Boot failures are surfaced via `abortOnError: false` + a `bootstrap().catch`
   in `src/main.ts` that writes to stderr. `bufferLogs: true` otherwise swallows
   pre-logger crashes into a silent `exit(1)` (and `process.exit` truncates
@@ -20,6 +23,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `src/config/domains/*` (see `EnterpriseConfigModule`), NOT Joi. All domains
   are `useFactory`-provided; the `@ConfigDomain` metadata lives on the injection
   token, which `ConfigurationRegistryService` must read (not `wrapper.metatype`).
+  Every provided domain declares at least one `@EnvVariable`, every variable
+  is documented in `apps/api/.env.example`, and no template carries a variable
+  nothing reads: `src/config/env-example.spec.ts` fails otherwise (roadmap 8.5).
+  A new setting is a property on an existing domain or a new domain with a
+  consumer, plus a commented line in `.env.example`; a setting nobody reads is
+  deleted, not kept "for later".
   `@IsOptional` does not skip `NaN`: a numeric env var set to a non-number fails
   boot, so `.env.production` carries real numeric defaults and only secrets and
   endpoints are placeholders. The web `.env.production` must likewise hold
@@ -964,7 +973,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   job and overrides its cron; `test/integration/retention.integration-spec.ts`
   seeds every table on both sides of each window.
 
-## Data model (roadmap phase 8)
+## Data model, scripts and config (roadmap phase 8)
 
 - 8.1 (`20261003130000_data_model_integrity`): every model with a `shopId`
   column (except `GLOBAL_MODELS`) is a `shop Shop @relation(...)`, the 65
@@ -996,6 +1005,31 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   sql-clock.spec.ts` scans `src/` for any database clock function and fails
   on one (comments included: say "the database clock"). Migrations have no
   application clock; when one must stamp rows it uses `UTC_TIMESTAMP(3)`.
+- 8.4 scripts: `scripts/migrate-storage.ts` (`npm run storage:migrate-legacy
+  -- --shop <shopId> [--yes]`) moves the pre-tenant `Customers/<name>` folders
+  into `<shopId>/Customers/<customerId>`, one shop per run, names resolved
+  inside that shop only, ambiguous or unknown names left for the operator,
+  dry run unless `--yes`, manifest in the shop's `System/`. The root-level
+  `check-db.ts` (dumped every customer of every shop) and the `verify-exec006*`
+  certification scripts are gone. Stock authority is a unit spec,
+  `src/inventory-domain/inventory-authority.spec.ts` (replaces the never-run
+  `ci/check-inventory-authority.ts`): any Prisma or raw write to InventoryItem,
+  InventoryLog or `currentStock` outside `InventoryMutationEngine` (and the
+  recon repair) fails `npm test`; extend its allowlist only with a reason.
+  `npm run clean` at the root is a turbo task (`dist`, `coverage`, `.next`);
+  `test:debug` is `NODE_OPTIONS=--inspect-brk jest --runInBand` (the hoisted
+  `node_modules/.bin/jest` path did not exist in a workspace).
+- 8.5 config: the placeholder domains (Analytics, Api, Cors, FeatureFlags,
+  FileUpload, Health, Media, OAuth, Payments, Performance, Search, Sms,
+  Swagger, Whatsapp) and `QueueConfig` are deleted with
+  `SwaggerEnvironmentRule` (Swagger is switched by `NODE_ENV`, `main.ts`);
+  `QUEUE_CONCURRENCY`, `CACHE_MAX_ITEMS`, `CACHE_SEARCH_ENGINE_TTL_MS`,
+  `PRISMA_SLOW_QUERY_THRESHOLD`, `SALES_DEFAULT_PAGINATION_LIMIT` and
+  `SALES_CREDIT_HOLD_THRESHOLD` had no reader and are gone from every
+  template. `apps/api/.env.example` documents all 132 remaining variables with
+  their defaults; `apps/web/.env.example` adds `API_INTERNAL_URL`,
+  `NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED` (the Google button is hidden until it is
+  `true`) and `NEXT_STANDALONE`.
 - 8.3 shifts: `Shift.openToken` is `'OPEN'` while open and NULL once closed,
   and `@@unique([shopId, openedById, openToken])` is the guard
   (`20261004090000_shift_open_token`: adds the column, closes older duplicate

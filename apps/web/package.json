@@ -11,6 +11,7 @@
     "start": "next start",
     "lint": "eslint .",
     "type-check": "tsc --noEmit --incremental false",
+    "clean": "node -e \"for (const d of process.argv.slice(1)) require('fs').rmSync(d, { recursive: true, force: true })\" .next",
     "test:e2e": "playwright test",
     "test:e2e:auth": "playwright test --config playwright.auth.config.ts"
   },

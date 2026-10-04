@@ -79,20 +79,20 @@ describe('Configuration Domains', () => {
   describe('SalesFeatureConfig', () => {
     it('keeps the defaults when nothing is set', () => {
       const config = hydrateFromEnv(SalesFeatureConfig, {});
-      expect(config).toMatchObject({ defaultPaginationLimit: 50, recentEventsLimit: 100, creditHoldThreshold: 10000, defaultCreditLimit: 5000 });
+      expect(config).toMatchObject({ recentEventsLimit: 100, defaultCreditLimit: 5000 });
       expect(validateSync(config)).toEqual([]);
     });
 
     it('overrides from the environment and allows 0 where the bound does', () => {
-      const config = hydrateFromEnv(SalesFeatureConfig, { SALES_DEFAULT_PAGINATION_LIMIT: '100', SALES_DEFAULT_CREDIT_LIMIT: '0', SALES_CREDIT_HOLD_THRESHOLD: '15000' });
-      expect(config).toMatchObject({ defaultPaginationLimit: 100, defaultCreditLimit: 0, creditHoldThreshold: 15000 });
+      const config = hydrateFromEnv(SalesFeatureConfig, { SALES_RECENT_EVENTS_LIMIT: '250', SALES_DEFAULT_CREDIT_LIMIT: '0' });
+      expect(config).toMatchObject({ recentEventsLimit: 250, defaultCreditLimit: 0 });
       expect(validateSync(config)).toEqual([]);
     });
 
     it.each([
       ['a negative credit limit', { SALES_DEFAULT_CREDIT_LIMIT: '-100' }, 'defaultCreditLimit'],
       ['garbage', { SALES_RECENT_EVENTS_LIMIT: 'lots' }, 'recentEventsLimit'],
-      ['a zero page size', { SALES_DEFAULT_PAGINATION_LIMIT: '0' }, 'defaultPaginationLimit'],
+      ['a zero list size', { SALES_RECENT_EVENTS_LIMIT: '0' }, 'recentEventsLimit'],
     ])('rejects %s', (_label, env, property) => {
       expect(validateSync(hydrateFromEnv(SalesFeatureConfig, env)).map((e) => e.property)).toEqual([property]);
     });
@@ -130,17 +130,16 @@ describe('Configuration Domains', () => {
       const config = hydrateFromEnv(CacheConfig, {});
       expect(validateSync(config)).toEqual([]);
       expect(config.ttl).toBe(3600000);
-      expect(config.maxItems).toBe(1000);
       expect(config.customerSearchTtlMs).toBe(60000);
       expect(config.analyticsKpiTtlMs).toBe(60000);
     });
 
     it('reads integers from the environment, allows 0 and treats blank as unset', () => {
-      const config = hydrateFromEnv(CacheConfig, { CACHE_TTL: '0', CACHE_ANALYTICS_KPI_TTL_MS: ' 250 ', CACHE_MAX_ITEMS: '' });
+      const config = hydrateFromEnv(CacheConfig, { CACHE_TTL: '0', CACHE_ANALYTICS_KPI_TTL_MS: ' 250 ', CACHE_GRN_TTL_MS: '' });
       expect(validateSync(config)).toEqual([]);
       expect(config.ttl).toBe(0);
       expect(config.analyticsKpiTtlMs).toBe(250);
-      expect(config.maxItems).toBe(1000);
+      expect(config.grnTtlMs).toBe(60000);
     });
 
     it('rejects values that are not integers instead of silently using the default', () => {

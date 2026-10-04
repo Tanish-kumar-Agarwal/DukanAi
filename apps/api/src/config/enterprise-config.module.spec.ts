@@ -52,6 +52,6 @@ describe('EnterpriseConfigModule', () => {
     const salesConfig = module.get<SalesFeatureConfig>(SalesFeatureConfig);
     expect(salesConfig).toBeDefined();
     expect(salesConfig.defaultCreditLimit).toBe(7000); // from env override
-    expect(salesConfig.defaultPaginationLimit).toBe(50); // default fallback
+    expect(salesConfig.recentEventsLimit).toBe(100); // default fallback
   });
 });

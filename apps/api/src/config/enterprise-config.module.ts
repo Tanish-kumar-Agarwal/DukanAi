@@ -10,28 +10,13 @@ import { AuthConfig, assertAuthBypassPermitted, parseAuthDisabled } from './doma
 import { RedisConfig } from './domains/redis.config';
 import { StorageConfig } from './domains/storage.config';
 import { AiConfig } from './domains/ai.config';
-import { ApiConfig } from './domains/api.config';
 import { PrismaConfig } from './domains/prisma.config';
-import { QueueConfig } from './domains/queue.config';
 import { BullConfig } from './domains/bull.config';
 import { CacheConfig } from './domains/cache.config';
-import { MediaConfig } from './domains/media.config';
-import { SearchConfig } from './domains/search.config';
-import { AnalyticsConfig } from './domains/analytics.config';
 import { EmailConfig } from './domains/email.config';
-import { SmsConfig } from './domains/sms.config';
-import { WhatsappConfig } from './domains/whatsapp.config';
-import { OAuthConfig } from './domains/oauth.config';
-import { PaymentsConfig } from './domains/payments.config';
-import { FileUploadConfig } from './domains/file-upload.config';
-import { FeatureFlagsConfig } from './domains/feature-flags.config';
 import { MonitoringConfig } from './domains/monitoring.config';
 import { LoggingConfig } from './domains/logging.config';
-import { PerformanceConfig } from './domains/performance.config';
 import { SecurityConfig } from './domains/security.config';
-import { CorsConfig } from './domains/cors.config';
-import { SwaggerConfig } from './domains/swagger.config';
-import { HealthConfig } from './domains/health.config';
 import { CronConfig } from './domains/cron.config';
 import { RetentionConfig } from './domains/retention.config';
 
@@ -139,19 +124,8 @@ function validateConfig<T extends object>(configClass: T): T {
       },
     },
     {
-      provide: ApiConfig,
-      useFactory: () => {
-        const config = new ApiConfig();
-        return validateConfig(config);
-      },
-    },
-    {
       provide: PrismaConfig,
       useFactory: () => validateConfig(hydrateFromEnv(PrismaConfig)),
-    },
-    {
-      provide: QueueConfig,
-      useFactory: () => validateConfig(hydrateFromEnv(QueueConfig)),
     },
     {
       provide: BullConfig,
@@ -162,71 +136,8 @@ function validateConfig<T extends object>(configClass: T): T {
       useFactory: () => validateConfig(hydrateFromEnv(CacheConfig)),
     },
     {
-      provide: MediaConfig,
-      useFactory: () => {
-        const config = new MediaConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: SearchConfig,
-      useFactory: () => {
-        const config = new SearchConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: AnalyticsConfig,
-      useFactory: () => {
-        const config = new AnalyticsConfig();
-        return validateConfig(config);
-      },
-    },
-    {
       provide: EmailConfig,
       useFactory: () => validateConfig(hydrateFromEnv(EmailConfig)),
-    },
-    {
-      provide: SmsConfig,
-      useFactory: () => {
-        const config = new SmsConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: WhatsappConfig,
-      useFactory: () => {
-        const config = new WhatsappConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: OAuthConfig,
-      useFactory: () => {
-        const config = new OAuthConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: PaymentsConfig,
-      useFactory: () => {
-        const config = new PaymentsConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: FileUploadConfig,
-      useFactory: () => {
-        const config = new FileUploadConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: FeatureFlagsConfig,
-      useFactory: () => {
-        const config = new FeatureFlagsConfig();
-        return validateConfig(config);
-      },
     },
     {
       provide: MonitoringConfig,
@@ -237,36 +148,8 @@ function validateConfig<T extends object>(configClass: T): T {
       useFactory: () => validateConfig(hydrateFromEnv(LoggingConfig)),
     },
     {
-      provide: PerformanceConfig,
-      useFactory: () => {
-        const config = new PerformanceConfig();
-        return validateConfig(config);
-      },
-    },
-    {
       provide: SecurityConfig,
       useFactory: () => validateConfig(hydrateFromEnv(SecurityConfig)),
-    },
-    {
-      provide: CorsConfig,
-      useFactory: () => {
-        const config = new CorsConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: SwaggerConfig,
-      useFactory: () => {
-        const config = new SwaggerConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: HealthConfig,
-      useFactory: () => {
-        const config = new HealthConfig();
-        return validateConfig(config);
-      },
     },
     {
       provide: CronConfig,
@@ -293,28 +176,13 @@ function validateConfig<T extends object>(configClass: T): T {
     RedisConfig,
     StorageConfig,
     AiConfig,
-    ApiConfig,
     PrismaConfig,
-    QueueConfig,
     BullConfig,
     CacheConfig,
-    MediaConfig,
-    SearchConfig,
-    AnalyticsConfig,
     EmailConfig,
-    SmsConfig,
-    WhatsappConfig,
-    OAuthConfig,
-    PaymentsConfig,
-    FileUploadConfig,
-    FeatureFlagsConfig,
     MonitoringConfig,
     LoggingConfig,
-    PerformanceConfig,
     SecurityConfig,
-    CorsConfig,
-    SwaggerConfig,
-    HealthConfig,
     CronConfig,
     RetentionConfig,
     SalesFeatureConfig,
