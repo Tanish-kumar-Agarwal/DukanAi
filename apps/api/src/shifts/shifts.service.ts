@@ -5,6 +5,11 @@ import { BillingActor, isManager, money } from '../billing/billing.types';
 import { BillingHelpers } from '../billing/billing.helpers';
 import { CloseShiftDto, ListShiftsDto, OpenShiftDto } from './dto/shift.dto';
 import { pageArgs } from '../common/pagination';
+import { rethrowUniqueViolation } from '../common/db/unique-violation';
+
+/** `Shift.openToken` while a shift is open; NULL once closed (roadmap 8.3). */
+export const OPEN_TOKEN = 'OPEN';
+const SHIFT_ALREADY_OPEN_MESSAGE = 'You already have an open shift. Close it before opening another.';
 
 const SHIFT_INCLUDE = {
   openedBy: { select: { id: true, name: true } },
@@ -35,38 +40,53 @@ export class ShiftsService {
     return shift ? this.view(shift) : null;
   }
 
+  /**
+   * Opens the caller's shift. The pre-check gives the friendly answer; the
+   * unique key `(shopId, openedById, openToken)` is the guard (roadmap 8.3): two
+   * concurrent opens both pass the check, and the second insert fails on the
+   * key, which maps to the same 409. READ COMMITTED keeps the locking read
+   * from taking gap locks, which would turn that race into a deadlock instead.
+   */
   async open(dto: OpenShiftDto, actor: BillingActor): Promise<ShiftView> {
-    const shift = await this.prisma.$transaction(async (tx) => {
-      const open = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT id FROM Shift WHERE shopId = ${actor.shopId} AND openedById = ${actor.userId} AND status = 'OPEN' AND isDeleted = false FOR UPDATE
-      `;
-      if (open.length > 0) {
-        throw new ConflictException({ message: 'You already have an open shift. Close it before opening another.', code: 'SHIFT_ALREADY_OPEN', details: { shiftId: open[0].id } });
-      }
-      const created = await tx.shift.create({
-        data: {
-          shopId: actor.shopId,
-          openedById: actor.userId,
-          openingCash: money(dto.openingCash),
-          expectedCash: money(dto.openingCash),
-          notes: dto.notes ?? null,
-          status: 'OPEN',
+    const shift = await this.prisma
+      .$transaction(
+        async (tx) => {
+          const open = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT id FROM Shift WHERE shopId = ${actor.shopId} AND openedById = ${actor.userId} AND status = 'OPEN' AND isDeleted = false FOR UPDATE
+          `;
+          if (open.length > 0) {
+            throw new ConflictException({ message: SHIFT_ALREADY_OPEN_MESSAGE, code: 'SHIFT_ALREADY_OPEN', details: { shiftId: open[0].id } });
+          }
+          const created = await tx.shift.create({
+            data: {
+              shopId: actor.shopId,
+              openedById: actor.userId,
+              openingCash: money(dto.openingCash),
+              expectedCash: money(dto.openingCash),
+              notes: dto.notes ?? null,
+              status: 'OPEN',
+              openToken: OPEN_TOKEN,
+            },
+            include: SHIFT_INCLUDE,
+          });
+          await tx.auditLog.create({
+            data: {
+              shopId: actor.shopId,
+              userId: actor.userId,
+              action: 'SHIFT_OPENED',
+              entity: 'Shift',
+              entityId: created.id,
+              ipAddress: actor.ipAddress ?? null,
+              afterData: { openingCash: created.openingCash.toFixed(2) },
+            },
+          });
+          return created;
         },
-        include: SHIFT_INCLUDE,
-      });
-      await tx.auditLog.create({
-        data: {
-          shopId: actor.shopId,
-          userId: actor.userId,
-          action: 'SHIFT_OPENED',
-          entity: 'Shift',
-          entityId: created.id,
-          ipAddress: actor.ipAddress ?? null,
-          afterData: { openingCash: created.openingCash.toFixed(2) },
-        },
-      });
-      return created;
-    });
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+      )
+      .catch((error: unknown) =>
+        rethrowUniqueViolation(error, [{ index: 'Shift_shopId_openedById_openToken_key', code: 'SHIFT_ALREADY_OPEN', message: SHIFT_ALREADY_OPEN_MESSAGE }]),
+      );
     return this.view(shift);
   }
 
@@ -88,6 +108,7 @@ export class ShiftsService {
         where: { id: rows[0].id },
         data: {
           status: 'CLOSED',
+          openToken: null,
           closedAt: new Date(),
           closedById: actor.userId,
           closingCash,

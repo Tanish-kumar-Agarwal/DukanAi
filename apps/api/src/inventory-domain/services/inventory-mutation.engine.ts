@@ -214,7 +214,10 @@ export class InventoryMutationEngine {
     const isReservation =
       request.mutationType === MutationType.RESERVATION || request.mutationType === MutationType.RESERVATION_RELEASE;
 
-    // 3. Conditional, atomic InventoryItem update (the DB enforces the floor)
+    // 3. Conditional, atomic InventoryItem update (the DB enforces the floor).
+    //    One application instant for every row this mutation touches (roadmap 8.2):
+    //    Prisma writes DateTime columns in UTC; the database clock answers in the session zone.
+    const now = new Date();
     if (isReservation) {
       const isLocking = request.mutationType === MutationType.RESERVATION;
       // A release never drives `reserved` below zero: it gives back at most what is held.
@@ -222,7 +225,7 @@ export class InventoryMutationEngine {
         UPDATE InventoryItem
         SET reserved = ${isLocking ? Prisma.sql`reserved + ${qty}` : Prisma.sql`GREATEST(reserved - ${qty}, 0)`},
             version = version + 1,
-            updatedAt = NOW(3)
+            updatedAt = ${now}
         WHERE id = ${invItem.id}
           AND shopId = ${request.shopId}
           ${isLocking && !request.allowNegative ? Prisma.sql`AND (onHand - reserved) >= ${qty}` : Prisma.empty}
@@ -237,7 +240,7 @@ export class InventoryMutationEngine {
         UPDATE InventoryItem
         SET onHand = onHand - ${qty},
             version = version + 1,
-            updatedAt = NOW(3)
+            updatedAt = ${now}
         WHERE id = ${invItem.id}
           AND shopId = ${request.shopId}
           ${allowNegative ? Prisma.empty : Prisma.sql`AND (onHand - reserved) >= ${qty}`}
@@ -260,7 +263,7 @@ export class InventoryMutationEngine {
         UPDATE InventoryItem
         SET onHand = onHand + ${qty},
             version = version + 1,
-            updatedAt = NOW(3)
+            updatedAt = ${now}
         WHERE id = ${invItem.id}
           AND shopId = ${request.shopId}
           ${request.occ?.expectedInventoryItemVersion !== undefined ? Prisma.sql`AND version = ${request.occ.expectedInventoryItemVersion}` : Prisma.empty}
@@ -285,7 +288,7 @@ export class InventoryMutationEngine {
           UPDATE Product
           SET currentStock = currentStock ${sign} ${qty},
               stockVersion = stockVersion + 1,
-              updatedAt = NOW(3)
+              updatedAt = ${now}
           WHERE id = ${request.productId}
             AND shopId = ${request.shopId}
             AND stockVersion = ${request.occ.expectedProductVersion}

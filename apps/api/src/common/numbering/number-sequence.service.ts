@@ -14,9 +14,10 @@ import { Prisma } from '@prisma/client';
 @Injectable()
 export class NumberSequenceService {
   async next(tx: Prisma.TransactionClient, shopId: string, entityType: string, prefix: string, pad = 6): Promise<{ number: string; sequence: number }> {
+    const now = new Date(); // application clock, UTC (roadmap 8.2)
     await tx.$executeRaw`
       INSERT INTO NumberSequence (id, shopId, entityType, prefix, lastNumber, updatedAt)
-      VALUES (${`${shopId}:${entityType}:${prefix}`.slice(0, 191)}, ${shopId}, ${entityType}, ${prefix}, 0, NOW(3))
+      VALUES (${`${shopId}:${entityType}:${prefix}`.slice(0, 191)}, ${shopId}, ${entityType}, ${prefix}, 0, ${now})
       ON DUPLICATE KEY UPDATE lastNumber = lastNumber
     `;
 
@@ -30,7 +31,7 @@ export class NumberSequenceService {
     }
 
     const sequence = Number(rows[0].lastNumber) + 1;
-    await tx.$executeRaw`UPDATE NumberSequence SET lastNumber = ${sequence}, updatedAt = NOW(3) WHERE id = ${rows[0].id}`;
+    await tx.$executeRaw`UPDATE NumberSequence SET lastNumber = ${sequence}, updatedAt = ${now} WHERE id = ${rows[0].id}`;
 
     return { number: `${prefix}${String(sequence).padStart(pad, '0')}`, sequence };
   }

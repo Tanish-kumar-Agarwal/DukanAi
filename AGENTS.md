@@ -987,6 +987,29 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   an implicit many-to-many, a non-INR default). Adding a Shop foreign key
   fails on orphan rows: the migration header has the check query.
 
+- 8.2 clock: every timestamp the API writes comes from the application as a
+  UTC `Date` parameter (`const now = new Date()` passed into the raw SQL), never
+  from the database clock: Prisma stores and reads DateTime columns as UTC,
+  while `NOW()` / `CURRENT_TIMESTAMP` answer in the server's session zone, so
+  a mixed statement was off by the server offset and compared app-written
+  instants (`nextAttemptAt`) against another clock. `src/common/db/
+  sql-clock.spec.ts` scans `src/` for any database clock function and fails
+  on one (comments included: say "the database clock"). Migrations have no
+  application clock; when one must stamp rows it uses `UTC_TIMESTAMP(3)`.
+- 8.3 shifts: `Shift.openToken` is `'OPEN'` while open and NULL once closed,
+  and `@@unique([shopId, openedById, openToken])` is the guard
+  (`20261004090000_shift_open_token`: adds the column, closes older duplicate
+  open shifts of a cashier with a note, backfills the token, creates the
+  key). This is the one place a nullable column in a unique key is the
+  point: MySQL ignores NULLs there, which makes the key partial. The
+  `ShiftsService.open` transaction runs READ COMMITTED (a locking read that
+  finds nothing takes no gap lock, so two concurrent opens race to the key
+  instead of deadlocking) and maps the P2002 on
+  `Shift_shopId_openedById_openToken_key` to 409 `SHIFT_ALREADY_OPEN`;
+  `close` sets the token to NULL. Any writer that opens or closes a shift
+  must keep the token in step. `test/integration/shifts.integration-spec.ts`
+  covers the service, a direct insert and eight concurrent opens.
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and

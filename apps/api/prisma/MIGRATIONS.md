@@ -81,6 +81,14 @@ SELECT COUNT(*) FROM <table> t LEFT JOIN Shop s ON s.id = t.shopId WHERE s.id IS
 and move or delete them deliberately; a migration never deletes rows on
 its own. The restore drill in CI proves the migration on a clean history.
 
+## Clocks in a migration
+
+Application code never uses the database clock (roadmap 8.2: Prisma stores
+DateTime columns as UTC, `NOW()` answers in the session zone). A migration
+that must stamp rows has no application clock, so it uses
+`UTC_TIMESTAMP(3)`, never `NOW(3)` or `CURRENT_TIMESTAMP`
+(`20261004090000_shift_open_token` is the example).
+
 ## Triggers in a migration
 
 Prisma sends a migration to MySQL as one multi-statement script, so a

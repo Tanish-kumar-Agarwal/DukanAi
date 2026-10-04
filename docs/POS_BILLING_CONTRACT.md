@@ -234,7 +234,7 @@ its number. Codes: `INVOICE_NOT_CANCELLABLE`.
 
 ## 3. Shifts
 
-- `POST /shifts/open { openingCash }` returns the shift; `409 SHIFT_ALREADY_OPEN`.
+- `POST /shifts/open { openingCash }` returns the shift; `409 SHIFT_ALREADY_OPEN`. One open shift per cashier is enforced by the database (unique key on `Shift.openToken`, roadmap 8.3), so two concurrent opens never both succeed.
 - `GET /shifts/current` returns the caller's OPEN shift or `null`.
 - `POST /shifts/current/close { closingCash, notes? }` closes it; response
   includes `expectedCash`, `closingCash`, `variance`.

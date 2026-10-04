@@ -92,7 +92,8 @@ export class LedgerPostingService {
     const header = await tx.ledgerPosting.create({ data: { ...key, description: posting.description }, select: { id: true } });
 
     const sorted = [...entries].sort((a, b) => a.account.localeCompare(b.account));
-    const balances = await this.lockBalances(tx, posting.shopId, sorted.map((e) => e.account));
+    const now = new Date(); // application clock, UTC (roadmap 8.2)
+    const balances = await this.lockBalances(tx, posting.shopId, sorted.map((e) => e.account), now);
 
     for (const entry of sorted) {
       const current = balances.get(entry.account)!;
@@ -101,7 +102,7 @@ export class LedgerPostingService {
       balances.set(entry.account, next);
 
       await tx.$executeRaw`
-        UPDATE LedgerAccountBalance SET balance = ${next.toFixed(2)}, updatedAt = NOW(3)
+        UPDATE LedgerAccountBalance SET balance = ${next.toFixed(2)}, updatedAt = ${now}
         WHERE shopId = ${posting.shopId} AND account = ${entry.account}
       `;
       await tx.ledgerTransaction.create({
@@ -120,12 +121,12 @@ export class LedgerPostingService {
     return { posted: true, postingId: header.id };
   }
 
-  private async lockBalances(tx: Prisma.TransactionClient, shopId: string, accounts: LedgerAccount[]): Promise<Map<LedgerAccount, Prisma.Decimal>> {
+  private async lockBalances(tx: Prisma.TransactionClient, shopId: string, accounts: LedgerAccount[], now: Date): Promise<Map<LedgerAccount, Prisma.Decimal>> {
     const unique = Array.from(new Set(accounts)).sort();
     for (const account of unique) {
       await tx.$executeRaw`
         INSERT INTO LedgerAccountBalance (id, shopId, account, balance, updatedAt)
-        VALUES (${`${shopId}:${account}`.slice(0, 191)}, ${shopId}, ${account}, 0, NOW(3))
+        VALUES (${`${shopId}:${account}`.slice(0, 191)}, ${shopId}, ${account}, 0, ${now})
         ON DUPLICATE KEY UPDATE balance = balance
       `;
     }

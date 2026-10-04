@@ -40,9 +40,11 @@ describe('CategoriesService.update (roadmap 5.7)', () => {
     expect(text).toMatch(/UPDATE `Category`/);
     expect(text).toMatch(/SET `path` = CONCAT\(\?, SUBSTRING\(`path`, CHAR_LENGTH\(\?\) \+ 1\)\)/);
     expect(text).toMatch(/`depth` = `depth` \+ \?/);
+    // The row is stamped from the application clock, never the database's (roadmap 8.2).
+    expect(text).toMatch(/`updatedAt` = \?/);
     expect(text).toMatch(/WHERE `shopId` = \?\s+AND `isDeleted` = 0\s+AND `path` LIKE \?/);
-    // new prefix, old prefix, depth delta (1 - 2), shop, LIKE pattern on the old prefix
-    expect(params).toEqual(['/new-parent/cat-1/', '/root/old-parent/cat-1/', -1, 'shop-1', '/root/old-parent/cat-1/%']);
+    // new prefix, old prefix, depth delta (1 - 2), updatedAt, shop, LIKE pattern on the old prefix
+    expect(params).toEqual(['/new-parent/cat-1/', '/root/old-parent/cat-1/', -1, expect.any(Date), 'shop-1', '/root/old-parent/cat-1/%']);
     // Never one update per descendant, never a read outside the transaction.
     expect(prisma.category.findMany).not.toHaveBeenCalled();
     expect(prisma.category.findFirst).not.toHaveBeenCalled();
@@ -56,7 +58,7 @@ describe('CategoriesService.update (roadmap 5.7)', () => {
     await service.update('cat-1', { name: 'x', parentId: null } as never);
     expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
     expect(tx.category.update).toHaveBeenCalledWith({ where: { id: 'cat-1' }, data: { name: 'x', parentId: null, path: '/', depth: 0 } });
-    expect(tx.$executeRaw.mock.calls[0].slice(1)).toEqual(['/cat-1/', '/p/cat-1/', -1, 'shop-1', '/p/cat-1/%']);
+    expect(tx.$executeRaw.mock.calls[0].slice(1)).toEqual(['/cat-1/', '/p/cat-1/', -1, expect.any(Date), 'shop-1', '/p/cat-1/%']);
   });
 
   it('escapes LIKE wildcards in the prefix', async () => {
@@ -67,7 +69,7 @@ describe('CategoriesService.update (roadmap 5.7)', () => {
     tx.$executeRaw.mockResolvedValue(0);
     await service.update('c_1', { name: 'x', parentId: 'p%' } as never);
     const params = tx.$executeRaw.mock.calls[0].slice(1);
-    expect(params[4]).toBe('/c\\_1/%');
+    expect(params[5]).toBe('/c\\_1/%');
     expect(params[0]).toBe('/p%/c_1/');
   });
 
