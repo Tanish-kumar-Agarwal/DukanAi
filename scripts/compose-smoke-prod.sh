@@ -54,6 +54,7 @@ fail() {
 cleanup() {
   if [ "$KEEP" = "1" ]; then printf '\nKEEP=1: stack left running (%s, %s); env in %s\n' "$WEB_ORIGIN" "$API" "$WORK"; return; fi
   step "docker compose down -v (project $PROJECT)"
+  docker rm -f smoke-client-a >/dev/null 2>&1 || true
   "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
@@ -143,7 +144,12 @@ step "the API sees the client address (TRUST_PROXY=1 behind the edge): the login
 # Client A: 6 failed logins with distinct unknown accounts inside the short
 # window (AUTH_RATE_LIMIT_SHORT_LIMIT = 5 per 10 s per address): the sixth
 # is 429. It prints its own address first.
-a_out="$(docker run --rm --network "$NET" -v "$WORK/caddy-root.crt:/ca/root.crt:ro" --entrypoint sh "$CURL_IMAGE" -c '
+# Client A stays up until client B has run: Docker hands a released
+# address to the next container on the network, which would give both
+# clients the same address and the same counter.
+docker rm -f smoke-client-a >/dev/null 2>&1 || true
+docker run -d --name smoke-client-a --network "$NET" -v "$WORK/caddy-root.crt:/ca/root.crt:ro" --entrypoint sleep "$CURL_IMAGE" 600 >/dev/null || fail "client A container did not start"
+a_out="$(docker exec smoke-client-a sh -c '
   ip="$(hostname -i 2>/dev/null | awk "{print \$1}")"; [ -n "$ip" ] || ip="$(awk -v h="$(hostname)" "\$2==h{ip=\$1} END{print ip}" /etc/hosts)"; echo "$ip"
   for i in 1 2 3 4 5 6; do
     curl -sS -o /dev/null -w "%{http_code}\n" --cacert /ca/root.crt --connect-to '"${API_HOST}:${HTTPS_PORT}:edge:443"' \
@@ -162,6 +168,7 @@ b_out="$(docker run --rm --network "$NET" -v "$WORK/caddy-root.crt:/ca/root.crt:
 b_ip="$(printf '%s\n' "$b_out" | head -n 1)"
 b_code="$(printf '%s\n' "$b_out" | tail -n 1)"
 printf '  client B (%s, X-Forwarded-For: %s): %s\n' "$b_ip" "$a_ip" "$b_code"
+docker rm -f smoke-client-a >/dev/null 2>&1 || true
 [ "$a_ip" != "$b_ip" ] || fail "the two clients share an address"
 [ "$b_code" = "401" ] || fail "client B expected 401 (its own counter), got $b_code: the API did not see the client address"
 
