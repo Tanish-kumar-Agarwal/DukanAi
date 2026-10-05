@@ -337,7 +337,7 @@ value), `client_max_body_size 64m`, `proxy_read_timeout 60s`, a `return
 
 `deploy/k8s/` (README there) is the same topology as the production
 variant, rendered with kustomize and validated with kubeconform in CI:
-namespace, ConfigMap, a Secret generated from `secrets.env`, three
+namespace, ConfigMap, a Secret generated from `dukaanai-secrets.env`, three
 ReadWriteOnce claims, the migrate Job, the API Deployment (one replica,
 Recreate, the probes above, 45 s grace, `backup-agent` sidecar), the web
 Deployment, Services, an ingress-nginx + cert-manager Ingress (HTTPS for

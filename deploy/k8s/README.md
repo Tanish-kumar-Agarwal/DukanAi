@@ -10,7 +10,7 @@ and validated with kubeconform in CI (job "Deployment (compose smoke)").
 |---|---|
 | `namespace.yaml` | namespace `dukaanai` |
 | `configmap.yaml` | non-secret settings: public origins, `TRUST_PROXY=1`, storage paths, shutdown timings, backup schedule |
-| `secrets.env.example` | template for `secrets.env` (`DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `NEXTAUTH_SECRET`, integrations); the kustomization generates the `dukaanai-secrets` Secret from it |
+| `dukaanai-dukaanai-secrets.env.example` | template for `dukaanai-secrets.env` (`DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `NEXTAUTH_SECRET`, integrations); the kustomization generates the `dukaanai-secrets` Secret from it |
 | `pvc.yaml` | three ReadWriteOnce claims: documents (`STORAGE_ROOT`), uploads (product images, temp), backups |
 | `job-migrate.yaml` | the release step `prisma migrate deploy` |
 | `deployment-api.yaml` | the API (1 replica, Recreate, probes, 45 s grace) with the `backup-agent` sidecar (`db-ops backup-loop`) |
@@ -26,7 +26,7 @@ and validated with kubeconform in CI (job "Deployment (compose smoke)").
    `apps/api/Dockerfile`, `apps/web/Dockerfile` with
    `--build-arg NEXT_PUBLIC_API_URL=https://api.example.com/api`, and
    `deploy/db-ops/Dockerfile`. Set `newName` / `newTag` in `kustomization.yaml`.
-2. `cp secrets.env.example secrets.env` and fill it in (`.gitignore` keeps it
+2. `cp dukaanai-dukaanai-secrets.env.example dukaanai-secrets.env` and fill it in (`.gitignore` keeps it
    out of the repository). For a managed MySQL whose CA is not in the system
    trust store, add `&sslcert=/etc/dukaanai/db-ca.pem` to `DATABASE_URL` and
    create the optional CA Secret:
@@ -90,6 +90,6 @@ and validated with kubeconform in CI (job "Deployment (compose smoke)").
 ## Validate
 
 ```
-cp deploy/k8s/secrets.env.example deploy/k8s/secrets.env
+cp deploy/k8s/dukaanai-dukaanai-secrets.env.example deploy/k8s/dukaanai-secrets.env
 kubectl kustomize deploy/k8s | kubeconform -strict -summary -
 ```

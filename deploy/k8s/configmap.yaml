@@ -1,7 +1,7 @@
 # Non-secret settings shared by the API, the web and the backup sidecar.
 # Secrets (DATABASE_URL, REDIS_URL, JWT_SECRET, NEXTAUTH_SECRET, ...) come
 # from the `dukaanai-secrets` Secret the kustomization generates from
-# secrets.env (copy secrets.env.example). Every API key is documented in
+# dukaanai-secrets.env (copy dukaanai-dukaanai-secrets.env.example). Every API key is documented in
 # apps/api/.env.example; the class defaults cover what is not listed here.
 apiVersion: v1
 kind: ConfigMap

@@ -1253,7 +1253,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   dump + documents + off-site daily, `BACKUP_LOOP_*`, stamps for the
   metric) and `deploy/k8s/` (kustomize: 1 replica Recreate, probes, 45 s
   grace, `backup-agent` sidecar sharing the RWO claims, ingress-nginx +
-  cert-manager Ingress, NetworkPolicies; `secrets.env` generated and
+  cert-manager Ingress, NetworkPolicies; `dukaanai-secrets.env` generated and
   gitignored there; validated with `kubectl kustomize | kubeconform
   -strict` in CI) are the two forms; never set `replicas > 1` before the
   documents move to object storage behind `StoragePathBuilder`. The db-ops
