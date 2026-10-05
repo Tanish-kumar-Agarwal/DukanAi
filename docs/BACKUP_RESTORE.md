@@ -337,6 +337,14 @@ Order of operations for a real restore:
 5. Redis: nothing to restore, but a job queued before the restore may
    reference an outbox row the backup does not contain; such a job logs a
    "missing row" no-op and is dropped (`runInShopOf`).
+6. Prove the restored books (roadmap 9.5): from `apps/api` with
+   `DATABASE_URL` on the restored database, `npm run reconcile -- --shop
+   <shopId> --date <day>` for the shops and the day you restored (or, once
+   the API is up, `POST /reconciliation/run { date }` as each shop's
+   owner): every check must come out as it did on the source, CLEAN or,
+   where the source already carried a known drift, the same drift. A
+   point-in-time restore is reconciled for the day of `--to`. The drill
+   below does this comparison automatically.
 
 Point in time (`--to`): the dump is the state at the moment its snapshot
 started. `--to "YYYY-MM-DD HH:MM:SS"` (UTC; `YYYY-MM-DDTHH:MM:SSZ` also)
@@ -384,7 +392,12 @@ reads a target time from the server's clock and puts marker B after it;
 into `<db>_pitr_<stamp>` with `--to <target time>` and
 `--replay-database <scratch copy>`, and `pitr-markers.sh verify` proves it
 holds A and not B while every other table equals the first copy (nothing
-duplicated, nothing lost). Both scratch databases are dropped. `--pitr auto`
+duplicated, nothing lost). Step 10 (roadmap 9.5): `npm run reconcile
+--json` runs against the restored copy and against the source for the shop
+of the newest invoice and today's business day; status, drift count, every
+check and the summary must be identical (a drift the source carries is
+preserved, a difference means the restore lost or changed a row); skipped
+when the copy holds no invoice. Both scratch databases are dropped. `--pitr auto`
 (default) skips steps 7 to 9 with the reason when the server writes no
 binary log, the dump carries no position, mysqlbinlog is missing or the
 user cannot switch session binary logging off; `require` fails instead,
@@ -496,6 +509,23 @@ archive without the dump's first log, a gap in the archive (found by the
 first attempt: a stray `binlog.000031.aside` passed the file listing and
 hid the gap; the listing now accepts only `<prefix>.<digits>`), a damaged
 `.sha256`, and a malformed `--to`.
+
+### Reconciliation of the restored copy (roadmap 9.5)
+
+Step 10 on the local MySQL 8.0.46 test database (232 tables, 25,491 rows,
+22 migrations, `--pitr skip`), the same day the step was added:
+
+```
+==> 10/10 The restored copy's books reconcile exactly as the source's (npm run reconcile on dukaanai_test_drill_20261005185117 and dukaanai_test)
+  books of shop cmuvlrb9700b27de47xn54fqs on 2026-10-06: CLEAN with 0 drift(s) on both sides (documents=CLEAN postings=CLEAN tenders=CLEAN dashboard=CLEAN shifts=CLEAN stock=CLEAN ledger=CLEAN)
+RESTORE DRILL PASSED: dukaanai_test -> dukaanai_test_drill_20261005185117, backup 1.2M, 232 tables / 25491 rows, 2 triggers; point in time skipped (--pitr skip); books of shop ... CLEAN with 0 drift(s) on both sides (...); 45s
+```
+
+The comparison is of the whole run (status, drift count, every check's
+figures and drifts, the summary), not of the status alone: a source that
+carries a known drift must restore with exactly that drift. The CLI
+records its run on both databases (trigger `CLI`), so the source keeps a
+record that its books were compared.
 
 ## Managed MySQL: point-in-time recovery by the provider
 

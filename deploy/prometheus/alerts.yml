@@ -125,6 +125,33 @@ groups:
           summary: "Backup job {{ $labels.kind }} has never recorded a success"
           description: "No backup_last_success_timestamp_seconds series for kind {{ $labels.kind }}. Either the job is not scheduled, or the API cannot read BACKUP_STATUS_DIR (the db-backups volume mounted read-only), or the job writes its stamp elsewhere."
 
+      # ---- financial reconciliation (roadmap 9.5) --------------------------
+      # reconciliation_shops_with_drift counts the shops whose latest run
+      # (nightly cron or on demand) ended in DRIFT or FAILED, read from the
+      # ReconciliationRun table on every scrape, so a restart or a scrape of
+      # another instance shows the same figure. Nothing is corrected by the
+      # job: a person reads the run and explains or fixes the books.
+      - alert: DukaanAiReconciliationDrift
+        expr: max(reconciliation_shops_with_drift{job="dukaanai-api"}) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Financial reconciliation found drift"
+          description: "{{ $value }} shop(s) have a latest reconciliation run that ended in DRIFT or FAILED. Read it as the shop owner (GET /reconciliation/latest, or `npm run reconcile -- --shop <id> --date <day>` from a checkout): every drift names the check, the document or row and the two figures that disagree. The books are never corrected automatically."
+
+      # The nightly job has not recorded a run anywhere for 26 hours: it is
+      # not scheduled on any instance (CRON_ENABLED, CRON_RECONCILIATION), or
+      # it fails before a run row is written.
+      - alert: DukaanAiReconciliationStale
+        expr: (time() - max(reconciliation_last_run_timestamp_seconds{job="dukaanai-api"})) > 93600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No financial reconciliation run in 26 hours"
+          description: "The most recent reconciliation run finished {{ $value | humanizeDuration }} ago. Check CRON_ENABLED on at least one instance, CRON_RECONCILIATION, the cron:reconciliation lock and the 'Reconciliation' lines in the API logs; run one by hand with POST /reconciliation/run."
+
       # ---- queues -------------------------------------------------------
       - alert: DukaanAiQueueBacklog
         expr: max by (queue) (queue_jobs{job="dukaanai-api", state="waiting"}) > 1000

@@ -20,6 +20,7 @@ describe('background schedulers with CRON_ENABLED=true', () => {
     'OutboxReaper',
     'ProductOutboxProcessorWorker',
     'PurchaseOutboxRelayCron',
+    'Reconciliation',
     'ReservationExpirySweep',
     'RetentionSweep',
   ];
@@ -37,6 +38,7 @@ describe('background schedulers with CRON_ENABLED=true', () => {
       batchExpirySweepCron: FAR_AWAY,
       reservationExpirySweepCron: FAR_AWAY,
       retentionSweepCron: FAR_AWAY,
+      reconciliationCron: FAR_AWAY,
     });
     app = await bootApp((builder) => builder.overrideProvider(CronConfig).useValue(config));
   });

@@ -43,6 +43,7 @@ This checklist enforces the exact execution order required to deploy Epic 1 safe
 
 ## Phase 5: Observability Validation
 - [ ] `GET /api/metrics` carries `backup_last_success_timestamp_seconds` for the four kinds (dump, binlog, documents, offsite) once the jobs have run; `DukaanAiBackupStale` and `DukaanAiBackupNeverRecorded` are loaded (roadmap 9.4).
+- [ ] `POST /api/reconciliation/run` as the shop owner answers `status: CLEAN` for the day of the smoke sale, `GET /api/metrics` carries `reconciliation_last_run_timestamp_seconds`, and `DukaanAiReconciliationDrift` / `DukaanAiReconciliationStale` are loaded; the nightly `Reconciliation` cron is enabled on at least one instance (roadmap 9.5).
 - [ ] Filter logs for `correlationId` to confirm tracing works.
 - [ ] Fire a POST with PII data in body (e.g., `{"password": "test"}`).
   - Verify stdout shows `[REDACTED]` instead of the actual value.

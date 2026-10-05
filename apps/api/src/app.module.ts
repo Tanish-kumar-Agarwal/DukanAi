@@ -79,6 +79,8 @@ import { HealthModule } from './health/health.module';
 import { LifecycleModule } from './common/lifecycle/lifecycle.module';
 import { ObservabilityModule } from './common/observability/observability.module';
 import { RetentionModule } from './common/retention/retention.module';
+import { ClockModule } from './common/time/clock';
+import { ReconciliationModule } from './reconciliation/reconciliation.module';
 
 @Module({
   imports: [
@@ -176,6 +178,9 @@ import { RetentionModule } from './common/retention/retention.module';
     ObservabilityModule,
     // Retention (roadmap 7.8): the nightly purge of expired tokens, DONE outbox rows and old history.
     RetentionModule,
+    // The application clock (roadmap 9.6) and the financial reconciliation (roadmap 9.5).
+    ClockModule,
+    ReconciliationModule,
   ],
   controllers: [AppController],
   providers: [

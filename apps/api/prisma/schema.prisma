@@ -114,6 +114,20 @@ enum ShiftStatus {
   CLOSED
 }
 
+/// Outcome of a financial reconciliation run (roadmap 9.5).
+enum ReconciliationRunStatus {
+  CLEAN
+  DRIFT
+  FAILED
+}
+
+/// What started a reconciliation run: the nightly cron, POST /reconciliation/run, or `npm run reconcile`.
+enum ReconciliationTrigger {
+  CRON
+  MANUAL
+  CLI
+}
+
 enum PurchaseOrderStatus {
   DRAFT
   SUBMITTED
@@ -703,6 +717,7 @@ model Shop {
   purchaseConsumerStates PurchaseConsumerState[]
   purchaseEventStatisticses PurchaseEventStatistics[]
   mediaAssetTags MediaAssetTag[]
+  reconciliationRuns ReconciliationRun[]
 }
 
 model User {
@@ -1358,7 +1373,11 @@ model Shift {
   shop     Shop      @relation(fields: [shopId], references: [id], onDelete: Restrict)
   openedBy User      @relation("ShiftOpenedBy", fields: [openedById], references: [id], onDelete: Restrict)
   closedBy User?     @relation("ShiftClosedBy", fields: [closedById], references: [id], onDelete: Restrict)
-  invoices Invoice[]
+  invoices          Invoice[]          @relation("InvoiceShift")
+  /// Cancellations whose refund was applied to this drawer (roadmap 9.5).
+  cancelledInvoices Invoice[]          @relation("InvoiceCancelledShift")
+  /// Repayments taken on this drawer (roadmap 9.5).
+  udharTransactions UdharTransaction[]
 
   @@unique([shopId, openedById, openToken])
   @@index([shopId, status])
@@ -1401,6 +1420,10 @@ model Invoice {
   cancelReason       String?
   cancelledAt        DateTime?
   cancelledById      String?
+  /// The shift whose drawer refunded the cancellation (the sale's own shift while
+  /// it is open, else the actor's), so the shift's cash can be rebuilt from its
+  /// documents (roadmap 9.5). NULL on cancellations recorded before it existed.
+  cancelledShiftId   String?
   requestHash        String?
   notes              String?
   shiftId            String?
@@ -1412,7 +1435,8 @@ model Invoice {
   shop               Shop                @relation(fields: [shopId], references: [id], onDelete: Restrict)
   customer           Customer?           @relation(fields: [customerId], references: [id], onDelete: Restrict)
   cashier            User                @relation("InvoiceCashier", fields: [cashierId], references: [id], onDelete: Restrict)
-  shift              Shift?              @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+  shift              Shift?              @relation("InvoiceShift", fields: [shiftId], references: [id], onDelete: Restrict)
+  cancelledShift     Shift?              @relation("InvoiceCancelledShift", fields: [cancelledShiftId], references: [id], onDelete: Restrict)
   items              InvoiceItem[]
   udharTransactions  UdharTransaction[]
   inventoryLogs      InventoryLog[]
@@ -1427,6 +1451,7 @@ model Invoice {
   @@index([customerId])
   @@index([cashierId])
   @@index([shiftId])
+  @@index([cancelledShiftId])
   @@index([originalId])
   @@index([shopId, createdAt])
   @@index([shopId, type, status, createdAt])
@@ -1518,18 +1543,24 @@ model UdharTransaction {
   reference      String?
   idempotencyKey String?
   recordedById   String
+  /// The actor's open shift when a repayment was taken (its drawer received the
+  /// cash), so the shift's receipts can be rebuilt from its documents (roadmap
+  /// 9.5). NULL for credit / adjustment rows and for repayments before it existed.
+  shiftId        String?
   createdAt      DateTime             @default(now())
 
   customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
   invoice    Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
   shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Restrict)
   recordedBy User     @relation("UdharRecordedBy", fields: [recordedById], references: [id], onDelete: Restrict)
+  shift      Shift?   @relation(fields: [shiftId], references: [id], onDelete: Restrict)
 
   @@unique([shopId, idempotencyKey])
   @@index([customerId, createdAt])
   @@index([shopId, type])
   @@index([invoiceId])
   @@index([recordedById])
+  @@index([shiftId])
 }
 
 model InventoryLog {
@@ -3083,6 +3114,33 @@ model LedgerPosting {
   shop Shop @relation(fields: [shopId], references: [id], onDelete: Restrict)
 
   @@unique([shopId, sourceType, sourceId])
+}
+
+/// One financial reconciliation of a shop's business day (roadmap 9.5): every
+/// check with its figures and the drifts it found, kept per run so the nightly
+/// history and the on-demand runs are both readable (GET /reconciliation/*).
+model ReconciliationRun {
+  id           String                  @id @default(cuid())
+  shopId       String
+  /// The business day reconciled, YYYY-MM-DD in `timeZone`.
+  businessDate String                  @db.VarChar(10)
+  timeZone     String                  @db.VarChar(64)
+  trigger      ReconciliationTrigger
+  status       ReconciliationRunStatus
+  driftCount   Int                     @default(0)
+  /// ReconciliationReport.checks: each check's status, figures and drifts.
+  checks       Json
+  /// ReconciliationReport.summary: the day's totals the checks were computed from.
+  summary      Json?
+  error        String?                 @db.Text
+  startedAt    DateTime
+  finishedAt   DateTime?
+  createdAt    DateTime                @default(now())
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Restrict)
+
+  @@index([shopId, businessDate, startedAt])
+  @@index([shopId, startedAt])
 }
 
 model InventoryDriftLog {

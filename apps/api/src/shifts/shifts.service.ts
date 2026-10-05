@@ -3,6 +3,7 @@ import { Prisma, Shift } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { BillingActor, isManager, money } from '../billing/billing.types';
 import { BillingHelpers } from '../billing/billing.helpers';
+import { Clock } from '../common/time/clock';
 import { CloseShiftDto, ListShiftsDto, OpenShiftDto } from './dto/shift.dto';
 import { pageArgs } from '../common/pagination';
 import { rethrowUniqueViolation } from '../common/db/unique-violation';
@@ -25,7 +26,11 @@ export type ShiftView = Shift & { openedBy: { id: string; name: string }; closed
  */
 @Injectable()
 export class ShiftsService {
-  constructor(private readonly prisma: PrismaService, private readonly helpers: BillingHelpers) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly helpers: BillingHelpers,
+    private readonly clock: Clock,
+  ) {}
 
   private view(shift: Shift & { openedBy: { id: string; name: string }; closedBy: { id: string; name: string } | null }): ShiftView {
     return { ...shift, variance: shift.closingCash ? shift.closingCash.minus(shift.expectedCash) : null };
@@ -66,6 +71,7 @@ export class ShiftsService {
               notes: dto.notes ?? null,
               status: 'OPEN',
               openToken: OPEN_TOKEN,
+              openedAt: this.clock.now(),
             },
             include: SHIFT_INCLUDE,
           });
@@ -109,7 +115,7 @@ export class ShiftsService {
         data: {
           status: 'CLOSED',
           openToken: null,
-          closedAt: new Date(),
+          closedAt: this.clock.now(),
           closedById: actor.userId,
           closingCash,
           notes: dto.notes ? (before.notes ? `${before.notes} | ${dto.notes}` : dto.notes) : before.notes,

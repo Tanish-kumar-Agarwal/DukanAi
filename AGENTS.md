@@ -1192,6 +1192,56 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   proves both with `promtool test rules` (sample every minute: a 1 h
   interval leaves 55 min gaps that break `for:`); CI runs it next to the
   rule check.
+- 9.5 reconciliation (`src/reconciliation`): `reconcileBusinessDay(db, {
+  shopId, timeZone, businessDate })` in `reconciliation-engine.ts` is pure
+  over a Prisma client (every query names the shop) and runs seven checks
+  (documents, postings, tenders, dashboard, shifts, stock, ledger; contract
+  §11), each with figures and drifts (subject, detail, expected, actual,
+  difference). Expected postings are rebuilt from the stored document: tender
+  rows (legacy `paidAmount` under `paymentMode` when there are none), credit,
+  `splitRevenue`, and cost of goods from the `StockLedgerEntry` rows that
+  reference the document (so a service product or custom line expects none,
+  and a product whose type changed later cannot cause a false drift). A
+  cancellation's credit reversal is the ADJUSTMENT `UdharTransaction` on the
+  sale; repaid credit comes back as cash. `ReconciliationService` records
+  every run as a `ReconciliationRun` row (FAILED with the error when the
+  engine throws), counts `reconciliation_runs_total{status}` /
+  `reconciliation_drift_total{check}`, and sweeps every shop's previous
+  business day (in the shop's zone) nightly under `cron:reconciliation`
+  (`CRON_RECONCILIATION`, job `Reconciliation`, listed in
+  `scheduler-enabled.integration-spec.ts`). Gauges
+  `reconciliation_shops_with_drift` / `reconciliation_last_run_timestamp_seconds`
+  are read from the table on every scrape (`ObservabilityCollectorsService`);
+  alerts `DukaanAiReconciliationDrift` (at once) and
+  `DukaanAiReconciliationStale` (26 h) with promtool tests. Routes
+  `GET /reconciliation/latest|runs|runs/:id`, `POST /reconciliation/run
+  { date? }` (ADMIN_ROLES); CLI `npm run reconcile -- --shop <id> [--date]
+  [--json]` (`scripts/reconcile.ts`, exit 1 on drift). Migration
+  `20261005090000_reconciliation_runs` adds the table and the two drawer
+  columns the shift check needs: `Invoice.cancelledShiftId` (set by
+  `cancelInvoice`) and `UdharTransaction.shiftId` (set by `recordPayment`);
+  NULL rows older than that migration (`_prisma_migrations.finished_at`)
+  make an overlapping shift INCONCLUSIVE, not DRIFT. The nightly sweep over
+  the whole local test database (over 2,000 shop-days) found drift only in
+  the fixtures that corrupt rows on purpose (`search-recon-dashboard`'s
+  stale `RECONOLD` product, balances seeded without transactions). Never add
+  a repair to the engine: it reports, people correct. The compose smoke
+  (`scripts/smoke-flow.mjs`) asserts a CLEAN run after the sale and the
+  restore drill runs the CLI on the restored copy.
+- 9.6 clock (`src/common/time/clock.ts`, global `ClockModule`): `Clock.now()`
+  is the one "now" for POS documents. `BillingService`,
+  `InvoiceReversalService`, `ShiftsService`, `CustomersService.recordPayment`
+  and `DashboardService` inject it; the sale, return and cancellation
+  transactions take one instant for the FY tag, the explicit `createdAt`
+  and the stock movements (Prisma's `@default(now())` is the engine's own
+  clock, so `createdAt` is set, never defaulted, on those rows). A new
+  writer of a dated POS document uses the clock and sets `createdAt`.
+  `test/integration/financial-year-rollover.integration-spec.ts` overrides
+  the provider (`bootApp(b => b.overrideProvider(Clock).useValue(...))`) and
+  bills across 31 March / 1 April: numbers, sequences, the cancellation
+  window, the dashboard day and the invoice list agree with the FY tags and
+  both days reconcile. `NumberSequence` rows are per prefix
+  (`INV-<FY>-`), which is why a new year starts at 000001 on its own.
 
 ## Toolchain
 

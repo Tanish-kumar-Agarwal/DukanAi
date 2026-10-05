@@ -2,6 +2,7 @@ import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common'
 import { InvoiceStatus, Prisma, ShiftStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { businessDateString, endOfBusinessDay, startOfBusinessDay } from '../../common/time/business-day';
+import { Clock } from '../../common/time/clock';
 import { trailingBusinessDays } from '../analytics-range';
 import { InvoiceTotals, RevenueEngine } from '../engines/revenue-engine';
 import { ProfitMarginEngine, TopProduct } from '../engines/profit-margin-engine';
@@ -163,11 +164,12 @@ export class DashboardService {
     private readonly forecastEngine: ForecastEngine,
     private readonly cache: AnalyticsCacheService,
     private readonly shopTimezone: ShopTimezoneService,
+    private readonly clock: Clock,
   ) {}
 
   async getSummary(shopId: string, userId: string): Promise<DashboardSummary> {
     const timeZone = await this.shopTimezone.resolve(shopId);
-    const now = new Date();
+    const now = this.clock.now();
     const start = startOfBusinessDay(now, timeZone);
     const end = endOfBusinessDay(now, timeZone);
 
@@ -310,7 +312,7 @@ export class DashboardService {
     if (cached) return cached;
 
     const timeZone = await this.shopTimezone.resolve(shopId);
-    const now = new Date();
+    const now = this.clock.now();
     const totals = await this.revenueEngine.totals(
       shopId,
       startOfBusinessDay(now, timeZone),

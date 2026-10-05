@@ -99,3 +99,37 @@ tests:
             exp_annotations:
               summary: "Backup job dump has not succeeded in time"
               description: "The last successful dump backup was 1d 3h 0m 0s ago (limits: binlog 15 min, dump / documents / offsite 26 h). The recovery point is growing: run `db-ops status`, then the job by hand (db-ops backup, binlog-archive --flush, documents-backup, offsite push) and read its error."
+
+  # Financial reconciliation (roadmap 9.5): drift fires at once, staleness
+  # after 26 h without a run (plus the 30 min hold).
+  - interval: 1m
+    input_series:
+      # every shop clean for ten minutes, then one shop's latest run is DRIFT
+      - series: 'reconciliation_shops_with_drift{job="dukaanai-api", instance="api:3002"}'
+        values: '0x10 1x10'
+      # a run recorded at t=0 and never again, sampled every minute for 27 h
+      - series: 'reconciliation_last_run_timestamp_seconds{job="dukaanai-api", instance="api:3002"}'
+        values: '0x1620'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DukaanAiReconciliationDrift
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: DukaanAiReconciliationDrift
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Financial reconciliation found drift"
+              description: "1 shop(s) have a latest reconciliation run that ended in DRIFT or FAILED. Read it as the shop owner (GET /reconciliation/latest, or `npm run reconcile -- --shop <id> --date <day>` from a checkout): every drift names the check, the document or row and the two figures that disagree. The books are never corrected automatically."
+      - eval_time: 25h
+        alertname: DukaanAiReconciliationStale
+        exp_alerts: []
+      - eval_time: 27h
+        alertname: DukaanAiReconciliationStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "No financial reconciliation run in 26 hours"
+              description: "The most recent reconciliation run finished 1d 3h 0m 0s ago. Check CRON_ENABLED on at least one instance, CRON_RECONCILIATION, the cron:reconciliation lock and the 'Reconciliation' lines in the API logs; run one by hand with POST /reconciliation/run."

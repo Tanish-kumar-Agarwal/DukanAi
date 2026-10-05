@@ -19,12 +19,18 @@
 # (nothing duplicated, nothing lost). --pitr auto (default) skips steps 7-9
 # with the reason when the server writes no binary log, the dump carries no
 # position, mysqlbinlog is missing or the user cannot switch session binary
-# logging off; require fails instead (CI); skip never runs them. Both scratch
+# logging off; require fails instead (CI); skip never runs them. Step 10
+# (roadmap 9.5): the books of the restored copy are reconciled with
+# `npm run reconcile` (the shop of the newest invoice, today's business day)
+# and must come out exactly as the same reconciliation of the source: same
+# status, drift count, checks and summary (a drift the source already
+# carries is preserved, not hidden; a difference means the restore lost or
+# changed a row). Skipped when the copy holds no invoice. Both scratch
 # databases are dropped (--keep leaves them). Run it against a quiet source
 # (CI after the integration suites, a staging copy, or production during a
 # maintenance window): with writes in flight the counts differ and the drill
-# fails, which is the point. Needs node (prisma CLI from apps/api), mysql,
-# mysqldump and mysqlbinlog 8 on PATH (or MYSQL_BIN / MYSQLDUMP_BIN /
+# fails, which is the point. Needs node and npm (prisma CLI and the
+# reconcile script from apps/api), mysql, mysqldump and mysqlbinlog 8 on PATH (or MYSQL_BIN / MYSQLDUMP_BIN /
 # MYSQLBINLOG_BIN).
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -36,7 +42,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --keep) KEEP=1; shift ;;
     --pitr) PITR="$2"; shift 2 ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -64,23 +70,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
-step "1/9 Backup of $DB_NAME ($DB_HOST:$DB_PORT, MySQL $(server_version))"
+step "1/10 Backup of $DB_NAME ($DB_HOST:$DB_PORT, MySQL $(server_version))"
 backup="$(bash "$REPO/scripts/db/backup.sh" --out "$WORK" --keep 0 --label drill | tail -n 1)"
 [ -f "$backup" ] || die "backup.sh did not produce a file"
 
-step "2/9 Restore into scratch database $DRILL_DB"
+step "2/10 Restore into scratch database $DRILL_DB"
 bash "$REPO/scripts/db/restore.sh" "$backup" --database "$DRILL_DB" --create --yes
 
 # The scratch database's URL for the Prisma CLI, credentials percent-encoded.
 enc() { node -e "process.stdout.write(encodeURIComponent(process.argv[1]))" "$1"; }
 DRILL_URL="mysql://$(enc "$DB_USER"):$(enc "$DB_PASS")@$DB_HOST:$DB_PORT/$DRILL_DB"
 
-step "3/9 prisma migrate status on $DRILL_DB (every migration applied, nothing pending)"
+step "3/10 prisma migrate status on $DRILL_DB (every migration applied, nothing pending)"
 status="$(cd "$REPO/apps/api" && DATABASE_URL="$DRILL_URL" npx prisma migrate status 2>&1)" || { printf '%s\n' "$status"; die "migrate status failed"; }
 printf '%s\n' "$status" | tail -n 3
 printf '%s\n' "$status" | grep -q "Database schema is up to date" || die "the restored database has pending or unknown migrations"
 
-step "4/9 prisma migrate diff: restored schema == prisma/schema.prisma"
+step "4/10 prisma migrate diff: restored schema == prisma/schema.prisma"
 ( cd "$REPO/apps/api" && DATABASE_URL="$DRILL_URL" npx prisma migrate diff --from-url "$DRILL_URL" --to-schema-datamodel prisma/schema.prisma --exit-code ) \
   || die "the restored schema differs from schema.prisma"
 
@@ -107,12 +113,12 @@ compare_counts() {
   COMPARED_ROWS="$rows"
 }
 
-step "5/9 Row counts: every table of $DB_NAME has the same count in $DRILL_DB"
+step "5/10 Row counts: every table of $DB_NAME has the same count in $DRILL_DB"
 compare_counts "$DB_NAME" "$DRILL_DB" || die "table(s) differ (was the source written to during the drill?)"
 tables="$COMPARED_TABLES"
 rows="$COMPARED_ROWS"
 
-step "6/9 Ledger immutability triggers restored"
+step "6/10 Ledger immutability triggers restored"
 src_triggers="$(sql "$DB_NAME" "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = '$DB_NAME'")"
 dst_triggers="$(sql "$DRILL_DB" "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = '$DRILL_DB'")"
 printf '  source=%s restored=%s\n' "$src_triggers" "$dst_triggers"
@@ -134,20 +140,20 @@ fi
 pitr_result=""
 if [ -n "$pitr_reason" ]; then
   [ "$PITR" != require ] || die "point-in-time drill impossible: $pitr_reason"
-  step "7/9 Point-in-time drill skipped: $pitr_reason"
+  step "7/10 Point-in-time drill skipped: $pitr_reason"
   pitr_result="point in time skipped ($pitr_reason)"
 else
-  step "7/9 Two writes after the backup in $DRILL_DB: marker A, a target time, marker B"
+  step "7/10 Two writes after the backup in $DRILL_DB: marker A, a target time, marker B"
   markers="$(bash "$REPO/scripts/db/pitr-markers.sh" write --database "$DRILL_DB")"
   printf '%s\n' "$markers" | grep -v '^run=\|^target_time='
   run="$(printf '%s\n' "$markers" | sed -n 's/^run=//p')"
   target_time="$(printf '%s\n' "$markers" | sed -n 's/^target_time=//p')"
   [ -n "$run" ] && [ -n "$target_time" ] || die "pitr-markers.sh printed no run / target time"
 
-  step "8/9 Archive the binary logs (binlog-archive.sh --flush) into $WORK/binlog"
+  step "8/10 Archive the binary logs (binlog-archive.sh --flush) into $WORK/binlog"
   bash "$REPO/scripts/db/binlog-archive.sh" --out "$WORK/binlog" --flush --keep-days 0
 
-  step "9/9 Restore the backup rolled forward to $target_time UTC into $PITR_DB: A present, B absent, every other table equal"
+  step "9/10 Restore the backup rolled forward to $target_time UTC into $PITR_DB: A present, B absent, every other table equal"
   replay_started="$(date +%s)"
   bash "$REPO/scripts/db/restore.sh" "$backup" --database "$PITR_DB" --create --yes --to "$target_time" --binlogs "$WORK/binlog" --replay-database "$DRILL_DB"
   replay_elapsed=$(( $(date +%s) - replay_started ))
@@ -156,6 +162,43 @@ else
   pitr_result="point in time: marker before $target_time UTC kept, marker after it excluded, ${COMPARED_TABLES} tables equal (restore + replay ${replay_elapsed}s)"
 fi
 
+# Books of the restored copy (roadmap 9.5): the same reconciliation on both
+# sides must agree in every figure. The CLI exits 0 when clean and 1 on
+# drift (both are answers here); anything else is a failure of the run.
+step "10/10 The restored copy's books reconcile exactly as the source's (npm run reconcile on $DRILL_DB and $DB_NAME)"
+now_utc="$(date -u '+%Y-%m-%d %H:%M:%S')"
+recon_shop="$(sql "$DRILL_DB" "SELECT shopId FROM Invoice WHERE createdAt <= '$now_utc' ORDER BY createdAt DESC, id DESC LIMIT 1")"
+if [ -z "$recon_shop" ]; then
+  recon_result="reconciliation skipped (the copy holds no invoice)"
+  printf '  %s\n' "$recon_result"
+else
+  SOURCE_URL="mysql://$(enc "$DB_USER"):$(enc "$DB_PASS")@$DB_HOST:$DB_PORT/$DB_NAME"
+  reconcile_json() {
+    local out rc
+    out="$(cd "$REPO/apps/api" && DATABASE_URL="$1" npm run --silent reconcile -- --shop "$recon_shop" --json 2>"$WORK/reconcile.err")" && rc=0 || rc=$?
+    [ "$rc" = 0 ] || [ "$rc" = 1 ] || { cat "$WORK/reconcile.err" >&2; die "npm run reconcile failed (exit $rc) against $1"; }
+    printf '%s\n' "$out"
+  }
+  reconcile_json "$DRILL_URL" >"$WORK/recon-restored.json"
+  reconcile_json "$SOURCE_URL" >"$WORK/recon-source.json"
+  recon_result="$(node -e '
+    const fs = require("fs");
+    const pick = (file) => {
+      const run = JSON.parse(fs.readFileSync(file, "utf8"));
+      return { status: run.status, driftCount: run.driftCount, businessDate: run.businessDate, checks: run.checks, summary: run.summary };
+    };
+    const [restored, source] = [pick(process.argv[1]), pick(process.argv[2])];
+    const same = JSON.stringify(restored) === JSON.stringify(source);
+    const checks = restored.checks.map((c) => `${c.name}=${c.status}`).join(" ");
+    if (!same) {
+      console.error(`restored: ${JSON.stringify(restored)}\nsource:   ${JSON.stringify(source)}`);
+      process.exit(1);
+    }
+    console.log(`books of shop ${process.argv[3]} on ${restored.businessDate}: ${restored.status} with ${restored.driftCount} drift(s) on both sides (${checks})`);
+  ' "$WORK/recon-restored.json" "$WORK/recon-source.json" "$recon_shop")" || die "the restored copy's books differ from the source's for shop $recon_shop"
+  printf '  %s\n' "$recon_result"
+fi
+
 elapsed=$(( $(date +%s) - started ))
-printf '\nRESTORE DRILL PASSED: %s -> %s, backup %s, %s tables / %s rows, %s triggers; %s; %ss\n' \
-  "$DB_NAME" "$DRILL_DB" "$(du -h "$backup" | cut -f1)" "$tables" "$rows" "$dst_triggers" "$pitr_result" "$elapsed"
+printf '\nRESTORE DRILL PASSED: %s -> %s, backup %s, %s tables / %s rows, %s triggers; %s; %s; %ss\n' \
+  "$DB_NAME" "$DRILL_DB" "$(du -h "$backup" | cut -f1)" "$tables" "$rows" "$dst_triggers" "$pitr_result" "$recon_result" "$elapsed"

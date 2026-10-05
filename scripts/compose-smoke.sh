@@ -106,4 +106,4 @@ step "graceful stop: SIGTERM -> readiness 503 -> exit 0 (never SIGKILL)"
 for _ in $(seq 1 60); do sleep 2; curl -fsS -o /dev/null "$API/health/ready" && break; done
 curl -fsS -o /dev/null "$API/health/ready" || fail "api not ready after restart"
 
-printf '\nSMOKE PASSED: migrations applied, sign-in and a sale through the web and the API, the pre-sale dump rolled forward to now holds the sale, documents archived, encrypted off-site copy verified, backup metric exposed, the archiver service runs, graceful stop verified.\n'
+printf '\nSMOKE PASSED: migrations applied, sign-in and a sale through the web and the API, the books of the day reconcile, the pre-sale dump rolled forward to now holds the sale, documents archived, encrypted off-site copy verified, backup metric exposed, the archiver service runs, graceful stop verified.\n'

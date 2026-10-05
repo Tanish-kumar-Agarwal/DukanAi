@@ -451,6 +451,10 @@ idempotencyKey? }` both record a `SupplierPayment` (the ledger source,
 replayed per idempotency key). `SupplierPayablesService.payablesFromLedger`
 rebuilds the balance from `openingPayables` and the postings.
 
+Every posting is reconciled against its document nightly and on demand
+(§11): the entries above are the ones the reconciliation expects, and the
+cost-of-goods entries are expected only for the lines whose stock moved.
+
 `SERVICE`, `DIGITAL` and custom lines never move `INVENTORY` or
 `COST_OF_GOODS`. Valuation basis: receipts and supplier returns post at the
 document `unitPrice`; sales, customer returns and adjustments post at the
@@ -500,3 +504,77 @@ costing layer.
   unique indexes; the default warehouse/bin bootstrap of a shop runs under
   the `Shop` row lock for the same reason.
 
+## 11. Financial reconciliation (roadmap 9.5)
+
+The books of a business day are proven to the paisa by
+`ReconciliationService` (`apps/api/src/reconciliation`), nightly for every
+shop (`CRON_RECONCILIATION`, the shop's previous business day in its own
+timezone, under the `cron:reconciliation` lock) and on demand. Every run,
+clean or not, is a `ReconciliationRun` row (`businessDate`, `timeZone`,
+`trigger` CRON / MANUAL / CLI, `status` CLEAN / DRIFT / FAILED,
+`driftCount`, `checks`, `summary`, `error`). Nothing is corrected: a drift
+names the check, the document or row and the two figures that disagree, for
+a person to explain or fix with a recorded adjustment.
+
+The seven checks (`reconciliation-engine.ts`, pure over a Prisma client, so
+the cron, the route and the CLI run identical code):
+
+| Check | Identity |
+|---|---|
+| `documents` | every sale and return of the day: `taxable + tax + round-off = total`, `Σ tender rows + credit = total`, `paid = Σ tender rows`; every repayment: `balance before − amount = balance after` |
+| `postings` | every sale, return, cancellation and repayment of the day has exactly the posting of §9 that its stored amounts imply: CASH / BANK by tender row, ACCOUNTS_RECEIVABLE by credit, SALES_REVENUE / GST_PAYABLE by `splitRevenue`, COST_OF_GOODS / INVENTORY from the stock movements the document caused (`StockLedgerEntry` by reference, so a service product or a custom line expects none); every posting created in the window balances, and a POS posting points at a real document of its kind |
+| `tenders` | the day's CASH, BANK and ACCOUNTS_RECEIVABLE movement in the matched postings equals the documents by tender |
+| `dashboard` | `GET /dashboard/summary`'s figures for the day (the shared SQL of `RevenueEngine.totals`: gross sales, returns, orders, return count) equal the documents, and net sales equal the ledger's revenue + GST movement (a same-day cancellation is excluded by the dashboard and nets to zero in the ledger) |
+| `shifts` | every shift open at any point of the day, rebuilt from its documents: `expectedCash = openingCash + cash sales − cash refunds (returns and cancellations, repaid credit included) + cash repayments`, and `totalSales`, `cashSales`, `upiSales`, `cardSales`, `udharSales`, `totalReceipts` likewise |
+| `stock` | every live `InventoryItem.onHand` equals its stock ledger (a `StockSnapshot`, when one exists, plus the entries after it) and every product's `currentStock` equals the sum of its items |
+| `ledger` | every `LedgerAccountBalance` equals the sum of its transactions (debit-normal accounts grow with debits) and the last transaction's `balanceAfter` |
+
+Two facts the shift check needs are stored on the documents (migration
+`20261005090000_reconciliation_runs`): `Invoice.cancelledShiftId`, the drawer
+a cancellation refunded (the sale's own shift while it is open, else the
+actor's; NULL when no drawer was involved, e.g. a non-cash refund with no
+open shift), and `UdharTransaction.shiftId`, the drawer a repayment was taken
+on. Rows written before that migration carry NULL although they did move a
+drawer; a shift they overlap is reported `INCONCLUSIVE` (with a note), never
+as drift.
+
+Routes (`OWNER` / `ADMIN` / `SUPER_ADMIN`; `VIEWER` and the counter roles are
+403; every id is the caller's shop, a foreign one is 404):
+
+- `GET /reconciliation/latest`: the newest run, `404 RECONCILIATION_NOT_RUN`
+  before the first.
+- `GET /reconciliation/runs` (paged, §5.6 headers; `checks` and `summary`
+  omitted) and `GET /reconciliation/runs/:id` (the whole run).
+- `POST /reconciliation/run { date? }` (201): reconciles the given business
+  day, today in the shop's timezone by default; `400
+  RECONCILIATION_INVALID_DATE` for a day that does not exist, `400
+  RECONCILIATION_FUTURE_DATE` for one that has not started.
+
+From a checkout: `npm run reconcile -- --shop <id> [--date <day>] [--json]`
+(`apps/api/scripts/reconcile.ts`, exit 0 clean, 1 drift, 2 usage or
+failure) records the run with trigger `CLI`. Metrics and alerts:
+`docs/OBSERVABILITY.md` (`reconciliation_*`, `DukaanAiReconciliationDrift`,
+`DukaanAiReconciliationStale`). Evidence:
+`test/integration/reconciliation.integration-spec.ts` (a mixed day with a
+closed shift at zero drift, every summary figure against an independent
+read, a corrupted row in each area detected and named, the sweep under the
+lock, the routes, the metrics, the CLI) and
+`financial-year-rollover.integration-spec.ts` (both days of the rollover
+reconcile, roadmap 9.6).
+
+## 12. The application clock (roadmap 9.6)
+
+`Clock` (`apps/api/src/common/time/clock.ts`, global) is the one source of
+"now" for every instant a POS document carries: the sale, return and
+cancellation transactions take one `now` from it for the document's
+financial-year tag (`financialYearLabel`), its `createdAt` (set explicitly;
+Prisma's `@default(now())` is the query engine's clock) and its stock
+movements; shifts open and close on it; repayments stamp it; the dashboard's
+business day is read from it. Production reads the system clock. The
+financial-year rollover spec replaces the provider with a settable clock and
+bills on 31 March 23:59 and 1 April 00:01 (Asia/Kolkata): `INV-2026-27-000003`
+is followed by `INV-2027-28-000001`, the return sequence restarts the same
+way, the old year's sequence rows and numbers are untouched (the unique key
+is `(shopId, financialYear, invoiceNumber)`), the same-day cancellation
+window flips with the business day, and the dashboard's `businessDate` and
+`GET /billing/invoices?from&to` agree with the FY tags.

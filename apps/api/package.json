@@ -27,6 +27,7 @@
     "test:integration": "jest --config ./test/jest-integration.json --runInBand",
     "test:security": "jest --config ./test/jest-integration.json --runInBand --testRegex '\\.security-spec\\.ts$'",
     "storage:migrate-legacy": "ts-node scripts/migrate-storage.ts",
+    "reconcile": "ts-node scripts/reconcile.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

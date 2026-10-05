@@ -118,6 +118,7 @@ engine), MySQL 8 clients, one CPU-constrained container:
 | Point in time: markers, archive of every closed log, dump restored and rolled forward to the target second | 110 s for the whole drill; restore 15 s, replay under 1 s | `restore-drill.sh --pitr require`: 29 logs (about 560 MB) archived, the write before the target time kept, the write after it excluded, 231 tables equal |
 | Documents drill: archive, restore into a fresh directory, every file compared | under 1 s | `scripts/storage/restore-drill.sh`: 81 files (storage root and product images), every SHA-256 identical, one file compared byte for byte |
 | Off-site drill: fresh backup set shipped encrypted, fetched on a clean workspace, restored | 17 s | `scripts/backup/offsite-drill.sh` to a local remote: 84 files / 531 MB, nothing readable in the bucket, 39 sidecars verified, documents and database restored |
+| Reconciliation of one shop's business day (seven checks) | 20 to 100 ms per shop-day in the engine; the nightly sweep of the local test database, over 2,000 shops, under a minute; `npm run reconcile` about 15 s including ts-node start-up | `ReconciliationRun.startedAt` to `finishedAt`; the day of the integration spec (six sales, two returns, a cancellation, two repayments, one shift) in under 100 ms |
 
 A first drill against the same database refused at the status step because
 the source was five migrations behind the repository; after `migrate deploy`
@@ -132,7 +133,7 @@ objective:
 | Detect | 10 min | `DukaanAiApiDown` fires after 2 minutes without a scrape; readiness answers 503 while the database is down. No alert yet says a *backup* is missing (row 9.4). |
 | Decide and reach the host | 10 min | one operator today; the rota is row 9.22 |
 | Restore | 15 min | measured above; the dump restores at roughly 0.7 MB/s of compressed dump, and one shop's year of billing is a few megabytes |
-| Verify | 10 min | `restore-drill.sh` steps 3 to 6, sign-in, a test sale |
+| Verify | 10 min | `restore-drill.sh` steps 3 to 6 and 10 (the restored copy's books reconcile), sign-in, a test sale |
 | Switch and warm | 5 min | `DATABASE_URL`, start, caches rebuild |
 | Reserve | 10 min | |
 
@@ -150,7 +151,7 @@ then.
 | Copies on the database host only, unencrypted | `db-ops offsite push` ships the whole volume nightly through rclone's crypt backend to `OFFSITE_REMOTE`, verified by cryptcheck, drilled in CI against a local remote and in the compose smoke; the real bucket in another account waits for the account | off-site, encrypted, in another account | 9.4: done; set `OFFSITE_REMOTE` and the key when the bucket exists |
 | Nobody is told when a backup is missing or old | every job stamps `BACKUP_STATUS_DIR`, the API exposes `backup_last_success_timestamp_seconds{kind}`, `DukaanAiBackupStale` (binlog 15 min, nightly jobs 26 h) and `DukaanAiBackupNeverRecorded` fire; `promtool test rules` proves it in CI | the same | 9.4: done |
 | Documents and product images | `db-ops documents-backup` nightly with a per-file manifest, `restore.sh` verifies every file, the drill runs in CI | scheduled, checksummed, restore-drilled, incl. `uploads/media` | 9.3: done |
-| A restored day's books are not proven to agree | the drill compares row counts | reconciliation of invoices, ledger, tenders, stock and dashboard to the paisa | 9.5 |
+| A restored day's books are not proven to agree | `ReconciliationService` proves every shop's previous business day nightly (documents, postings, tenders, dashboard, shifts, stock, account balances, to the paisa; `GET /reconciliation/latest`, `POST /reconciliation/run`, `npm run reconcile`), drift raises `DukaanAiReconciliationDrift`, and the restore drill runs the same reconciliation on the restored copy (step 10) | reconciliation of invoices, ledger, tenders, stock and dashboard to the paisa | 9.5: done |
 | One operator, no rota, no rehearsed incident flow | the repository owner | on-call rota, runbook per alert, drills | 9.18, 9.22 |
 | Secrets never rotated | in the store, untested rotation | every secret rotated once on staging | 9.11 |
 

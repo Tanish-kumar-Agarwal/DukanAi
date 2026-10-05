@@ -114,4 +114,12 @@ if (sale?.stock?.[0]?.productStockAfter !== 8) fail(`stock after the sale is not
 const summary = expectStatus('dashboard', 200, await call('GET', '/dashboard/summary', undefined, token));
 if (Number(summary?.todaySales) !== 40) fail(`dashboard todaySales is not 40: ${JSON.stringify(summary).slice(0, 300)}`);
 
-console.log(`\nSMOKE FLOW PASSED: owner ${email} registered, signed in on the API and the web, sale ${sale.invoice.invoiceNumber} completed, dashboard agrees.`);
+step('the books of the day agree to the paisa (POST /reconciliation/run, roadmap 9.5)');
+const run = expectStatus('reconciliation run', 201, await call('POST', '/reconciliation/run', {}, token));
+if (run?.status !== 'CLEAN' || run?.driftCount !== 0) fail(`reconciliation is not CLEAN: ${JSON.stringify(run).slice(0, 1200)}`);
+if (run?.summary?.sales?.count !== 1 || run?.summary?.netSales !== '40.00') fail(`reconciliation summary does not show the sale: ${JSON.stringify(run?.summary)}`);
+const latest = expectStatus('reconciliation latest', 200, await call('GET', '/reconciliation/latest', undefined, token));
+if (latest?.id !== run.id) fail(`GET /reconciliation/latest is not the run just made: ${JSON.stringify(latest).slice(0, 300)}`);
+console.log(`  reconciliation ${run.id}: ${run.status}, ${run.checks.length} checks, net sales ${run.summary.netSales}`);
+
+console.log(`\nSMOKE FLOW PASSED: owner ${email} registered, signed in on the API and the web, sale ${sale.invoice.invoiceNumber} completed, dashboard agrees, the books of the day reconcile.`);

@@ -106,4 +106,16 @@ export class CronConfig {
   @StringFromEnv()
   @EnvVariable('CRON_RETENTION_SWEEP')
   retentionSweepCron: string = '30 3 * * *'; // EVERY_DAY_AT_03:30
+
+  /**
+   * Nightly financial reconciliation (roadmap 9.5): every shop's previous
+   * business day, under a cron lock. Schedule it after the latest shop
+   * timezone has passed midnight (01:30 server time suits Asia/Kolkata on a
+   * UTC or IST server).
+   */
+  @IsString()
+  @IsCronExpression()
+  @StringFromEnv()
+  @EnvVariable('CRON_RECONCILIATION')
+  reconciliationCron: string = '30 1 * * *'; // EVERY_DAY_AT_01:30
 }

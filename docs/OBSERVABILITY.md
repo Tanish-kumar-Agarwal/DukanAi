@@ -55,6 +55,10 @@ stack on <http://localhost:9090>.
 | `outbox_rows` | gauge | `status` | outbox rows by status (PENDING, CLAIMED, PROCESSING, DONE, FAILED). |
 | `queue_jobs` | gauge | `queue`, `state` | BullMQ job counts per queue (waiting, active, delayed, failed) from the queue clients of this process. |
 | `retention_rows_purged_total` | counter | `table` | rows removed by the retention sweep (roadmap 7.8). |
+| `reconciliation_runs_total` | counter | `status` = `clean` / `drift` / `failed` | financial reconciliation runs (roadmap 9.5): the nightly cron, `POST /reconciliation/run` and the CLI alike. |
+| `reconciliation_drift_total` | counter | `check` = `documents` / `postings` / `tenders` / `dashboard` / `shifts` / `stock` / `ledger` | drifts found by reconciliation runs, by check. |
+| `reconciliation_shops_with_drift` | gauge | | shops whose newest reconciliation run ended in DRIFT or FAILED, read from `ReconciliationRun` on every scrape (a restart or another instance shows the same figure). |
+| `reconciliation_last_run_timestamp_seconds` | gauge | | Unix time the most recent reconciliation run finished, across every shop; no series until one has run. |
 - `backup_last_success_timestamp_seconds{kind}`: Unix time of the last successful backup job (`dump`, `binlog`, `documents`, `offsite`), read on every scrape from the `<kind>.last-success` files in `BACKUP_STATUS_DIR` (roadmap 9.4; written by `scripts/db/lib.sh` `record_success`). A kind whose file disappears loses its series.
 | `errors_tracked_total` | counter | `kind` = `unhandled` / `prisma` / `job` / `startup` | errors handed to error tracking, counted whether or not a DSN is set. |
 | `dukaanai_process_*`, `dukaanai_nodejs_*` | | | prom-client's default process and event-loop metrics. |
@@ -111,11 +115,15 @@ the rules; `severity` is `critical` for the two the roadmap requires and
 | `DukaanAiQueueFailedJobs` | failed jobs on a queue for 30 min | the failed set in Redis holds the job data and the last error; outbox-backed jobs also marked their row FAILED (above). |
 | `DukaanAiBackupStale` | a backup kind older than its objective: `binlog` 15 min, `dump` / `documents` / `offsite` 26 h, for 5 min | `db-ops status` shows every job's last success; run the late job by hand (`db-ops backup`, `binlog-archive --flush`, `documents-backup`, `offsite push`) and read its error: a full volume, a lost privilege, an unreachable remote, a wrong key. The recovery point grows while it stays red (`docs/DATA_SAFETY.md`). |
 | `DukaanAiBackupNeverRecorded` | no `backup_last_success_timestamp_seconds` series for a kind, for 30 min | the job is not scheduled (cron, `binlog-archiver` service), the API cannot read `BACKUP_STATUS_DIR` (the `db-backups` volume mounted read-only), or the job writes its stamps elsewhere (`BACKUP_STATUS_DIR` on the job side). |
+| `DukaanAiReconciliationDrift` | a shop's newest reconciliation run ended in DRIFT or FAILED (at once) | `GET /reconciliation/latest` as that shop's owner, or `npm run reconcile -- --shop <id> --date <day>` from a checkout: every drift names the check, the document or row and the two figures that disagree (`docs/POS_BILLING_CONTRACT.md` §11). A FAILED run carries the error. Nothing is corrected by the job; find the write that produced the row and fix the data with a recorded adjustment. |
+| `DukaanAiReconciliationStale` | no reconciliation run finished anywhere for 26 h, for 30 min | `CRON_ENABLED` on at least one instance, `CRON_RECONCILIATION`, the `cron:reconciliation` lock (a dead pod's lock expires after 30 min), the `Reconciliation` lines in the logs; run one by hand with `POST /reconciliation/run`. |
 
 ## Verification
 
 `deploy/prometheus/alerts.test.yml` is a promtool unit test: the two backup
-alerts fire on stale and missing series and stay quiet on fresh ones. CI runs
+alerts fire on stale and missing series and stay quiet on fresh ones, and the
+two reconciliation alerts fire on a drifted shop and on a day without a run
+(roadmap 9.5). CI runs
 `promtool test rules` with the rule check in the "Deployment (compose
 smoke)" job; locally: `promtool test rules deploy/prometheus/alerts.test.yml`
 from `deploy/prometheus`.
@@ -125,7 +133,9 @@ from `deploy/prometheus`.
   `src/config/domains/{logging,monitoring}.config.spec.ts`.
 - Integration: `apps/api/test/integration/observability.integration-spec.ts`
   (scrape format, route / status counting, checkout outcomes, outbox and
-  queue gauges, the ledger counter, token and disable switches).
+  queue gauges, the ledger counter, token and disable switches);
+  `test/integration/reconciliation.integration-spec.ts` (the reconciliation
+  gauges and counters before and after a corrupted row).
 - Boot: `test/boot-regression.e2e-spec.ts` refuses `LOG_LEVEL=debug` and a
   placeholder `SENTRY_DSN` in production.
 - Rules: `promtool check rules deploy/prometheus/alerts.yml` (CI job

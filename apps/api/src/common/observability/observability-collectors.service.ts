@@ -6,7 +6,14 @@ import { MonitoringConfig } from '../../config/domains/monitoring.config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 import { queueInstances } from '../lifecycle/queue-readiness';
-import { backupLastSuccessTimestampSeconds, outboxOldestPendingAgeSeconds, outboxRows, queueJobs } from './metrics';
+import {
+  backupLastSuccessTimestampSeconds,
+  outboxOldestPendingAgeSeconds,
+  outboxRows,
+  queueJobs,
+  reconciliationLastRunTimestampSeconds,
+  reconciliationShopsWithDrift,
+} from './metrics';
 
 const OUTBOX_STATUSES = ['PENDING', 'CLAIMED', 'PROCESSING', 'DONE', 'FAILED'] as const;
 const QUEUE_STATES = ['waiting', 'active', 'delayed', 'failed'] as const;
@@ -33,7 +40,36 @@ export class ObservabilityCollectorsService {
   ) {}
 
   async refresh(): Promise<void> {
-    await Promise.all([this.refreshOutbox(), this.refreshQueues(), this.refreshBackupStatus()]);
+    await Promise.all([this.refreshOutbox(), this.refreshQueues(), this.refreshBackupStatus(), this.refreshReconciliation()]);
+  }
+
+  /**
+   * The latest reconciliation run of every shop (roadmap 9.5): how many shops
+   * are not clean, and when the most recent run finished. Read from the
+   * database so the figures survive a restart and do not depend on which
+   * instance ran the cron; a shop that has never been reconciled has no run
+   * and does not count, and the timestamp gauge has no series until one has.
+   */
+  async refreshReconciliation(): Promise<void> {
+    try {
+      const rows = await this.tenantContext.runAsSuperAdmin(
+        async () =>
+          await this.prisma.$queryRaw<Array<{ notClean: unknown; lastFinished: Date | null }>>`
+            SELECT
+              COALESCE(SUM(CASE WHEN r.status <> 'CLEAN' THEN 1 ELSE 0 END), 0) AS notClean,
+              MAX(r.finishedAt) AS lastFinished
+            FROM ReconciliationRun r
+            JOIN (SELECT shopId, MAX(startedAt) AS startedAt FROM ReconciliationRun GROUP BY shopId) latest
+              ON latest.shopId = r.shopId AND latest.startedAt = r.startedAt
+          `,
+      );
+      const row = rows[0];
+      reconciliationShopsWithDrift.set(Number(row?.notClean ?? 0));
+      const finished = row?.lastFinished ? new Date(row.lastFinished).getTime() : NaN;
+      if (Number.isFinite(finished)) reconciliationLastRunTimestampSeconds.set(Math.floor(finished / 1000));
+    } catch (error) {
+      this.logger.warn(`Reconciliation gauges not refreshed: ${(error as Error).message}`);
+    }
   }
 
   /**

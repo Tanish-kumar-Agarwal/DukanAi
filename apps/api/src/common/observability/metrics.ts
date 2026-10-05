@@ -71,6 +71,36 @@ export const backupLastSuccessTimestampSeconds = new Gauge({
   registers: [metricsRegistry],
 });
 
+/** Financial reconciliation runs (roadmap 9.5), by outcome: clean, drift or failed. */
+export const reconciliationRunsTotal = new Counter({
+  name: 'reconciliation_runs_total',
+  help: 'Financial reconciliation runs by outcome (clean, drift, failed), nightly and on demand.',
+  labelNames: ['status'] as const,
+  registers: [metricsRegistry],
+});
+
+/** Drifts found by reconciliation runs, by check (documents, postings, tenders, shifts, stock, ledger, dashboard). */
+export const reconciliationDriftTotal = new Counter({
+  name: 'reconciliation_drift_total',
+  help: 'Drifts found by financial reconciliation runs, by check.',
+  labelNames: ['check'] as const,
+  registers: [metricsRegistry],
+});
+
+/** Shops whose most recent reconciliation run found drift or failed; read from the database on every scrape. */
+export const reconciliationShopsWithDrift = new Gauge({
+  name: 'reconciliation_shops_with_drift',
+  help: 'Shops whose latest financial reconciliation run ended in DRIFT or FAILED (0 when every shop is clean).',
+  registers: [metricsRegistry],
+});
+
+/** Unix time of the most recent finished reconciliation run across every shop; no series until one has run. */
+export const reconciliationLastRunTimestampSeconds = new Gauge({
+  name: 'reconciliation_last_run_timestamp_seconds',
+  help: 'Unix time the most recent financial reconciliation run finished, across every shop.',
+  registers: [metricsRegistry],
+});
+
 export const retentionRowsPurgedTotal = new Counter({
   name: 'retention_rows_purged_total',
   help: 'Rows removed by the retention sweep, by table.',

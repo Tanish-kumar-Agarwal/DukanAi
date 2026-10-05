@@ -106,6 +106,7 @@ the tuning values, so a container needs only these):
 | `BACKUP_STATUS_DIR` | production | the backup jobs' `<kind>.last-success` stamps, read on every scrape into `backup_last_success_timestamp_seconds{kind}` for the stale-backup alert; compose mounts the `db-backups` volume read-only and points it at `status/` (roadmap 9.4) |
 | `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`, `APP_RELEASE` | optional | error tracking is off until the DSN is set; set `APP_RELEASE` to the image tag or commit at deploy time |
 | `CRON_RETENTION_SWEEP`, `RETENTION_*` | optional | the nightly purge of expired tokens, DONE outbox rows and old history (roadmap 7.8; windows in `apps/api/.env.example`) |
+| `CRON_RECONCILIATION` | optional | the nightly financial reconciliation of every shop's previous business day (roadmap 9.5; default 01:30 server time, after every shop's midnight); drift raises `DukaanAiReconciliationDrift` |
 
 Web:
 
@@ -162,4 +163,13 @@ the stack down (`KEEP=1` leaves it running).
   deletes expired refresh and password-reset tokens, DONE outbox rows, old
   `SearchHistory` and `ProductEventLog` rows in bounded batches
   (`RETENTION_*`); `retention_rows_purged_total` counts what it removed.
+- Reconciliation: the `Reconciliation` cron (`CRON_RECONCILIATION`, 01:30 by
+  default, one instance at a time under the `cron:reconciliation` lock)
+  proves every shop's previous business day to the paisa (documents against
+  ledger postings, tenders, shifts, stock, account balances and the
+  dashboard figure) and records a `ReconciliationRun` row; the owner reads
+  it at `GET /reconciliation/latest`, runs one on demand with
+  `POST /reconciliation/run`, and an operator from a checkout with
+  `npm run reconcile -- --shop <id> --date <day>`. Drift is reported, never
+  corrected (`docs/POS_BILLING_CONTRACT.md` §11, `docs/OBSERVABILITY.md`).
 - `DEPLOYMENT_CHECKLIST.md` keeps the go-live order.

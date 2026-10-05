@@ -27,6 +27,7 @@ import { BillingCheckpoints } from './billing-checkpoints';
 import { checkoutDurationSeconds } from '../common/observability/metrics';
 import { isSerializationFailure } from '../common/db/serialization-retry';
 import { financialYearLabel, safeTimeZone } from '../common/time/business-day';
+import { Clock } from '../common/time/clock';
 
 type Tx = Prisma.TransactionClient;
 
@@ -120,6 +121,7 @@ export class BillingService {
     private readonly invoiceNumbers: InvoiceNumberService,
     private readonly ledger: LedgerPostingService,
     private readonly checkpoints: BillingCheckpoints,
+    private readonly clock: Clock,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -235,7 +237,9 @@ export class BillingService {
         try {
           const outcome = await this.prisma.$transaction(
             async (tx) => {
-              const now = new Date();
+              // One instant for the whole document: its number's financial year,
+              // createdAt (hence its business day) and the stock movements (9.6).
+              const now = this.clock.now();
               const financialYear = financialYearLabel(now, timeZone);
 
               // Authoritative prices are the ones committed when this transaction runs:
@@ -324,6 +328,7 @@ export class BillingService {
                   isInterState,
                   notes: dto.notes ?? null,
                   shiftId,
+                  createdAt: now,
                   items: {
                     create: math.lines.map((line) => {
                       const source = lines.find((l) => l.key === line.productId)!;

@@ -12,6 +12,7 @@ import { CustomerType, CustomerLifecycleStatus, KycStatus } from './domain/enums
 import { SalesFeatureConfig } from '../config/domains/features/sales-feature.config';
 import { LedgerPostingService } from '../ledger/ledger-posting.service';
 import { BillingHelpers } from '../billing/billing.helpers';
+import { Clock } from '../common/time/clock';
 import { BillingActor, isManager, money } from '../billing/billing.types';
 import { BillingCheckpoints } from '../billing/billing-checkpoints';
 import { withSerializationRetry } from '../common/db/serialization-retry';
@@ -31,6 +32,7 @@ export class CustomersService {
     private readonly ledger: LedgerPostingService,
     private readonly billingHelpers: BillingHelpers,
     private readonly checkpoints: BillingCheckpoints,
+    private readonly clock: Clock,
   ) {}
 
   async create(data: CreateInput, actor?: Pick<BillingActor, 'userId' | 'ipAddress' | 'role'>) {
@@ -210,6 +212,7 @@ export class CustomersService {
         SELECT id FROM Shift WHERE shopId = ${actor.shopId} AND openedById = ${actor.userId} AND status = 'OPEN' AND isDeleted = false ORDER BY openedAt DESC LIMIT 1 FOR UPDATE
       `;
       const shiftId = shiftRows[0]?.id ?? null;
+      const now = this.clock.now();
 
       const rows = await tx.$queryRaw<Array<{ id: string; name: string; outstandingBalance: unknown; isActive: number | boolean }>>`
         SELECT id, name, outstandingBalance, isActive FROM Customer WHERE id = ${id} AND shopId = ${actor.shopId} AND isDeleted = false FOR UPDATE
@@ -241,13 +244,17 @@ export class CustomersService {
           idempotencyKey: dto.idempotencyKey,
           notes: dto.notes ?? null,
           recordedById: actor.userId,
+          // The drawer that took the money (roadmap 9.5): the reconciliation
+          // rebuilds every shift's receipts and cash from its documents.
+          shiftId,
+          createdAt: now,
         },
       });
 
       await this.checkpoints.reach('BEFORE_CUSTOMER', 'REPAYMENT');
       const customer = await tx.customer.update({
         where: { id, shopId: actor.shopId },
-        data: { outstandingBalance: after, totalPaid: { increment: amount }, lastPaymentAt: new Date() },
+        data: { outstandingBalance: after, totalPaid: { increment: amount }, lastPaymentAt: now },
       });
       await this.checkpoints.reach('AFTER_CUSTOMER', 'REPAYMENT');
 

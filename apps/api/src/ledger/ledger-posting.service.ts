@@ -37,7 +37,7 @@ export interface LedgerPostingResult {
 }
 
 /** Accounts whose balance grows with debits (assets / expenses). */
-const DEBIT_NORMAL: ReadonlySet<LedgerAccount> = new Set<LedgerAccount>([
+export const DEBIT_NORMAL: ReadonlySet<LedgerAccount> = new Set<LedgerAccount>([
   LedgerAccount.CASH,
   LedgerAccount.BANK,
   LedgerAccount.ACCOUNTS_RECEIVABLE,
