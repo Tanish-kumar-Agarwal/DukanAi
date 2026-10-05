@@ -1117,6 +1117,33 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   directory (`--out`, `--keep 48`; pruning is per directory and database
   name) next to the nightly keep-14. Update the document at every change to
   a store, a backup script or a schedule.
+- 9.2 point in time (`scripts/db/`, `docs/BACKUP_RESTORE.md`): every dump
+  records its binary-log position (`--source-data=2`, `--master-data=2` on
+  older or MariaDB clients; the comment survives `--skip-comments`; parsed by
+  `dump_coordinates`, kept in the `.meta` sidecar with database and snapshot
+  time; needs RELOAD + REPLICATION CLIENT, `--coordinates skip` opts out, a
+  server without a binary log says so). `binlog-archive.sh` copies closed
+  logs with `mysqlbinlog --read-from-remote-server --raw` (REPLICATION
+  SLAVE), size-checked and checksummed, idempotent, `--flush` closes the open
+  log (the 5-minute cron always passes it), `.last-success` for 9.4.
+  `restore.sh --to` (UTC) replays the contiguous archive from the dump's
+  position: `TZ=UTC mysqlbinlog --skip-gtids --start-position --stop-datetime
+  --rewrite-db='src->target' --database=<target>` (the rewrite is applied
+  before the filter, so the filter names the rewritten database), the
+  session with `sql_log_bin=0` when the user may (probe
+  `can_skip_session_binlog`), BINLOG statements need BINLOG_ADMIN. The
+  archive listing accepts only `<prefix>.<digits>`: a stray file once hid a
+  gap. `SHOW BINARY LOG STATUS` (8.4, which removed SHOW MASTER STATUS) and
+  `SHOW MASTER STATUS` (8.0) are both tried. `restore-drill.sh` steps 7-9
+  (`pitr-markers.sh write` into the scratch copy, archive, restore the same
+  dump rolled forward with `--replay-database <scratch copy>`, `verify`:
+  marker A kept, B excluded, every other table equal); CI runs `--pitr
+  require`, `auto` skips with the reason (no binlog, no position, no
+  mysqlbinlog, no sql_log_bin right). A MariaDB mysqlbinlog cannot read
+  MySQL 8 logs (`MYSQLBINLOG_BIN`). Compose: 7-day binlog expiry, `db-ops`
+  connects as root, `db-ops binlog-archive|latest`, and the compose smoke
+  runs backup, archive and a `--to` plan. The managed-provider path (settings
+  table, marker drill) is documented and waits for the account.
 
 ## Toolchain
 

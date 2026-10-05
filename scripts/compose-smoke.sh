@@ -49,6 +49,17 @@ step "release step: migrate exited 0 and a second run is a no-op"
 step "probes, registration, API and web sign-in, stock, shift, sale, dashboard (scripts/smoke-flow.mjs)"
 SMOKE_API_URL="$API" SMOKE_WEB_URL="$WEB" node scripts/smoke-flow.mjs || fail "smoke flow"
 
+step "ops (roadmap 9.2): a dump with its binary-log position, the binary-log archive, a point-in-time restore plan (db-ops)"
+out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops backup --label smoke 2>&1)" || { printf '%s\n' "$out"; fail "db-ops backup"; }
+printf '%s\n' "$out" | grep -q "binary-log position " || { printf '%s\n' "$out"; fail "the dump recorded no binary-log position"; }
+out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops binlog-archive --flush 2>&1)" || { printf '%s\n' "$out"; fail "db-ops binlog-archive"; }
+printf '%s\n' "$out" | grep -qE "archived [1-9][0-9]* file" || { printf '%s\n' "$out"; fail "no binary log was archived"; }
+latest="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops latest 2>/dev/null | tr -d '\r' | tail -n 1)"
+[ -n "$latest" ] || fail "db-ops latest printed no dump"
+out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops restore "$latest" --database dukaanai_pitr_plan --create --to "$(date -u -d '+1 minute' '+%Y-%m-%d %H:%M:%S')" 2>&1)" || { printf '%s\n' "$out"; fail "point-in-time restore plan"; }
+printf '%s\n' "$out" | grep -q "then replay " || { printf '%s\n' "$out"; fail "the restore plan has no replay step"; }
+printf '%s\n' "$out" | grep -q "Dry run" || { printf '%s\n' "$out"; fail "the restore plan was not a dry run"; }
+
 step "graceful stop: SIGTERM -> readiness 503 -> exit 0 (never SIGKILL)"
 "${COMPOSE[@]}" stop -t 40 api
 [ "$("${COMPOSE[@]}" ps -a --format '{{.ExitCode}}' api)" = "0" ] || fail "api did not exit 0 on SIGTERM (exit $("${COMPOSE[@]}" ps -a --format '{{.ExitCode}}' api))"
@@ -58,4 +69,4 @@ step "graceful stop: SIGTERM -> readiness 503 -> exit 0 (never SIGKILL)"
 for _ in $(seq 1 60); do sleep 2; curl -fsS -o /dev/null "$API/health/ready" && break; done
 curl -fsS -o /dev/null "$API/health/ready" || fail "api not ready after restart"
 
-printf '\nSMOKE PASSED: migrations applied, sign-in and a sale through the web and the API, graceful stop verified.\n'
+printf '\nSMOKE PASSED: migrations applied, sign-in and a sale through the web and the API, dump with binary-log position, binary-log archive, point-in-time plan, graceful stop verified.\n'

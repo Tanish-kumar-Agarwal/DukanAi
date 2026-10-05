@@ -38,7 +38,7 @@ managed deployment maps each store to the provider's equivalent
 
 | Store | What lives there | Protection today | Real RPO today | Objective |
 |---|---|---|---|---|
-| MySQL 8, `DATABASE_URL` [`mysql-data`] | All 230 Prisma models: shops, users and sessions (`RefreshToken`), products, stock (`InventoryItem`, ledger rows), invoices, returns, customers, udhar, payments, shifts, expenses, suppliers, procurement, the immutable ledger, outbox, audit log, notifications. Every row carries its `shopId`. | `scripts/db/backup.sh` (consistent InnoDB snapshot, checksum sidecar, keep 14) run nightly by the `db-ops` service into the `db-backups` volume on the same host; `restore-drill.sh` proves the scripts on every CI push. | the backup interval: 24 hours | 5 minutes |
+| MySQL 8, `DATABASE_URL` [`mysql-data`] | All 230 Prisma models: shops, users and sessions (`RefreshToken`), products, stock (`InventoryItem`, ledger rows), invoices, returns, customers, udhar, payments, shifts, expenses, suppliers, procurement, the immutable ledger, outbox, audit log, notifications. Every row carries its `shopId`. | `scripts/db/backup.sh` (consistent InnoDB snapshot that records its binary-log position; `.sha256` and `.meta` sidecars; keep 14) nightly, `binlog-archive.sh --flush` every five minutes copying the closed binary logs next to the dumps, both run by the `db-ops` service into the `db-backups` volume on the same host; `restore.sh --to` rolls a dump forward to any second the archive covers, and `restore-drill.sh --pitr require` proves the whole chain on every CI push. | the archive interval, 5 minutes, where both cron lines run; the dump interval where only the dump runs | 5 minutes |
 | Documents, `STORAGE_ROOT` [`api-storage`] | Per shop: `Customers/<customerId>/{Invoices,Bills,Statements,Profile,…}` (evidence written once with the `wx` flag and never replaced; a delete moves the file to `Deleted/`), `System/customer_index.json` and `invoice_registry.json` (indexes derived from the files), `Logs/` (the storage action log), `Backups/<type>/backup_<date>.zip` (the zip `POST /storage/backup` makes of the shop's own folders: it lands on the same volume, so it is an export, not a backup). | A manual copy of the volume (`docs/BACKUP_RESTORE.md`, "What else to back up"): no schedule, no checksum, no restore test. | undefined (whenever someone last copied it) | 24 hours |
 | Uploads [`api-uploads`, `apps/api/uploads`] | `media/`: product images and thumbnails; `MediaStorage.cdnUrl` and `MediaThumbnail.cdnUrl` point at them. `imports/`, `exports/`: import and export files. `tmp/` (`UPLOAD_TEMP_DIR`): upload staging, never older than a request. | None. A lost volume leaves `cdnUrl` rows pointing at nothing. | undefined | 24 hours for `media/`; `imports/`, `exports/` and `tmp/` are reproducible and excluded |
 | Redis, `REDIS_URL` [`redis-data`, append-only] | Cache (`cache:*`), rate-limit counters, cron locks, BullMQ jobs, advisory stock keys, the search-history budget. | None, by design. Append-only mode lets queued jobs survive a restart. | not applicable | none |
@@ -53,12 +53,13 @@ claimed returns to PENDING after `EVENTS_OUTBOX_STALE_CLAIM_MS` (5 minutes)
 through the reaper and is delivered again. Sessions are unaffected: refresh
 tokens live in MySQL.
 
-MySQL 8 keeps binary logs for 30 days by default (`log_bin=ON`,
-`binlog_expire_logs_seconds=2592000`; the compose server runs with that
-default), but `backup.sh` records no binary-log position, so a dump cannot be
-rolled forward today. Row 9.2 either hands point-in-time recovery to the
-managed provider (the production choice) or ships the logs with their
-coordinates.
+MySQL 8 writes a binary log by default; the compose server keeps seven days
+of it (`binlog_expire_logs_seconds=604800`) and the archive is the long
+memory. Every dump records the position it was taken at, so it rolls forward
+to any second the archive covers (`docs/BACKUP_RESTORE.md`, "Binary-log
+archive" and "Restore"). On a managed MySQL the provider's point-in-time
+recovery replaces the archive; its settings and the drill against it are in
+the same document and wait for the account.
 
 ## 3. What keeps the application itself from losing data
 
@@ -114,6 +115,7 @@ engine), MySQL 8 clients, one CPU-constrained container:
 | Release step on a dump five migrations old | 6 s | `prisma migrate deploy`, `20261003090000` to `20261004120000` |
 | Full drill (dump, restore, status, diff, counts, triggers) | 49 s | `scripts/db/restore-drill.sh` |
 | Documents: tar + checksum, untar + verify | 1.7 s + 0.1 s | the local storage root: 78 files, every checksum identical |
+| Point in time: markers, archive of every closed log, dump restored and rolled forward to the target second | 110 s for the whole drill; restore 15 s, replay under 1 s | `restore-drill.sh --pitr require`: 29 logs (about 560 MB) archived, the write before the target time kept, the write after it excluded, 231 tables equal |
 
 A first drill against the same database refused at the status step because
 the source was five migrations behind the repository; after `migrate deploy`
@@ -142,7 +144,7 @@ then.
 
 | Gap | Today | Objective | Closed by |
 |---|---|---|---|
-| Database recovery point | the nightly dump: 24 hours | 5 minutes | 9.2 (provider point-in-time recovery, or binary logs with coordinates) |
+| Database recovery point | self-hosted: the archive interval, 5 minutes, once the two cron lines run (in place since this revision); managed: the provider's point-in-time recovery, to switch on when the instance exists | 5 minutes | 9.2: done for the self-hosted path; the provider settings and the provider drill wait for the account |
 | Copies on the database host only, unencrypted | `db-backups` volume next to `mysql-data`; a manual copy off the host | off-site, encrypted, in another account | 9.4 |
 | Nobody is told when a backup is missing or old | no backup metric, no alert | `DukaanAiBackupStale` on `backup_last_success_timestamp` | 9.4 |
 | Documents and product images | a manual copy, unscheduled, unverified; `media/` not covered at all | scheduled, checksummed, restore-drilled, incl. `uploads/media` | 9.3 |
@@ -154,17 +156,19 @@ then.
 
 They cost nothing and shrink the exposure now:
 
-1. Dump hourly into its own directory, keep two days, next to the nightly
-   keep-14 dump (`backup.sh` prunes per directory and per database name, so
-   the two schedules never prune each other):
+1. Run the binary-log archive every five minutes next to the nightly dump
+   (`docs/BACKUP_RESTORE.md`, "Backup"):
 
    ```
-   0 * * * *  cd /srv/dukaanai && docker compose --profile ops run --rm db-ops backup --out /backups/hourly --keep 48
-   0 2 * * *  cd /srv/dukaanai && docker compose --profile ops run --rm db-ops backup
+   0 2 * * *    cd /srv/dukaanai && docker compose --profile ops run --rm db-ops backup
+   */5 * * * *  cd /srv/dukaanai && docker compose --profile ops run --rm db-ops binlog-archive --flush
    ```
 
-   Real database recovery point: 1 hour instead of 24, at the cost of
-   `--single-transaction` snapshots the API does not notice.
+   Real database recovery point: five minutes. Where the archive cannot run
+   (a backup user without REPLICATION SLAVE and RELOAD), dump hourly into
+   its own directory instead (`--out /backups/hourly --keep 48`; pruning is
+   per directory and per database name, so the two schedules never prune
+   each other): one hour instead of twenty-four.
 2. After the nightly dump, copy the `db-backups` volume and a tar of the
    `api-storage` and `api-uploads/media` volumes off the host (the commands
    in `docs/BACKUP_RESTORE.md`), and keep the copy in a different account
@@ -190,6 +194,9 @@ They cost nothing and shrink the exposure now:
 - The in-app zip (`POST /storage/backup`) is a per-shop export for row 9.24,
   not part of the recovery design.
 - Redis is disposable. No backup is taken and none is restored.
+- Point-in-time recovery is the provider's on a managed MySQL and the
+  binary-log archive on a VM; a dump always records its position so either
+  path can start from it.
 
 ## 7. Sign-off
 

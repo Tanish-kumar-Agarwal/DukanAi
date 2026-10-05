@@ -119,10 +119,12 @@ jobs:
         working-directory: apps/api
         run: npm run test:integration
       # Roadmap 7.7: the restore drill rehearses backup.sh + restore.sh against
-      # the MySQL 8 service, on the data the suites just wrote (mysqldump and
-      # mysql 8 come with the runner image).
+      # the MySQL 8 service, on the data the suites just wrote (mysqldump,
+      # mysqlbinlog and mysql 8 come with the runner image). --pitr require:
+      # the point-in-time steps (binary-log archive, restore --to) must run,
+      # so a service container without a binary log fails the job (9.2).
       - name: Backup and restore drill (MySQL 8)
-        run: bash scripts/db/restore-drill.sh
+        run: bash scripts/db/restore-drill.sh --pitr require
         env:
           DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
 

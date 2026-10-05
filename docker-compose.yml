@@ -18,8 +18,10 @@ services:
   mysql:
     image: mysql:8.0
     # Migrations create the ledger immutability triggers; with binary logging on
-    # (MySQL 8 default) a non-SUPER user may only do so with this flag.
-    command: ["mysqld", "--log-bin-trust-function-creators=1"]
+    # (MySQL 8 default) a non-SUPER user may only do so with this flag. The
+    # binary log is what restore.sh --to rolls a dump forward with (roadmap
+    # 9.2): the server keeps 7 days of it, the db-ops archive the long memory.
+    command: ["mysqld", "--log-bin-trust-function-creators=1", "--binlog-expire-logs-seconds=604800"]
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root-local-only}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-dukaanai}
@@ -145,23 +147,30 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # Backups (roadmap 7.7, profile "ops"): a MySQL 8 client container with
-  # scripts/db mounted; backups land in the db-backups volume. Schedule the
-  # backup line from the host's cron and copy the volume off the host.
-  # Objectives, the interim hourly schedule and what else to copy: docs/DATA_SAFETY.md.
-  #   docker compose --profile ops run --rm db-ops backup
+  # Backups (roadmap 7.7, 9.2; profile "ops"): a MySQL 8 client container
+  # with scripts/db mounted; dumps land in the db-backups volume and the
+  # binary-log archive in its binlog/ directory. Schedule the two lines from
+  # the host's cron and copy the volume off the host; objectives and what
+  # else to copy: docs/DATA_SAFETY.md.
+  #   0 2 * * *    docker compose --profile ops run --rm db-ops backup                  # nightly dump
+  #   */5 * * * *  docker compose --profile ops run --rm db-ops binlog-archive --flush  # 5-minute recovery point
   #   docker compose --profile ops run --rm db-ops list
-  #   docker compose --profile ops run --rm db-ops restore /backups/<file>.sql.gz --yes
-  # The restore drill (scripts/db/restore-drill.sh) needs CREATE DATABASE:
-  # run it from a checkout with DATABASE_URL on the root user (docs/BACKUP_RESTORE.md).
+  #   docker compose --profile ops run --rm db-ops restore /backups/<file>.sql.gz --yes [--to "YYYY-MM-DD HH:MM:SS"]
+  # It connects as root: recording the dump's binary-log position, reading
+  # the logs and FLUSH BINARY LOGS need RELOAD, REPLICATION CLIENT and
+  # REPLICATION SLAVE, which the application user does not have. The restore
+  # drill (scripts/db/restore-drill.sh) needs CREATE DATABASE as well: run it
+  # from a checkout with DATABASE_URL on the root user (docs/BACKUP_RESTORE.md).
   db-ops:
     image: mysql:8.0
     profiles: ["ops"]
     entrypoint: ["bash", "/scripts/db-ops.sh"]
     environment:
-      DATABASE_URL: mysql://${MYSQL_USER:-dukaanai}:${MYSQL_PASSWORD:-dukaanai-local-only}@mysql:3306/${MYSQL_DATABASE:-dukaanai}
+      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-root-local-only}@mysql:3306/${MYSQL_DATABASE:-dukaanai}
       BACKUP_DIR: /backups
       BACKUP_KEEP: ${BACKUP_KEEP:-14}
+      BINLOG_ARCHIVE_DIR: /backups/binlog
+      BINLOG_ARCHIVE_KEEP_DAYS: ${BINLOG_ARCHIVE_KEEP_DAYS:-7}
     volumes:
       - ./scripts/db:/scripts:ro
       - db-backups:/backups

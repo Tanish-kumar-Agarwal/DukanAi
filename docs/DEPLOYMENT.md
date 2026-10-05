@@ -144,10 +144,13 @@ the stack down (`KEEP=1` leaves it running).
 - Logs, metrics, error tracking and the alert rules: `docs/OBSERVABILITY.md`
   (`deploy/prometheus/` holds the rules and a scrape configuration;
   `docker compose --profile ops up -d prometheus` runs them against the stack).
-- Backups, restore and the rehearsed restore drill: `docs/BACKUP_RESTORE.md`
-  (`scripts/db/`, `docker compose --profile ops run --rm db-ops backup`).
-  Take a backup before every `migrate deploy`; the rollback paths are in
-  `apps/api/prisma/MIGRATIONS.md`.
+- Backups, the binary-log archive, restore to a point in time and the
+  rehearsed drill: `docs/BACKUP_RESTORE.md` (`scripts/db/`; `docker compose
+  --profile ops run --rm db-ops backup` nightly and `db-ops binlog-archive
+  --flush` every five minutes). Keep binary logging on (MySQL 8 default)
+  with `binlog_expire_logs_seconds` above the archive interval (compose sets
+  7 days). Take a backup before every `migrate deploy`; the rollback paths
+  are in `apps/api/prisma/MIGRATIONS.md`. Objectives: `docs/DATA_SAFETY.md`.
 - Retention: the `RetentionSweep` cron (`CRON_RETENTION_SWEEP`, 03:30 by
   default, one instance at a time under the `cron:retention-sweep` lock)
   deletes expired refresh and password-reset tokens, DONE outbox rows, old
