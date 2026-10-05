@@ -1,0 +1,3 @@
+# Filled-in secrets and the provider CA stay out of the repository.
+secrets.env
+db-ca.pem

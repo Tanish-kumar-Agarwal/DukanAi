@@ -213,7 +213,7 @@ jobs:
   deploy:
     name: Deployment (compose smoke)
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
@@ -230,8 +230,33 @@ jobs:
           docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" --entrypoint promtool prom/prometheus:v3.5.0 check config /rules/prometheus.yml
           # The stale-backup alert fires in a drill (roadmap 9.4).
           docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" -w /rules --entrypoint promtool prom/prometheus:v3.5.0 test rules /rules/alerts.test.yml
+      # Roadmap 9.7 / 9.8: the edge configuration and the Kubernetes manifests
+      # must be valid before they are shipped (the hostnames are placeholders:
+      # validation never contacts a CA or a cluster).
+      - name: Edge configuration is valid (caddy validate)
+        run: |
+          docker run --rm -v "$PWD/deploy/edge/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            -e WEB_HOST=app.example.com -e API_HOST=api.example.com caddy:2.10.2-alpine \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      - name: Kubernetes manifests are valid (kustomize build + kubeconform)
+        run: |
+          cp deploy/k8s/secrets.env.example deploy/k8s/secrets.env
+          kubectl kustomize deploy/k8s | docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary -
+          rm deploy/k8s/secrets.env
       - name: Fresh clone -> compose up -> migrate -> login -> sale
         run: bash scripts/compose-smoke.sh
       - name: Container logs
         if: failure()
         run: docker compose logs --no-color --tail=200
+      # Roadmap 9.7 / 9.8 gate: the production variant against an external
+      # TLS-only MySQL, HTTPS through the edge, sign-in and a sale over it,
+      # the rate limit counted per client address, the backup agent.
+      - name: Production variant -> external TLS database -> HTTPS through the edge -> sale, rate limit per client, backups
+        run: bash scripts/compose-smoke-prod.sh
+      - name: Container logs (production variant)
+        if: failure()
+        run: |
+          docker ps -a --filter label=com.docker.compose.project=dukaanai-prod
+          for c in $(docker ps -aq --filter label=com.docker.compose.project=dukaanai-prod); do
+            echo "=== $c ($(docker inspect --format '{{.Name}}' "$c"))"; docker logs --tail=200 "$c" 2>&1 || true
+          done

@@ -7,5 +7,8 @@ FROM mysql:8.0-debian
 RUN apt-get update \
   && apt-get install -y --no-install-recommends rclone ca-certificates \
   && rm -rf /var/lib/apt/lists/*
-# The repository's scripts/ directory is mounted at /scripts by compose.
+# The repository's scripts are baked in so the image runs on its own (the
+# Kubernetes backup sidecar, deploy/k8s); compose mounts the checkout's
+# scripts/ over /scripts for development.
+COPY scripts /scripts
 ENTRYPOINT ["bash", "/scripts/db/db-ops.sh"]

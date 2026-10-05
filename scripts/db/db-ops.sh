@@ -34,6 +34,29 @@ case "$cmd" in
       sleep "$interval"
     done
     ;;
+  backup-loop)
+    # The backup-agent service / sidecar (roadmap 9.7): without host cron, run
+    # the nightly set every BACKUP_LOOP_INTERVAL_SECONDS (86400): a dump of the
+    # database, the documents archive (STORAGE_ROOT, MEDIA_DIR when set) and,
+    # when OFFSITE_REMOTE is configured, the encrypted off-site copy. A failed
+    # job is logged and the next one still runs; each success stamps
+    # BACKUP_STATUS_DIR for the backup metric, so a job that keeps failing
+    # raises DukaanAiBackupStale.
+    interval="${BACKUP_LOOP_INTERVAL_SECONDS:-86400}"
+    delay="${BACKUP_LOOP_INITIAL_DELAY_SECONDS:-60}"
+    echo "backup-agent: dump + documents${OFFSITE_REMOTE:++ off-site} into $BACKUPS every ${interval}s (first run in ${delay}s)"
+    sleep "$delay"
+    while true; do
+      bash /scripts/db/backup.sh || echo "backup-agent: dump failed (exit $?)" >&2
+      bash /scripts/storage/backup.sh || echo "backup-agent: documents archive failed (exit $?)" >&2
+      if [ -n "${OFFSITE_REMOTE:-}" ]; then
+        bash /scripts/backup/offsite.sh push || echo "backup-agent: off-site copy failed (exit $?)" >&2
+      else
+        echo "backup-agent: OFFSITE_REMOTE is not set: no off-site copy (docs/BACKUP_RESTORE.md)" >&2
+      fi
+      sleep "$interval"
+    done
+    ;;
   restore) exec bash /scripts/db/restore.sh "$@" ;;
   list)
     ls -lh "$BACKUPS"/*.sql.gz 2>/dev/null || echo "no backups in $BACKUPS"
@@ -52,5 +75,5 @@ case "$cmd" in
     done
     ;;
   latest) ls -1 "$BACKUPS"/*.sql.gz 2>/dev/null | sort | tail -n 1 ;;
-  *) echo "usage: db-ops backup [--label TEXT] | binlog-archive [--flush] | archive-loop | documents-backup | documents-restore ARCHIVE ... | offsite push|check|list|fetch DIR | restore FILE --yes [--to TIME] | list | status | latest" >&2; exit 2 ;;
+  *) echo "usage: db-ops backup [--label TEXT] | binlog-archive [--flush] | archive-loop | backup-loop | documents-backup | documents-restore ARCHIVE ... | offsite push|check|list|fetch DIR | restore FILE --yes [--to TIME] | list | status | latest" >&2; exit 2 ;;
 esac

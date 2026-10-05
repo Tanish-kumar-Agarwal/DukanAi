@@ -183,9 +183,14 @@ backup (`DEPLOYMENT_CHECKLIST.md`, phase 2).
   automated backups and point-in-time recovery, deletion protection and a
   private endpoint (the roadmap discussion of 2026-10-04); the self-hosted
   binary-log path of row 9.2 is the fallback only.
-- Documents stay files under `STORAGE_ROOT` on a persistent volume with
-  snapshots for a single API replica; object storage behind
-  `StoragePathBuilder` is the path to several replicas (row 9.7 decides).
+- Documents stay files under `STORAGE_ROOT` on a persistent cloud disk
+  with provider snapshots, served by a single API replica (row 9.7,
+  decided 2026-10-05 and built: `docker-compose.prod.yml`, `deploy/k8s/`,
+  `docs/DEPLOYMENT.md` "Production topology"); `replicas > 1` is never set
+  until the documents move to object storage behind `StoragePathBuilder`.
+  The `backup-agent` (compose service / Kubernetes sidecar) runs the daily
+  dump, documents archive and off-site copy in that topology; the
+  binary-log archiver stays the self-hosted fallback.
 - `uploads/media` is customer data (product images) and joins the documents
   objective; `uploads/imports`, `exports` and `tmp` are reproducible and are
   not backed up.

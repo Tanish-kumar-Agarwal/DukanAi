@@ -40,7 +40,12 @@ limiting; `METRICS_ENABLED=false` answers 404 and `METRICS_TOKEN` (16+
 characters, never a placeholder) makes the scrape require
 `Authorization: Bearer <token>` (401 otherwise; the refused scrapes are
 counted like any other answer). Keep the API port off the public internet
-regardless: the scrape target is the internal address.
+regardless: the scrape target is the internal address. The reference edge
+(`deploy/edge/Caddyfile`) answers 404 for `/api/metrics` and the
+Kubernetes Ingress routes it to a Service with no endpoints, so from the
+internet the route does not exist (roadmap 9.8); Prometheus reads
+`api:3002` on the compose network or `dukaanai-api.dukaanai.svc:3002`
+through the NetworkPolicy's monitoring rule.
 `deploy/prometheus/prometheus.yml` is a working scrape configuration;
 `docker compose --profile ops up -d prometheus` runs it against the compose
 stack on <http://localhost:9090>.

@@ -1,0 +1,29 @@
+# kubectl apply -k deploy/k8s   (after: cp secrets.env.example secrets.env and
+# editing it, the hosts in configmap.yaml / ingress.yaml, and the image
+# names below to the registry the images were pushed to). README.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: dukaanai
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - pvc.yaml
+  - job-migrate.yaml
+  - deployment-api.yaml
+  - deployment-web.yaml
+  - services.yaml
+  - ingress.yaml
+  - networkpolicy.yaml
+secretGenerator:
+  - name: dukaanai-secrets
+    envs: [secrets.env]
+images:
+  - name: dukaanai-api
+    newName: registry.example.com/dukaanai/api
+    newTag: v1.0.0
+  - name: dukaanai-web
+    newName: registry.example.com/dukaanai/web
+    newTag: v1.0.0
+  - name: dukaanai-db-ops
+    newName: registry.example.com/dukaanai/db-ops
+    newTag: v1.0.0

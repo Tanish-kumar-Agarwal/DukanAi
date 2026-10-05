@@ -63,7 +63,20 @@ docker compose --profile ops run --rm db-ops binlog-archive --flush   # the bina
 docker compose --profile ops run --rm db-ops list                     # dumps and the archive
 ```
 
-Schedule the dump nightly (the retention sweep runs at 03:30, so 02:00 keeps
+In the production topology (`docker-compose.prod.yml`, `deploy/k8s`;
+roadmap 9.7) no cron exists: the `backup-agent` service, or the sidecar of
+the API pod, runs `db-ops backup-loop`, which every
+`BACKUP_LOOP_INTERVAL_SECONDS` (a day; first run
+`BACKUP_LOOP_INITIAL_DELAY_SECONDS` after boot) takes the dump, the
+documents archive and, with `OFFSITE_REMOTE` set, the off-site copy, logs a
+failed job and runs the next, and stamps each success for the backup
+metric. Against a managed MySQL the dump records its binary-log position
+when `DB_OPS_DATABASE_URL` names a user with RELOAD + REPLICATION CLIENT
+(otherwise `BACKUP_COORDINATES=skip`); point in time is the provider's
+there and the binary-log archiver is not run. `db-ops status` shows the
+agent's last successes.
+
+On the reference stack, schedule the dump nightly (the retention sweep runs at 03:30, so 02:00 keeps
 the two apart) and the binary-log archive every five minutes from the host's
 cron, or run the archive as the `binlog-archiver` service, which does the
 same without cron, and copy the volume off the host, e.g.:

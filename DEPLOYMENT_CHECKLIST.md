@@ -10,6 +10,8 @@ This checklist enforces the exact execution order required to deploy Epic 1 safe
 - [ ] Configure `NEXTAUTH_SECRET` and `NEXTAUTH_URL` in the web application.
 - [ ] If Google OAuth is enabled, set `GOOGLE_CLIENT_ID` in both applications, `GOOGLE_CLIENT_SECRET` in the web application, and add `https://YOUR_WEB_ORIGIN/api/auth/callback/google` to Google Cloud's authorized redirect URIs.
 - [ ] Verify `NODE_ENV=production` (disables Swagger and query logging; production also refuses `LOG_LEVEL=debug`, a relative `STORAGE_ROOT`, a placeholder `SENTRY_DSN` and `AUTH_DISABLED`).
+- [ ] The deployment is the decided topology (docs/DEPLOYMENT.md, "Production topology", roadmap 9.7): managed MySQL 8 reached over TLS (`DATABASE_URL` carries `?sslaccept=strict`, `DB_CA_FILE` / the `dukaanai-db-ca` Secret for a private CA), managed Redis, one API replica with `STORAGE_PATH` / `UPLOADS_PATH` / `BACKUPS_PATH` on the snapshotted cloud disk, `docker-compose.prod.yml` or `deploy/k8s`; the "Provider steps" are done in order and anything that differs is recorded in docs/DATA_SAFETY.md.
+- [ ] The edge is in front (roadmap 9.8): `WEB_HOST` / `API_HOST` resolve to it, `https://<WEB_HOST>` and `https://<API_HOST>/api/health` answer with a valid certificate and HSTS, `http://` redirects, `GET https://<API_HOST>/api/metrics` is 404 from the internet, the API and web ports are not published, and `TRUST_PROXY` equals the number of proxy hops (1 for the edge alone, 2 with a load balancer in front of it).
 
 ## Phase 2: Database Orchestration
 - [ ] Halt all cron workers and BullMQ consumers in the existing environment.
@@ -27,6 +29,7 @@ This checklist enforces the exact execution order required to deploy Epic 1 safe
 - [ ] Execute `npm test --workspace=api -- --runInBand` — unit tests must pass.
 - [ ] Boot the primary API HTTP nodes.
 - [ ] Verify `GET /api/health/ready` answers 200 with `checks.database` and `checks.redis` = `up` (liveness is `/api/health`); wire the orchestrator's readiness probe to it.
+- [ ] `GET https://<API_HOST>/api/health/ready` through the edge answers the same; `docker compose -f docker-compose.prod.yml logs edge` (or the cert-manager Certificate) shows the certificate obtained.
   - Verify `correlationId` appears in stdout logs.
 - [ ] Start BullMQ worker processes.
   - `CronLockService` should log a successful Redis connection.
@@ -42,7 +45,7 @@ This checklist enforces the exact execution order required to deploy Epic 1 safe
   - Verify HTTP 403 Forbidden is returned.
 
 ## Phase 5: Observability Validation
-- [ ] `GET /api/metrics` carries `backup_last_success_timestamp_seconds` for the four kinds (dump, binlog, documents, offsite) once the jobs have run; `DukaanAiBackupStale` and `DukaanAiBackupNeverRecorded` are loaded (roadmap 9.4).
+- [ ] `GET /api/metrics` (from the internal network: the edge hides it) carries `backup_last_success_timestamp_seconds` for the kinds the deployment runs (dump, documents, offsite from the `backup-agent`; binlog only where the self-hosted archiver runs) once the jobs have run; `DukaanAiBackupStale` and `DukaanAiBackupNeverRecorded` are loaded (roadmap 9.4).
 - [ ] `POST /api/reconciliation/run` as the shop owner answers `status: CLEAN` for the day of the smoke sale, `GET /api/metrics` carries `reconciliation_last_run_timestamp_seconds`, and `DukaanAiReconciliationDrift` / `DukaanAiReconciliationStale` are loaded; the nightly `Reconciliation` cron is enabled on at least one instance (roadmap 9.5).
 - [ ] Filter logs for `correlationId` to confirm tracing works.
 - [ ] Fire a POST with PII data in body (e.g., `{"password": "test"}`).

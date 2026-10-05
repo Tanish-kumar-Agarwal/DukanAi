@@ -1243,6 +1243,47 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   both days reconcile. `NumberSequence` rows are per prefix
   (`INV-<FY>-`), which is why a new year starts at 000001 on its own.
 
+- 9.7 topology (`docs/DEPLOYMENT.md` "Production topology", decided and
+  built): managed MySQL 8 over TLS (`DATABASE_URL` with `?sslaccept=strict`,
+  `&sslcert=/etc/dukaanai/db-ca.pem` + `DB_CA_FILE` for a private CA),
+  managed Redis, ONE API replica with the documents on a snapshotted cloud
+  disk (`STORAGE_PATH` / `UPLOADS_PATH` / `BACKUPS_PATH`), the edge the only
+  published port. `docker-compose.prod.yml` (project `dukaanai-prod`; no
+  mysql/redis, `edge` always on, `backup-agent` = `db-ops backup-loop`:
+  dump + documents + off-site daily, `BACKUP_LOOP_*`, stamps for the
+  metric) and `deploy/k8s/` (kustomize: 1 replica Recreate, probes, 45 s
+  grace, `backup-agent` sidecar sharing the RWO claims, ingress-nginx +
+  cert-manager Ingress, NetworkPolicies; `secrets.env` generated and
+  gitignored there; validated with `kubectl kustomize | kubeconform
+  -strict` in CI) are the two forms; never set `replicas > 1` before the
+  documents move to object storage behind `StoragePathBuilder`. The db-ops
+  image now bakes `scripts/` in (`COPY scripts /scripts`) so the sidecar
+  runs without a bind mount. `scripts/compose-smoke-prod.sh` (CI deploy
+  job, after the reference smoke) proves the variant against a throwaway
+  TLS-only MySQL 8 with a private CA (`scripts/smoke-prod/
+  external-services.yml` layered over the prod file; `--env-file` in a
+  temp dir): migrate + API over verified TLS, the whole smoke flow over
+  HTTPS, metrics hidden/served, the two-address rate-limit check, the
+  agent's dump (binlog position) and documents archive, graceful stop.
+- 9.8 edge (`deploy/edge/Caddyfile`, service `edge`: profile `edge` in
+  `docker-compose.yml`, unconditional in the prod file; `caddy:2.10.2-alpine`,
+  `caddy validate` in CI): env placeholders `{$WEB_HOST}`, `{$API_HOST}`,
+  `{$EDGE_TLS_LINE}` (blank = public certificates, `tls internal` = local
+  CA; `*.localhost` is local to Caddy anyway), `{$EDGE_MAX_BODY}` 64MB
+  (above `UPLOAD_MAX_MEDIA_BYTES`), `{$EDGE_UPSTREAM_TIMEOUT}` 60s (above
+  `BILLING_GATEWAY_TIMEOUT_MS`); HSTS, `-Server`, HTTP -> HTTPS 308,
+  `respond @metrics 404` before `reverse_proxy` (directive order), no
+  `trusted_proxies` so a client's `X-Forwarded-For` is discarded and the
+  API (`TRUST_PROXY=1`; 2 behind a load balancer, which then goes in
+  `trusted_proxies`) always sees the accepted address; the web forwards the
+  header on sign-in, which is why one hop covers both paths. The Kubernetes
+  equivalent is `deploy/k8s/ingress.yaml` (body 64m, timeouts 60,
+  ssl-redirect, `/api/metrics` -> the selector-less `dukaanai-blackhole`
+  Service). The smoke's proof that the address is real: client A exhausts
+  `AUTH_RATE_LIMIT_SHORT_LIMIT` (5 per 10 s, unique unknown emails so the
+  per-account throttle stays out) and gets 429, client B sending
+  `X-Forwarded-For: <A>` gets 401.
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and
