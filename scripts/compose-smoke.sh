@@ -81,7 +81,7 @@ out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops documents-backup --label
 printf '%s\n' "$out" | grep -q "Documents backup written" || { printf '%s\n' "$out"; fail "no documents archive was written"; }
 
 step "ops (roadmap 9.4): the encrypted off-site copy to a local remote, verified by cryptcheck (db-ops offsite push)"
-out="$("${COMPOSE[@]}" --profile ops run --rm -T -e OFFSITE_REMOTE=local:/backups/.offsite-smoke -e OFFSITE_CRYPT_PASSWORD=smoke-only-password-of-at-least-32-chars db-ops offsite push 2>&1)" || { printf '%s\n' "$out"; fail "db-ops offsite push"; }
+out="$("${COMPOSE[@]}" --profile ops run --rm -T -e OFFSITE_REMOTE=local:/tmp/offsite-smoke -e OFFSITE_CRYPT_PASSWORD=smoke-only-password-of-at-least-32-chars db-ops offsite push 2>&1)" || { printf '%s\n' "$out"; fail "db-ops offsite push"; }
 printf '%s\n' "$out" | grep -q "Off-site copy complete" || { printf '%s\n' "$out"; fail "the off-site copy did not complete"; }
 
 step "ops (roadmap 9.4): the API reads the backup status stamps into backup_last_success_timestamp_seconds"

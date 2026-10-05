@@ -64,8 +64,9 @@ RCLONE_CONFIG_OFFSITE_PASSWORD="$(rclone obscure "$OFFSITE_CRYPT_PASSWORD")"; ex
 if [ -n "${OFFSITE_CRYPT_SALT:-}" ]; then
   RCLONE_CONFIG_OFFSITE_PASSWORD2="$(rclone obscure "$OFFSITE_CRYPT_SALT")"; export RCLONE_CONFIG_OFFSITE_PASSWORD2
 fi
-# In-flight and temporary files never leave the host.
-FILTERS=(--exclude '.*' --exclude '**/.*')
+# In-flight and temporary files, and dot directories (a local drill remote
+# placed under the backup directory, for instance), never leave the host.
+FILTERS=(--exclude '.*' --exclude '**/.*' --exclude '.*/**' --exclude '**/.*/**')
 RC=(rclone --transfers 4 --checkers 8 --stats 0 --retries 3 --low-level-retries 10)
 
 case "$CMD" in

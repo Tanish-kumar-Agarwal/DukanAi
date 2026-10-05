@@ -7,4 +7,5 @@ FROM mysql:8.0-debian
 RUN apt-get update \
   && apt-get install -y --no-install-recommends rclone ca-certificates \
   && rm -rf /var/lib/apt/lists/*
-ENTRYPOINT ["bash", "/scripts/db-ops.sh"]
+# The repository's scripts/ directory is mounted at /scripts by compose.
+ENTRYPOINT ["bash", "/scripts/db/db-ops.sh"]

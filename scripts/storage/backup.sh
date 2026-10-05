@@ -11,6 +11,7 @@
 #
 #   --root DIR    the storage root (default: $STORAGE_ROOT); archived under storage/
 #   --media DIR   the product images directory (default: $MEDIA_DIR, else none); archived under media/
+#                 (a directory that does not exist yet, before the first upload, is noted and skipped)
 #   --out DIR     where to write (default: $DOCUMENTS_BACKUP_DIR, else $BACKUP_DIR/documents,
 #                 else /var/backups/dukaanai/documents)
 #   --keep N      archives to keep in DIR, oldest removed first (default: $DOCUMENTS_BACKUP_KEEP, else 14; 0 = keep all)
@@ -43,7 +44,11 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ROOT" ] || die "no storage root: pass --root DIR or set STORAGE_ROOT"
 [ -d "$ROOT" ] || die "storage root is not a directory: $ROOT"
-[ -z "$MEDIA" ] || [ -d "$MEDIA" ] || die "media directory is not a directory: $MEDIA"
+if [ -n "$MEDIA" ] && [ ! -d "$MEDIA" ]; then
+  # uploads/media appears with the first product image; until then there is nothing to archive.
+  printf 'NOTE: media directory %s does not exist yet (no product image uploaded so far): archiving the storage root only\n' "$MEDIA" >&2
+  MEDIA=""
+fi
 case "$KEEP" in *[!0-9]*|"") die "--keep must be a whole number (got '$KEEP')" ;; esac
 case "$LABEL" in *[!A-Za-z0-9._-]*) die "--label may only contain letters, digits, dot, underscore and dash" ;; esac
 command -v tar >/dev/null 2>&1 || die "tar not found"

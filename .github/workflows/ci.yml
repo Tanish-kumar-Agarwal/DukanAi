@@ -127,6 +127,21 @@ jobs:
         run: bash scripts/db/restore-drill.sh --pitr require
         env:
           DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+      # Documents and off-site drills (roadmap 9.3, 9.4): the evidence files the
+      # suites wrote restore byte for byte; a fresh backup set ships encrypted
+      # to a local bucket, comes back on a clean workspace and restores.
+      - name: rclone for the off-site drill
+        run: sudo apt-get install -y -q rclone >/dev/null
+      - name: Documents restore drill (storage root and product images)
+        run: bash scripts/storage/restore-drill.sh --root apps/api/data/storage${MEDIA:+ --media apps/api/uploads/media}
+        env:
+          MEDIA: ${{ hashFiles('apps/api/uploads/media/**') }}
+      - name: Off-site restore drill (encrypted copy, clean-machine fetch, restore)
+        run: bash scripts/backup/offsite-drill.sh --root apps/api/data/storage
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+          OFFSITE_REMOTE: local:${{ runner.temp }}/offsite-bucket
+          OFFSITE_CRYPT_PASSWORD: ci-drill-password-of-at-least-32-characters
 
   e2e:
     name: Browser tests (Playwright)
@@ -155,21 +170,6 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      # Documents and off-site drills (roadmap 9.3, 9.4): the evidence files the
-      # suites wrote restore byte for byte; a fresh backup set ships encrypted
-      # to a local bucket, comes back on a clean workspace and restores.
-      - name: rclone for the off-site drill
-        run: sudo apt-get install -y -q rclone >/dev/null
-      - name: Documents restore drill (storage root and product images)
-        run: bash scripts/storage/restore-drill.sh --root apps/api/data/storage${MEDIA:+ --media apps/api/uploads/media}
-        env:
-          MEDIA: ${{ hashFiles('apps/api/uploads/media/**') }}
-      - name: Off-site restore drill (encrypted copy, clean-machine fetch, restore)
-        run: bash scripts/backup/offsite-drill.sh --root apps/api/data/storage
-        env:
-          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
-          OFFSITE_REMOTE: local:${{ runner.temp }}/offsite-bucket
-          OFFSITE_CRYPT_PASSWORD: ci-drill-password-of-at-least-32-characters
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
