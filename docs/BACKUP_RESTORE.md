@@ -1,8 +1,10 @@
 # Backups and restore (MySQL 8)
 
-Roadmap 7.7. The database is the only state that matters: Redis holds
-queued jobs and caches that rebuild themselves, the storage volume holds
-billing evidence (back it up as files, see the end). Everything here is in
+Roadmap 7.7. The procedure for the database copy. What must survive, the
+recovery objectives per store, the full data inventory (documents, product
+images, Redis, secrets, browser state), the measured restore times and the
+gaps still open are in `docs/DATA_SAFETY.md` (roadmap 9.1); this file says
+how to take and restore the database backup. Everything here is in
 `scripts/db/` and runs wherever a MySQL 8 client is: on the host, in CI, or
 in the compose stack through the `db-ops` service.
 
@@ -56,6 +58,11 @@ docker run --rm -v dukaanai_db-backups:/backups:ro -v /mnt/offsite:/out alpine \
 
 A backup that lives only on the database host is not a backup.
 
+Until point-in-time recovery lands (roadmap 9.2), `docs/DATA_SAFETY.md` adds
+an hourly dump into its own directory (`--out /backups/hourly --keep 48`):
+pruning is per directory and per database name, so the hourly and the
+nightly schedules never remove each other's files.
+
 ## Restore
 
 ```
@@ -95,10 +102,12 @@ Order of operations for a real restore:
    "missing row" no-op and is dropped (`runInShopOf`).
 
 Point in time: the dump is the state at the moment the backup started.
-Writes after it are lost unless binary logs are kept and replayed
-(`mysqlbinlog --start-position` from the dump's `-- CHANGE MASTER` /
-`SHOW MASTER STATUS` note; not automated here). The recovery point is
-therefore the backup interval; shorten it for a busier shop.
+Writes after it are lost. `backup.sh` passes no `--source-data`, so the dump
+records no binary-log position; MySQL 8 keeps its binary logs for 30 days by
+default (`binlog_expire_logs_seconds`), but rolling a dump forward with
+`mysqlbinlog` needs the position taken at dump time, which roadmap 9.2 adds
+(or hands point-in-time recovery to the managed provider). The recovery
+point is therefore the backup interval; shorten it for a busier shop.
 
 With compose:
 
@@ -187,6 +196,11 @@ backup as the step before `migrate deploy`.
 - The storage volume (`STORAGE_ROOT`, compose volume `api-storage`):
   billing evidence written once and never replaced (roadmap 7.5). Copy it
   with the backups (`docker run --rm -v dukaanai_api-storage:/s:ro ... tar`).
+- Product images: `uploads/media` on the `api-uploads` volume
+  (`MediaStorage.cdnUrl` and `MediaThumbnail.cdnUrl` rows point at them);
+  the rest of that volume (`imports`, `exports`, `tmp`) is reproducible.
+  Roadmap 9.3 schedules and drills both volumes; `docs/DATA_SAFETY.md` has
+  their objective and the measured file-level restore.
 - Secrets (`.env`): `JWT_SECRET` (a new one ends every session),
   `NEXTAUTH_SECRET`, `METRICS_TOKEN`, SMTP and Google credentials. Keep
   them in the secret store, not with the dumps.

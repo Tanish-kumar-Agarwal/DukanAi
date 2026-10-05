@@ -1097,6 +1097,27 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   must keep the token in step. `test/integration/shifts.integration-spec.ts`
   covers the service, a direct insert and eight concurrent opens.
 
+## Data safety and certification (roadmap phase 9)
+
+- 9.1: `docs/DATA_SAFETY.md` is the authority on recovery objectives
+  (database RPO 5 min / RTO 1 h, documents RPO 24 h / RTO 4 h), the data
+  inventory (MySQL; `STORAGE_ROOT`; `uploads/media` is customer data, the
+  rest of that volume is reproducible; Redis disposable; secrets; browser
+  state), what protects each store today, the measured restore (drill on
+  277,812 rows / 14 MB dump: dump 5 s, restore 20 s, whole drill 49 s;
+  storage tar and untar checksum-identical), the open gaps with the row
+  that closes each (9.2 point in time, 9.3 documents, 9.4 off-site and the
+  stale-backup alert, 9.5 reconciliation, 9.11 rotation, 9.22 rota) and the
+  owner's sign-off. Facts the document rests on: `backup.sh` passes no
+  `--source-data`, so a dump records no binary-log position and cannot be
+  rolled forward today (MySQL 8 keeps binlogs 30 days by default);
+  `restore-drill.sh` refuses a source behind the repository's migrations
+  (`migrate status`), so run `migrate deploy` on it first, the runbook's
+  older-release path. Interim until 9.2: an hourly dump in its own
+  directory (`--out`, `--keep 48`; pruning is per directory and database
+  name) next to the nightly keep-14. Update the document at every change to
+  a store, a backup script or a schedule.
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and

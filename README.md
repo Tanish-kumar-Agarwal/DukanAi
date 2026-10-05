@@ -217,6 +217,7 @@ Use the checklist in [DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md). Googl
 - [Deployment](./docs/DEPLOYMENT.md) - Images, probes, shutdown, compose from a fresh clone
 - [Observability](./docs/OBSERVABILITY.md) - JSON logs, `/api/metrics`, error tracking, alert runbook
 - [Backups and restore](./docs/BACKUP_RESTORE.md) - MySQL 8 backup, restore, the rehearsed drill
+- [Data safety](./docs/DATA_SAFETY.md) - recovery objectives (RPO / RTO) per store, the data inventory, measured restore times, open gaps, the owner's sign-off
 - [POS / Billing API contract](./docs/POS_BILLING_CONTRACT.md) - the binding route, payload and consistency contract
 - [Environment architecture](./docs/architecture/environment-architecture.md) - env files, loading order, validation, queues; every API variable is in `apps/api/.env.example`
 - [Migrations runbook](./apps/api/prisma/MIGRATIONS.md) - `migrate deploy` / `migrate resolve`, rolling back a release

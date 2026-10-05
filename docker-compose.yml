@@ -148,6 +148,7 @@ services:
   # Backups (roadmap 7.7, profile "ops"): a MySQL 8 client container with
   # scripts/db mounted; backups land in the db-backups volume. Schedule the
   # backup line from the host's cron and copy the volume off the host.
+  # Objectives, the interim hourly schedule and what else to copy: docs/DATA_SAFETY.md.
   #   docker compose --profile ops run --rm db-ops backup
   #   docker compose --profile ops run --rm db-ops list
   #   docker compose --profile ops run --rm db-ops restore /backups/<file>.sql.gz --yes
