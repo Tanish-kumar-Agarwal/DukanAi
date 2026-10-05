@@ -87,7 +87,8 @@ printf '%s\n' "$out" | grep -q "Off-site copy complete" || { printf '%s\n' "$out
 step "ops (roadmap 9.4): the API reads the backup status stamps into backup_last_success_timestamp_seconds"
 metrics="$(curl -fsS "$API/metrics" 2>/dev/null || true)"
 for kind in dump binlog documents offsite; do
-  printf '%s\n' "$metrics" | grep -q "backup_last_success_timestamp_seconds{kind=\"$kind\"}" || { printf '%s\n' "$metrics" | grep backup_last || true; fail "no backup_last_success_timestamp_seconds series for kind $kind"; }
+  # The registry adds its default label (service="dukaanai-api") after kind.
+  printf '%s\n' "$metrics" | grep -Eq "^backup_last_success_timestamp_seconds\{kind=\"$kind\"[,}]" || { printf '%s\n' "$metrics" | grep backup_last || true; fail "no backup_last_success_timestamp_seconds series for kind $kind"; }
 done
 "${COMPOSE[@]}" --profile ops run --rm -T db-ops status 2>&1 | grep -E "^(dump|binlog|documents|offsite) " || fail "db-ops status lists no job"
 
