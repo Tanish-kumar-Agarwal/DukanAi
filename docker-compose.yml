@@ -162,7 +162,10 @@ services:
   # drill (scripts/db/restore-drill.sh) needs CREATE DATABASE as well: run it
   # from a checkout with DATABASE_URL on the root user (docs/BACKUP_RESTORE.md).
   db-ops:
-    image: mysql:8.0
+    # The Debian variant: the Oracle Linux `mysql:8.0` image ships mysqldump
+    # but not mysqlbinlog, which the archive and restore --to need (the
+    # compose smoke in CI found that out).
+    image: mysql:8.0-debian
     profiles: ["ops"]
     entrypoint: ["bash", "/scripts/db-ops.sh"]
     environment:

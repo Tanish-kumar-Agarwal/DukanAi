@@ -965,7 +965,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `<db>_drill_<stamp>` -> `migrate status` up to date -> `migrate diff`
   clean -> every table's row count equal -> ledger triggers present -> drop;
   CI runs it in the integration job after the suites, on MySQL 8). Compose:
-  `db-ops` service (profile `ops`, `mysql:8.0` image, `scripts/db` mounted,
+  `db-ops` service (profile `ops`, `mysql:8.0-debian` image: the Oracle
+  Linux `mysql:8.0` image has no mysqlbinlog; `scripts/db` mounted,
   `db-backups` volume, `db-ops.sh` entrypoint). Runbooks:
   `docs/BACKUP_RESTORE.md` (rehearsal record) and the "Rolling back a
   release" section of `prisma/MIGRATIONS.md` (additive: redeploy the old
@@ -1141,8 +1142,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   require`, `auto` skips with the reason (no binlog, no position, no
   mysqlbinlog, no sql_log_bin right). A MariaDB mysqlbinlog cannot read
   MySQL 8 logs (`MYSQLBINLOG_BIN`). Compose: 7-day binlog expiry, `db-ops`
-  connects as root, `db-ops binlog-archive|latest`, and the compose smoke
-  runs backup, archive and a `--to` plan. The managed-provider path (settings
+  on `mysql:8.0-debian` (the Oracle Linux image lacks mysqlbinlog) connects
+  as root, `db-ops binlog-archive|latest`, and the compose smoke runs
+  backup, archive and a `--to` plan. The managed-provider path (settings
   table, marker drill) is documented and waits for the account.
 
 ## Toolchain
