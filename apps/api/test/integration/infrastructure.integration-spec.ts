@@ -147,6 +147,9 @@ describe('infrastructure (roadmap 2.11-2.14)', () => {
       const client = other.get<Redis>(REDIS_CLIENT);
       expect(client.status).toBe('ready');
       await other.close();
+      // quit() resolves on the server's reply; ioredis moves the status to
+      // 'end' when the socket closes a moment later.
+      for (let i = 0; i < 50 && !['end', 'close'].includes(client.status); i++) await new Promise((r) => setTimeout(r, 20));
       expect(['end', 'close']).toContain(client.status);
     });
   });
