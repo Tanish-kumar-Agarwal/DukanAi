@@ -46,19 +46,37 @@ step "release step: migrate exited 0 and a second run is a no-op"
 [ "$("${COMPOSE[@]}" ps -a --format '{{.ExitCode}}' migrate)" = "0" ] || fail "migrate service did not exit 0"
 "${COMPOSE[@]}" run --rm migrate 2>&1 | tee /dev/stderr | grep -q "No pending migrations" || fail "a second migrate run was not a no-op"
 
-step "probes, registration, API and web sign-in, stock, shift, sale, dashboard (scripts/smoke-flow.mjs)"
-SMOKE_API_URL="$API" SMOKE_WEB_URL="$WEB" node scripts/smoke-flow.mjs || fail "smoke flow"
-
-step "ops (roadmap 9.2): a dump with its binary-log position, the binary-log archive, a point-in-time restore plan (db-ops)"
-out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops backup --label smoke 2>&1)" || { printf '%s\n' "$out"; fail "db-ops backup"; }
+step "ops (roadmap 9.2): a dump before the sale, with its binary-log position (db-ops backup)"
+out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops backup --label pre-sale 2>&1)" || { printf '%s\n' "$out"; fail "db-ops backup"; }
 printf '%s\n' "$out" | grep -q "binary-log position " || { printf '%s\n' "$out"; fail "the dump recorded no binary-log position"; }
+dump="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops latest 2>/dev/null | tr -d '\r' | tail -n 1)"
+[ -n "$dump" ] || fail "db-ops latest printed no dump"
+
+step "probes, registration, API and web sign-in, stock, shift, sale, dashboard (scripts/smoke-flow.mjs)"
+flow="$(SMOKE_API_URL="$API" SMOKE_WEB_URL="$WEB" node scripts/smoke-flow.mjs 2>&1)" || { printf '%s\n' "$flow"; fail "smoke flow"; }
+printf '%s\n' "$flow"
+invoice="$(printf '%s\n' "$flow" | sed -n 's/.*sale \([^ ]*\) completed.*/\1/p' | tail -n 1)"
+[ -n "$invoice" ] || fail "the smoke flow printed no invoice number"
+
+step "ops (roadmap 9.2): archive the binary logs, restore the pre-sale dump alone and rolled forward to now: only the latter holds sale $invoice"
 out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops binlog-archive --flush 2>&1)" || { printf '%s\n' "$out"; fail "db-ops binlog-archive"; }
 printf '%s\n' "$out" | grep -qE "archived [1-9][0-9]* file" || { printf '%s\n' "$out"; fail "no binary log was archived"; }
-latest="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops latest 2>/dev/null | tr -d '\r' | tail -n 1)"
-[ -n "$latest" ] || fail "db-ops latest printed no dump"
-out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops restore "$latest" --database dukaanai_pitr_plan --create --to "$(date -u -d '+1 minute' '+%Y-%m-%d %H:%M:%S')" 2>&1)" || { printf '%s\n' "$out"; fail "point-in-time restore plan"; }
-printf '%s\n' "$out" | grep -q "then replay " || { printf '%s\n' "$out"; fail "the restore plan has no replay step"; }
-printf '%s\n' "$out" | grep -q "Dry run" || { printf '%s\n' "$out"; fail "the restore plan was not a dry run"; }
+out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops restore "$dump" --database dukaanai_dump_only --create --yes 2>&1)" || { printf '%s\n' "$out"; fail "restore of the dump alone"; }
+out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops restore "$dump" --database dukaanai_pitr_check --create --yes --to "$(date -u -d '+1 minute' '+%Y-%m-%d %H:%M:%S')" 2>&1)" || { printf '%s\n' "$out"; fail "point-in-time restore"; }
+printf '%s\n' "$out" | grep -q "then replay " || { printf '%s\n' "$out"; fail "the restore plan had no replay step"; }
+printf '%s\n' "$out" | grep -q "^==> Replayed to " || { printf '%s\n' "$out"; fail "the replay did not run"; }
+# A statement as root inside the mysql container (the password stays in its environment).
+sql() { "${COMPOSE[@]}" exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -N -B -e "$0"' "$1" | tr -d '\r'; }
+dump_only="$(sql "SELECT COUNT(*) FROM dukaanai_dump_only.Invoice")"
+[ "$dump_only" = "0" ] || fail "the pre-sale dump holds $dump_only invoice(s); expected none"
+rolled="$(sql "SELECT invoiceNumber FROM dukaanai_pitr_check.Invoice")"
+[ "$rolled" = "$invoice" ] || fail "the copy rolled forward to now holds '$rolled'; expected sale $invoice, written after the dump"
+printf '  the pre-sale dump holds no invoice; rolled forward to now it holds %s, the sale made after the dump\n' "$invoice"
+
+step "ops (roadmap 9.2): the binlog-archiver service archives on its own (docker compose --profile ops up -d binlog-archiver)"
+"${COMPOSE[@]}" --profile ops up -d binlog-archiver >/dev/null 2>&1 || fail "binlog-archiver did not start"
+for _ in $(seq 1 30); do sleep 1; "${COMPOSE[@]}" logs --no-color binlog-archiver 2>/dev/null | grep -q "Binary-log archive" && break; done
+"${COMPOSE[@]}" logs --no-color binlog-archiver | grep -q "Binary-log archive" || { "${COMPOSE[@]}" logs --no-color binlog-archiver; fail "binlog-archiver did not archive within 30 s"; }
 
 step "graceful stop: SIGTERM -> readiness 503 -> exit 0 (never SIGKILL)"
 "${COMPOSE[@]}" stop -t 40 api
@@ -69,4 +87,4 @@ step "graceful stop: SIGTERM -> readiness 503 -> exit 0 (never SIGKILL)"
 for _ in $(seq 1 60); do sleep 2; curl -fsS -o /dev/null "$API/health/ready" && break; done
 curl -fsS -o /dev/null "$API/health/ready" || fail "api not ready after restart"
 
-printf '\nSMOKE PASSED: migrations applied, sign-in and a sale through the web and the API, dump with binary-log position, binary-log archive, point-in-time plan, graceful stop verified.\n'
+printf '\nSMOKE PASSED: migrations applied, sign-in and a sale through the web and the API, the pre-sale dump rolled forward to now holds the sale, the archiver service runs, graceful stop verified.\n'

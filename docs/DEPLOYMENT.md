@@ -147,7 +147,8 @@ the stack down (`KEEP=1` leaves it running).
 - Backups, the binary-log archive, restore to a point in time and the
   rehearsed drill: `docs/BACKUP_RESTORE.md` (`scripts/db/`; `docker compose
   --profile ops run --rm db-ops backup` nightly and `db-ops binlog-archive
-  --flush` every five minutes). Keep binary logging on (MySQL 8 default)
+  --flush` every five minutes, or `docker compose --profile ops up -d
+  binlog-archiver` for the same without cron). Keep binary logging on (MySQL 8 default)
   with `binlog_expire_logs_seconds` above the archive interval (compose sets
   7 days). Take a backup before every `migrate deploy`; the rollback paths
   are in `apps/api/prisma/MIGRATIONS.md`. Objectives: `docs/DATA_SAFETY.md`.

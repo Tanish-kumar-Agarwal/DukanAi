@@ -182,6 +182,28 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # The 5-minute archive as a service instead of a cron line (profile "ops"):
+  #   docker compose --profile ops up -d binlog-archiver
+  # runs `binlog-archive --flush` every BINLOG_ARCHIVE_INTERVAL_SECONDS (300).
+  binlog-archiver:
+    image: mysql:8.0-debian
+    profiles: ["ops"]
+    entrypoint: ["bash", "/scripts/db-ops.sh"]
+    command: ["archive-loop"]
+    environment:
+      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-root-local-only}@mysql:3306/${MYSQL_DATABASE:-dukaanai}
+      BACKUP_DIR: /backups
+      BINLOG_ARCHIVE_DIR: /backups/binlog
+      BINLOG_ARCHIVE_KEEP_DAYS: ${BINLOG_ARCHIVE_KEEP_DAYS:-7}
+      BINLOG_ARCHIVE_INTERVAL_SECONDS: ${BINLOG_ARCHIVE_INTERVAL_SECONDS:-300}
+    volumes:
+      - ./scripts/db:/scripts:ro
+      - db-backups:/backups
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+
   # Optional (profile "ops"): Prometheus with the alert rules in
   # deploy/prometheus, scraping the API over the compose network.
   #   docker compose --profile ops up -d prometheus   -> http://localhost:9090

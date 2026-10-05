@@ -64,11 +64,13 @@ docker compose --profile ops run --rm db-ops list                     # dumps an
 
 Schedule the dump nightly (the retention sweep runs at 03:30, so 02:00 keeps
 the two apart) and the binary-log archive every five minutes from the host's
-cron, and copy the volume off the host, e.g.:
+cron, or run the archive as the `binlog-archiver` service, which does the
+same without cron, and copy the volume off the host, e.g.:
 
 ```
 0 2 * * *    cd /srv/dukaanai && docker compose --profile ops run --rm db-ops backup
 */5 * * * *  cd /srv/dukaanai && docker compose --profile ops run --rm db-ops binlog-archive --flush
+docker compose --profile ops up -d binlog-archiver     # instead of the */5 line: every BINLOG_ARCHIVE_INTERVAL_SECONDS (300)
 docker run --rm -v dukaanai_db-backups:/backups:ro -v /mnt/offsite:/out alpine \
   sh -c 'cp -r /backups/. /out/'
 ```
@@ -293,9 +295,14 @@ POINT-IN-TIME CHECK PASSED: dukaanai_integ8_pitr_20261005165025 holds the write 
 RESTORE DRILL PASSED: ... point in time: marker before 2026-10-05 16:51:12 UTC kept, marker after it excluded, 231 tables equal (restore + replay 16s); 110s
 ```
 
-The same run against the compose smoke database (one sale) rolled a dump
-forward through three archived logs and matched the source's counts. The
-refusals were exercised too: a dump taken with `--coordinates skip` ("the
+The compose smoke (CI job "Deployment (compose smoke)", on every push)
+proves the sentence of the roadmap literally: it takes a dump before the
+sale, makes the sale through the API, archives the binary logs, restores
+the dump alone (no invoice) and the dump rolled forward to now (the sale's
+invoice number), and starts the `binlog-archiver` service. The same run
+locally against the compose smoke database rolled a dump forward through
+three archived logs and matched the source's counts. The refusals were
+exercised too: a dump taken with `--coordinates skip` ("the
 dump carries no binary-log position"), a `--to` before the snapshot, an
 archive without the dump's first log, a gap in the archive (found by the
 first attempt: a stray `binlog.000031.aside` passed the file listing and

@@ -1143,8 +1143,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   mysqlbinlog, no sql_log_bin right). A MariaDB mysqlbinlog cannot read
   MySQL 8 logs (`MYSQLBINLOG_BIN`). Compose: 7-day binlog expiry, `db-ops`
   on `mysql:8.0-debian` (the Oracle Linux image lacks mysqlbinlog) connects
-  as root, `db-ops binlog-archive|latest`, and the compose smoke runs
-  backup, archive and a `--to` plan. The managed-provider path (settings
+  as root, `db-ops binlog-archive|archive-loop|latest`, the `binlog-archiver`
+  service is `archive-loop` (`--flush` every
+  `BINLOG_ARCHIVE_INTERVAL_SECONDS`), and the compose smoke proves the
+  roadmap sentence literally: dump before the sale, sale, archive, the dump
+  alone holds no invoice, rolled forward to now it holds the sale, the
+  archiver service archives on its own. The managed-provider path (settings
   table, marker drill) is documented and waits for the account.
 
 ## Toolchain
