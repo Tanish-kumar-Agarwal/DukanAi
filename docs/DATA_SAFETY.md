@@ -38,11 +38,11 @@ managed deployment maps each store to the provider's equivalent
 
 | Store | What lives there | Protection today | Real RPO today | Objective |
 |---|---|---|---|---|
-| MySQL 8, `DATABASE_URL` [`mysql-data`] | All 230 Prisma models: shops, users and sessions (`RefreshToken`), products, stock (`InventoryItem`, ledger rows), invoices, returns, customers, udhar, payments, shifts, expenses, suppliers, procurement, the immutable ledger, outbox, audit log, notifications. Every row carries its `shopId`. | `scripts/db/backup.sh` (consistent InnoDB snapshot that records its binary-log position; `.sha256` and `.meta` sidecars; keep 14) nightly, `binlog-archive.sh --flush` every five minutes copying the closed binary logs next to the dumps, both run by the `db-ops` service (or the `binlog-archiver` service for the archive) into the `db-backups` volume on the same host; `restore.sh --to` rolls a dump forward to any second the archive covers; `restore-drill.sh --pitr require` proves the chain on every CI push and the compose smoke proves a sale made after a dump survives the roll-forward. | the archive interval, 5 minutes, where the archiver runs; the dump interval where only the dump runs | 5 minutes |
-| Documents, `STORAGE_ROOT` [`api-storage`] | Per shop: `Customers/<customerId>/{Invoices,Bills,Statements,Profile,…}` (evidence written once with the `wx` flag and never replaced; a delete moves the file to `Deleted/`), `System/customer_index.json` and `invoice_registry.json` (indexes derived from the files), `Logs/` (the storage action log), `Backups/<type>/backup_<date>.zip` (the zip `POST /storage/backup` makes of the shop's own folders: it lands on the same volume, so it is an export, not a backup). | A manual copy of the volume (`docs/BACKUP_RESTORE.md`, "What else to back up"): no schedule, no checksum, no restore test. | undefined (whenever someone last copied it) | 24 hours |
-| Uploads [`api-uploads`, `apps/api/uploads`] | `media/`: product images and thumbnails; `MediaStorage.cdnUrl` and `MediaThumbnail.cdnUrl` point at them. `imports/`, `exports/`: import and export files. `tmp/` (`UPLOAD_TEMP_DIR`): upload staging, never older than a request. | None. A lost volume leaves `cdnUrl` rows pointing at nothing. | undefined | 24 hours for `media/`; `imports/`, `exports/` and `tmp/` are reproducible and excluded |
+| MySQL 8, `DATABASE_URL` [`mysql-data`] | All 230 Prisma models: shops, users and sessions (`RefreshToken`), products, stock (`InventoryItem`, ledger rows), invoices, returns, customers, udhar, payments, shifts, expenses, suppliers, procurement, the immutable ledger, outbox, audit log, notifications. Every row carries its `shopId`. | `scripts/db/backup.sh` (consistent InnoDB snapshot that records its binary-log position; `.sha256` and `.meta` sidecars; keep 14) nightly, `binlog-archive.sh --flush` every five minutes copying the closed binary logs next to the dumps, both run by the `db-ops` service (or the `binlog-archiver` service for the archive) into the `db-backups` volume on the same host; `restore.sh --to` rolls a dump forward to any second the archive covers; `restore-drill.sh --pitr require` proves the chain on every CI push and the compose smoke proves a sale made after a dump survives the roll-forward; `db-ops offsite push` ships the volume nightly, encrypted, to object storage elsewhere. | the archive interval, 5 minutes, where the archiver runs; the dump interval where only the dump runs | 5 minutes |
+| Documents, `STORAGE_ROOT` [`api-storage`] | Per shop: `Customers/<customerId>/{Invoices,Bills,Statements,Profile,…}` (evidence written once with the `wx` flag and never replaced; a delete moves the file to `Deleted/`), `System/customer_index.json` and `invoice_registry.json` (indexes derived from the files), `Logs/` (the storage action log), `Backups/<type>/backup_<date>.zip` (the zip `POST /storage/backup` makes of the shop's own folders: it lands on the same volume, so it is an export, not a backup). | `scripts/storage/backup.sh` nightly (`db-ops documents-backup`): one archive of the storage root and `uploads/media` with a per-file SHA-256 manifest, keep 14, in the `db-backups` volume, shipped off-site with the dumps; `restore.sh` verifies every file against the manifest; `restore-drill.sh` runs in CI on every push. | the documents schedule, 24 hours, where the cron runs | 24 hours |
+| Uploads [`api-uploads`, `apps/api/uploads`] | `media/`: product images and thumbnails; `MediaStorage.cdnUrl` and `MediaThumbnail.cdnUrl` point at them. `imports/`, `exports/`: import and export files. `tmp/` (`UPLOAD_TEMP_DIR`): upload staging, never older than a request. | `media/` is in the nightly documents archive above (the `db-ops` service mounts the volume read-only); `imports/`, `exports/` and `tmp/` are not archived. | 24 hours for `media/` where the cron runs | 24 hours for `media/`; `imports/`, `exports/` and `tmp/` are reproducible and excluded |
 | Redis, `REDIS_URL` [`redis-data`, append-only] | Cache (`cache:*`), rate-limit counters, cron locks, BullMQ jobs, advisory stock keys, the search-history budget. | None, by design. Append-only mode lets queued jobs survive a restart. | not applicable | none |
-| Secrets | `JWT_SECRET`, `NEXTAUTH_SECRET`, the database and Redis passwords, `SMTP_URL`, `GOOGLE_CLIENT_SECRET`, `GEMINI_API_KEY`, `METRICS_TOKEN`, `SENTRY_DSN`, the `S3_*` keys. | The deployment's secret store or the host's `.env`; never inside a dump (`backup.sh` dumps data only). | not applicable | none |
+| Secrets | `JWT_SECRET`, `NEXTAUTH_SECRET`, the database and Redis passwords, `SMTP_URL`, `GOOGLE_CLIENT_SECRET`, `GEMINI_API_KEY`, `METRICS_TOKEN`, `SENTRY_DSN`, the `S3_*` keys, `OFFSITE_CRYPT_PASSWORD` and salt (without them every off-site copy is noise). | The deployment's secret store or the host's `.env`; never inside a dump (`backup.sh` dumps data only). | not applicable | none |
 | Browser | The POS cart (per tab and per shop in `sessionStorage`), the theme, a captured frame handed to the AI scanner. | None. A sale exists only once `POST /billing/invoice` has answered; an unsent cart is lost with the tab by design. | not applicable | none |
 | Operational | JSON logs on stdout, Prometheus samples [`prometheus-data`], error tracking. | None; no customer data. | not applicable | none |
 | Code and images | The repository, migrations, the two images. | GitHub and the image registry. | none | none |
@@ -116,6 +116,8 @@ engine), MySQL 8 clients, one CPU-constrained container:
 | Full drill (dump, restore, status, diff, counts, triggers) | 49 s | `scripts/db/restore-drill.sh` |
 | Documents: tar + checksum, untar + verify | 1.7 s + 0.1 s | the local storage root: 78 files, every checksum identical |
 | Point in time: markers, archive of every closed log, dump restored and rolled forward to the target second | 110 s for the whole drill; restore 15 s, replay under 1 s | `restore-drill.sh --pitr require`: 29 logs (about 560 MB) archived, the write before the target time kept, the write after it excluded, 231 tables equal |
+| Documents drill: archive, restore into a fresh directory, every file compared | under 1 s | `scripts/storage/restore-drill.sh`: 81 files (storage root and product images), every SHA-256 identical, one file compared byte for byte |
+| Off-site drill: fresh backup set shipped encrypted, fetched on a clean workspace, restored | 17 s | `scripts/backup/offsite-drill.sh` to a local remote: 84 files / 531 MB, nothing readable in the bucket, 39 sidecars verified, documents and database restored |
 
 A first drill against the same database refused at the status step because
 the source was five migrations behind the repository; after `migrate deploy`
@@ -145,40 +147,34 @@ then.
 | Gap | Today | Objective | Closed by |
 |---|---|---|---|
 | Database recovery point | self-hosted: the archive interval, 5 minutes, with the `binlog-archiver` service or the cron line running (in place since this revision); managed: the provider's point-in-time recovery, to switch on when the instance exists | 5 minutes | 9.2: done for the self-hosted path; the provider settings and the provider drill wait for the account |
-| Copies on the database host only, unencrypted | `db-backups` volume next to `mysql-data`; a manual copy off the host | off-site, encrypted, in another account | 9.4 |
-| Nobody is told when a backup is missing or old | no backup metric, no alert | `DukaanAiBackupStale` on `backup_last_success_timestamp` | 9.4 |
-| Documents and product images | a manual copy, unscheduled, unverified; `media/` not covered at all | scheduled, checksummed, restore-drilled, incl. `uploads/media` | 9.3 |
+| Copies on the database host only, unencrypted | `db-ops offsite push` ships the whole volume nightly through rclone's crypt backend to `OFFSITE_REMOTE`, verified by cryptcheck, drilled in CI against a local remote and in the compose smoke; the real bucket in another account waits for the account | off-site, encrypted, in another account | 9.4: done; set `OFFSITE_REMOTE` and the key when the bucket exists |
+| Nobody is told when a backup is missing or old | every job stamps `BACKUP_STATUS_DIR`, the API exposes `backup_last_success_timestamp_seconds{kind}`, `DukaanAiBackupStale` (binlog 15 min, nightly jobs 26 h) and `DukaanAiBackupNeverRecorded` fire; `promtool test rules` proves it in CI | the same | 9.4: done |
+| Documents and product images | `db-ops documents-backup` nightly with a per-file manifest, `restore.sh` verifies every file, the drill runs in CI | scheduled, checksummed, restore-drilled, incl. `uploads/media` | 9.3: done |
 | A restored day's books are not proven to agree | the drill compares row counts | reconciliation of invoices, ledger, tenders, stock and dashboard to the paisa | 9.5 |
 | One operator, no rota, no rehearsed incident flow | the repository owner | on-call rota, runbook per alert, drills | 9.18, 9.22 |
 | Secrets never rotated | in the store, untested rotation | every secret rotated once on staging | 9.11 |
 
-### Interim measures, in force until the rows above close
+### The schedule that meets the objectives
 
-They cost nothing and shrink the exposure now:
+The four jobs, from the host's cron or the `binlog-archiver` service
+(`docs/BACKUP_RESTORE.md`, "Backup"):
 
-1. Run the binary-log archive every five minutes next to the nightly dump
-   (`docs/BACKUP_RESTORE.md`, "Backup"):
+```
+0 2 * * *    cd /srv/dukaanai && docker compose --profile ops run --rm db-ops backup                  # dump
+*/5 * * * *  cd /srv/dukaanai && docker compose --profile ops run --rm db-ops binlog-archive --flush  # binary logs
+10 2 * * *   cd /srv/dukaanai && docker compose --profile ops run --rm db-ops documents-backup        # evidence + images
+30 2 * * *   cd /srv/dukaanai && docker compose --profile ops run --rm db-ops offsite push            # encrypted copy elsewhere
+```
 
-   ```
-   0 2 * * *    cd /srv/dukaanai && docker compose --profile ops run --rm db-ops backup
-   */5 * * * *  cd /srv/dukaanai && docker compose --profile ops run --rm db-ops binlog-archive --flush
-   docker compose --profile ops up -d binlog-archiver     # the */5 line as a service, without cron
-   ```
-
-   Real database recovery point: five minutes. Where the archive cannot run
-   (a backup user without REPLICATION SLAVE and RELOAD), dump hourly into
-   its own directory instead (`--out /backups/hourly --keep 48`; pruning is
-   per directory and per database name, so the two schedules never prune
-   each other): one hour instead of twenty-four.
-2. After the nightly dump, copy the `db-backups` volume and a tar of the
-   `api-storage` and `api-uploads/media` volumes off the host (the commands
-   in `docs/BACKUP_RESTORE.md`), and keep the copy in a different account
-   than the server.
-3. Once a week, restore the newest off-host copy on a scratch server with
-   `restore-drill.sh`: CI's drill proves the scripts on CI's data, not your
-   backup files.
-4. Before every `migrate deploy`: the labelled pre-release backup
-   (`DEPLOYMENT_CHECKLIST.md`, phase 2).
+Where the archive cannot run (a backup user without REPLICATION SLAVE and
+RELOAD), dump hourly into its own directory instead
+(`--out /backups/hourly --keep 48`; pruning is per directory and per
+database name): one hour instead of twenty-four. Once a quarter, and
+before every go-live, restore the newest off-site copy on a scratch
+machine with the procedure in `docs/BACKUP_RESTORE.md` ("Restoring on a
+clean machine"): CI's drills prove the scripts on CI's data, not your
+backup files. Before every `migrate deploy`: the labelled pre-release
+backup (`DEPLOYMENT_CHECKLIST.md`, phase 2).
 
 ## 6. Decisions
 
@@ -198,15 +194,19 @@ They cost nothing and shrink the exposure now:
 - Point-in-time recovery is the provider's on a managed MySQL and the
   binary-log archive on a VM; a dump always records its position so either
   path can start from it.
+- Off-site copies go through rclone's crypt backend to a bucket in another
+  region and account, with the key in the secret store and nowhere near
+  the data; the local remote is only for drills. The documents archive
+  carries a per-file manifest so a restore is verified file by file.
 
 ## 7. Sign-off
 
-Row 9.1 is complete when the owner has signed the objectives in section 1
-and the decisions in section 6.
+Row 9.1 is complete: the owner has signed the objectives in section 1 and
+the decisions in section 6.
 
 | Role | Name | Date | Signed |
 |---|---|---|---|
-| Owner | shoryabansalgithub | | pending |
+| Owner | shoryabansalgithub | 2026-10-05 | signed (confirmed in the working session of 2026-10-05) |
 
 Review this document: at every change to a data store, a backup script or a
 schedule; when rows 9.2, 9.3, 9.4, 9.5, 9.11 and 9.22 close (replace the

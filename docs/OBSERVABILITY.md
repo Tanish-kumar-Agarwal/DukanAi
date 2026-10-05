@@ -55,6 +55,7 @@ stack on <http://localhost:9090>.
 | `outbox_rows` | gauge | `status` | outbox rows by status (PENDING, CLAIMED, PROCESSING, DONE, FAILED). |
 | `queue_jobs` | gauge | `queue`, `state` | BullMQ job counts per queue (waiting, active, delayed, failed) from the queue clients of this process. |
 | `retention_rows_purged_total` | counter | `table` | rows removed by the retention sweep (roadmap 7.8). |
+- `backup_last_success_timestamp_seconds{kind}`: Unix time of the last successful backup job (`dump`, `binlog`, `documents`, `offsite`), read on every scrape from the `<kind>.last-success` files in `BACKUP_STATUS_DIR` (roadmap 9.4; written by `scripts/db/lib.sh` `record_success`). A kind whose file disappears loses its series.
 | `errors_tracked_total` | counter | `kind` = `unhandled` / `prisma` / `job` / `startup` | errors handed to error tracking, counted whether or not a DSN is set. |
 | `dukaanai_process_*`, `dukaanai_nodejs_*` | | | prom-client's default process and event-loop metrics. |
 
@@ -108,8 +109,16 @@ the rules; `severity` is `critical` for the two the roadmap requires and
 | `DukaanAiOutboxFailedRows` | FAILED rows for 15 min | `GET /sales/events?status=FAILED` lists them with their last error; fix the cause (a webhook target, a listener bug) and `POST /sales/events/retry` with the id. |
 | `DukaanAiQueueBacklog` | > 1000 waiting jobs on a queue for 15 min | the worker is not keeping up (add an API instance: every instance runs every worker) or is crashing on every job (its errors are in the logs). |
 | `DukaanAiQueueFailedJobs` | failed jobs on a queue for 30 min | the failed set in Redis holds the job data and the last error; outbox-backed jobs also marked their row FAILED (above). |
+| `DukaanAiBackupStale` | a backup kind older than its objective: `binlog` 15 min, `dump` / `documents` / `offsite` 26 h, for 5 min | `db-ops status` shows every job's last success; run the late job by hand (`db-ops backup`, `binlog-archive --flush`, `documents-backup`, `offsite push`) and read its error: a full volume, a lost privilege, an unreachable remote, a wrong key. The recovery point grows while it stays red (`docs/DATA_SAFETY.md`). |
+| `DukaanAiBackupNeverRecorded` | no `backup_last_success_timestamp_seconds` series for a kind, for 30 min | the job is not scheduled (cron, `binlog-archiver` service), the API cannot read `BACKUP_STATUS_DIR` (the `db-backups` volume mounted read-only), or the job writes its stamps elsewhere (`BACKUP_STATUS_DIR` on the job side). |
 
 ## Verification
+
+`deploy/prometheus/alerts.test.yml` is a promtool unit test: the two backup
+alerts fire on stale and missing series and stay quiet on fresh ones. CI runs
+`promtool test rules` with the rule check in the "Deployment (compose
+smoke)" job; locally: `promtool test rules deploy/prometheus/alerts.test.yml`
+from `deploy/prometheus`.
 
 - Unit: `apps/api/src/common/observability/*.spec.ts`,
   `src/common/filters/global-exception.filter.spec.ts`,

@@ -103,6 +103,7 @@ the tuning values, so a container needs only these):
 | `SHUTDOWN_*`, `HTTP_KEEP_ALIVE_TIMEOUT_MS`, `QUEUE_READY_TIMEOUT_MS` | optional | above |
 | `LOG_LEVEL` | optional | most verbose level printed (default `log` in production, which refuses `debug`/`verbose`); JSON lines with the correlation id |
 | `METRICS_ENABLED`, `METRICS_TOKEN` | optional | `GET /api/metrics` (Prometheus); the token (16+ characters) makes the scrape require a bearer token. See `docs/OBSERVABILITY.md` |
+| `BACKUP_STATUS_DIR` | production | the backup jobs' `<kind>.last-success` stamps, read on every scrape into `backup_last_success_timestamp_seconds{kind}` for the stale-backup alert; compose mounts the `db-backups` volume read-only and points it at `status/` (roadmap 9.4) |
 | `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`, `APP_RELEASE` | optional | error tracking is off until the DSN is set; set `APP_RELEASE` to the image tag or commit at deploy time |
 | `CRON_RETENTION_SWEEP`, `RETENTION_*` | optional | the nightly purge of expired tokens, DONE outbox rows and old history (roadmap 7.8; windows in `apps/api/.env.example`) |
 
@@ -144,11 +145,15 @@ the stack down (`KEEP=1` leaves it running).
 - Logs, metrics, error tracking and the alert rules: `docs/OBSERVABILITY.md`
   (`deploy/prometheus/` holds the rules and a scrape configuration;
   `docker compose --profile ops up -d prometheus` runs them against the stack).
-- Backups, the binary-log archive, restore to a point in time and the
-  rehearsed drill: `docs/BACKUP_RESTORE.md` (`scripts/db/`; `docker compose
-  --profile ops run --rm db-ops backup` nightly and `db-ops binlog-archive
-  --flush` every five minutes, or `docker compose --profile ops up -d
-  binlog-archiver` for the same without cron). Keep binary logging on (MySQL 8 default)
+- Backups, the binary-log archive, the documents archive, the encrypted
+  off-site copy, restore to a point in time and the rehearsed drills:
+  `docs/BACKUP_RESTORE.md` (`scripts/db/`, `scripts/storage/`,
+  `scripts/backup/`; the `db-ops` image is `deploy/db-ops/Dockerfile`:
+  `docker compose --profile ops run --rm db-ops backup` nightly,
+  `db-ops binlog-archive --flush` every five minutes or `docker compose
+  --profile ops up -d binlog-archiver`, `db-ops documents-backup` nightly,
+  `db-ops offsite push` nightly with `OFFSITE_*` in `.env`;
+  `db-ops status` shows every job's last success). Keep binary logging on (MySQL 8 default)
   with `binlog_expire_logs_seconds` above the archive interval (compose sets
   7 days). Take a backup before every `migrate deploy`; the rollback paths
   are in `apps/api/prisma/MIGRATIONS.md`. Objectives: `docs/DATA_SAFETY.md`.

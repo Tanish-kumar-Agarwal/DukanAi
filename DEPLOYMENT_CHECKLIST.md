@@ -14,7 +14,7 @@ This checklist enforces the exact execution order required to deploy Epic 1 safe
 ## Phase 2: Database Orchestration
 - [ ] Halt all cron workers and BullMQ consumers in the existing environment.
 - [ ] Take a backup first (`scripts/db/backup.sh --label pre-<version>`, or `docker compose --profile ops run --rm db-ops backup --label pre-<version>`) and note its path in the release record; the restore drill (`scripts/db/restore-drill.sh`, CI job "Integration tests") passed on this revision — see docs/BACKUP_RESTORE.md.
-- [ ] The recovery objectives are signed and their interim measures run: hourly and nightly dumps with an off-host copy, and the weekly drill of the newest copy (docs/DATA_SAFETY.md, roadmap 9.1).
+- [ ] The recovery objectives are signed (docs/DATA_SAFETY.md) and the four backup jobs are scheduled: the nightly dump, the binary-log archive every five minutes, the nightly documents archive, the nightly encrypted off-site copy with `OFFSITE_REMOTE` and `OFFSITE_CRYPT_PASSWORD` from the secret store (docs/BACKUP_RESTORE.md, roadmap 9.2 to 9.4).
 - [ ] Run the release step `prisma migrate deploy` from the API image (compose: the `migrate` service; Kubernetes: a Job) before the new API starts — see docs/DEPLOYMENT.md.
   - Must create tables: `LedgerTransaction`, `OutboxEvent`, `InventoryDriftLog`
   - Must create triggers: `prevent_ledger_update`, `prevent_ledger_delete`
@@ -42,6 +42,7 @@ This checklist enforces the exact execution order required to deploy Epic 1 safe
   - Verify HTTP 403 Forbidden is returned.
 
 ## Phase 5: Observability Validation
+- [ ] `GET /api/metrics` carries `backup_last_success_timestamp_seconds` for the four kinds (dump, binlog, documents, offsite) once the jobs have run; `DukaanAiBackupStale` and `DukaanAiBackupNeverRecorded` are loaded (roadmap 9.4).
 - [ ] Filter logs for `correlationId` to confirm tracing works.
 - [ ] Fire a POST with PII data in body (e.g., `{"password": "test"}`).
   - Verify stdout shows `[REDACTED]` instead of the actual value.

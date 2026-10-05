@@ -93,11 +93,15 @@ services:
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
       APP_RELEASE: ${APP_RELEASE:-}
+      # Backup monitoring (roadmap 9.4): the backup jobs' status stamps, read
+      # on every metrics scrape (backup_last_success_timestamp_seconds{kind}).
+      BACKUP_STATUS_DIR: /var/lib/dukaanai/backups/status
     ports:
       - "${API_PORT:-3002}:3002"
     volumes:
       - api-storage:/var/lib/dukaanai/storage
       - api-uploads:/app/apps/api/uploads
+      - db-backups:/var/lib/dukaanai/backups:ro
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -147,14 +151,18 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # Backups (roadmap 7.7, 9.2; profile "ops"): a MySQL 8 client container
-  # with scripts/db mounted; dumps land in the db-backups volume and the
-  # binary-log archive in its binlog/ directory. Schedule the two lines from
-  # the host's cron and copy the volume off the host; objectives and what
-  # else to copy: docs/DATA_SAFETY.md.
+  # Backups (roadmap 7.7, 9.2, 9.3, 9.4; profile "ops"): a MySQL 8 client
+  # container (deploy/db-ops/Dockerfile: the Debian clients incl. mysqlbinlog,
+  # GNU tar, rclone) with the scripts mounted; dumps land in the db-backups
+  # volume, the binary-log archive in its binlog/ directory, the documents
+  # archives in documents/, the status stamps in status/ (which the API reads
+  # for the backup metric). Schedule from the host's cron; objectives and what
+  # each copy covers: docs/DATA_SAFETY.md.
   #   0 2 * * *    docker compose --profile ops run --rm db-ops backup                  # nightly dump
   #   */5 * * * *  docker compose --profile ops run --rm db-ops binlog-archive --flush  # 5-minute recovery point
-  #   docker compose --profile ops run --rm db-ops list
+  #   10 2 * * *   docker compose --profile ops run --rm db-ops documents-backup        # evidence + product images
+  #   30 2 * * *   docker compose --profile ops run --rm db-ops offsite push            # encrypted copy elsewhere
+  #   docker compose --profile ops run --rm db-ops list | status
   #   docker compose --profile ops run --rm db-ops restore /backups/<file>.sql.gz --yes [--to "YYYY-MM-DD HH:MM:SS"]
   # It connects as root: recording the dump's binary-log position, reading
   # the logs and FLUSH BINARY LOGS need RELOAD, REPLICATION CLIENT and
@@ -162,21 +170,33 @@ services:
   # drill (scripts/db/restore-drill.sh) needs CREATE DATABASE as well: run it
   # from a checkout with DATABASE_URL on the root user (docs/BACKUP_RESTORE.md).
   db-ops:
-    # The Debian variant: the Oracle Linux `mysql:8.0` image ships mysqldump
-    # but not mysqlbinlog, which the archive and restore --to need (the
-    # compose smoke in CI found that out).
-    image: mysql:8.0-debian
+    build:
+      context: .
+      dockerfile: deploy/db-ops/Dockerfile
+    image: dukaanai-db-ops
     profiles: ["ops"]
-    entrypoint: ["bash", "/scripts/db-ops.sh"]
     environment:
       DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-root-local-only}@mysql:3306/${MYSQL_DATABASE:-dukaanai}
       BACKUP_DIR: /backups
       BACKUP_KEEP: ${BACKUP_KEEP:-14}
       BINLOG_ARCHIVE_DIR: /backups/binlog
       BINLOG_ARCHIVE_KEEP_DAYS: ${BINLOG_ARCHIVE_KEEP_DAYS:-7}
+      # Documents (roadmap 9.3): the API's storage root and product images, read-only.
+      STORAGE_ROOT: /data/storage
+      MEDIA_DIR: /data/uploads/media
+      DOCUMENTS_BACKUP_DIR: /backups/documents
+      DOCUMENTS_BACKUP_KEEP: ${DOCUMENTS_BACKUP_KEEP:-14}
+      # Off-site copies (roadmap 9.4): an rclone target and the encryption key
+      # from .env; blank = `db-ops offsite` refuses with the reason.
+      OFFSITE_REMOTE: ${OFFSITE_REMOTE:-}
+      OFFSITE_CRYPT_PASSWORD: ${OFFSITE_CRYPT_PASSWORD:-}
+      OFFSITE_CRYPT_SALT: ${OFFSITE_CRYPT_SALT:-}
+      OFFSITE_KEEP_DAYS: ${OFFSITE_KEEP_DAYS:-30}
     volumes:
-      - ./scripts/db:/scripts:ro
+      - ./scripts:/scripts:ro
       - db-backups:/backups
+      - api-storage:/data/storage:ro
+      - api-uploads:/data/uploads:ro
     depends_on:
       mysql:
         condition: service_healthy
@@ -186,9 +206,11 @@ services:
   #   docker compose --profile ops up -d binlog-archiver
   # runs `binlog-archive --flush` every BINLOG_ARCHIVE_INTERVAL_SECONDS (300).
   binlog-archiver:
-    image: mysql:8.0-debian
+    build:
+      context: .
+      dockerfile: deploy/db-ops/Dockerfile
+    image: dukaanai-db-ops
     profiles: ["ops"]
-    entrypoint: ["bash", "/scripts/db-ops.sh"]
     command: ["archive-loop"]
     environment:
       DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-root-local-only}@mysql:3306/${MYSQL_DATABASE:-dukaanai}
@@ -197,7 +219,7 @@ services:
       BINLOG_ARCHIVE_KEEP_DAYS: ${BINLOG_ARCHIVE_KEEP_DAYS:-7}
       BINLOG_ARCHIVE_INTERVAL_SECONDS: ${BINLOG_ARCHIVE_INTERVAL_SECONDS:-300}
     volumes:
-      - ./scripts/db:/scripts:ro
+      - ./scripts:/scripts:ro
       - db-backups:/backups
     depends_on:
       mysql:

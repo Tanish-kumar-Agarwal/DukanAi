@@ -1,0 +1,10 @@
+# The compose `db-ops` and `binlog-archiver` services (roadmap 7.7, 9.2, 9.3,
+# 9.4): the MySQL 8 clients (mysql, mysqldump, mysqlbinlog; the Debian variant
+# has all three, the Oracle Linux image lacks mysqlbinlog), GNU tar and
+# coreutils for the documents archive, and rclone for the encrypted off-site
+# copy. Built from the repository root: docker build -f deploy/db-ops/Dockerfile .
+FROM mysql:8.0-debian
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends rclone ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+ENTRYPOINT ["bash", "/scripts/db-ops.sh"]

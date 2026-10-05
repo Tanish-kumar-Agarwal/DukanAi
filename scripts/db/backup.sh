@@ -26,7 +26,7 @@
 # 20261003090100 recreates the ledger triggers so new databases are clean)
 # would dump as `...; */;;`, which the mysql client refuses: that terminator
 # is dropped too, so a backup taken before that migration restores as well.
-# Prints the backup path last.
+# Records the success in BACKUP_STATUS_DIR (roadmap 9.4). Prints the backup path last.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -122,6 +122,7 @@ if [ "$KEEP" -gt 0 ]; then
 fi
 
 size="$(du -h "$target" | cut -f1)"
+record_success dump "$target"
 if [ -n "$coords" ]; then
   step "Backup written: $target ($size; .sha256 and .meta sidecars; binary-log position ${coords%% *}:${coords#* }, snapshot at $taken_at)"
 else

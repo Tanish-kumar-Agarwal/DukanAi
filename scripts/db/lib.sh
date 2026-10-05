@@ -157,3 +157,20 @@ normalize_utc() {
 utc_epoch() {
   date -u -d "${1/T/ }" +%s 2>/dev/null || die "cannot parse time '$1'"
 }
+
+# Backup monitoring (roadmap 9.4): every backup job records its last success
+# as <BACKUP_STATUS_DIR>/<kind>.last-success (first line: the UTC time,
+# second: a detail), which the API turns into the
+# backup_last_success_timestamp_seconds{kind} gauge and the stale-backup
+# alert watches. A stamp that cannot be written is a warning, never a failed
+# backup: the alert then fires, which is the point.
+BACKUP_STATUS_DIR="${BACKUP_STATUS_DIR:-${BACKUP_DIR:-/var/backups/dukaanai}/status}"
+record_success() {
+  local kind="$1" detail="${2:-}"
+  case "$kind" in *[!a-z]*|"") die "record_success: kind must be lower-case letters (got '$kind')" ;; esac
+  if mkdir -p "$BACKUP_STATUS_DIR" 2>/dev/null && printf '%s\n%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$detail" > "$BACKUP_STATUS_DIR/.$kind.tmp" 2>/dev/null \
+     && mv -f "$BACKUP_STATUS_DIR/.$kind.tmp" "$BACKUP_STATUS_DIR/$kind.last-success" 2>/dev/null; then
+    return 0
+  fi
+  printf 'WARNING: could not record the %s success in %s (the stale-backup alert will fire)\n' "$kind" "$BACKUP_STATUS_DIR" >&2
+}

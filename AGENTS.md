@@ -965,8 +965,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `<db>_drill_<stamp>` -> `migrate status` up to date -> `migrate diff`
   clean -> every table's row count equal -> ledger triggers present -> drop;
   CI runs it in the integration job after the suites, on MySQL 8). Compose:
-  `db-ops` service (profile `ops`, `mysql:8.0-debian` image: the Oracle
-  Linux `mysql:8.0` image has no mysqlbinlog; `scripts/db` mounted,
+  `db-ops` service (profile `ops`, image `deploy/db-ops/Dockerfile` on
+  `mysql:8.0-debian` plus rclone: the Oracle Linux `mysql:8.0` image has no
+  mysqlbinlog; the whole `scripts/` directory mounted at `/scripts`,
   `db-backups` volume, `db-ops.sh` entrypoint). Runbooks:
   `docs/BACKUP_RESTORE.md` (rehearsal record) and the "Rolling back a
   release" section of `prisma/MIGRATIONS.md` (additive: redeploy the old
@@ -1150,6 +1151,47 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   alone holds no invoice, rolled forward to now it holds the sale, the
   archiver service archives on its own. The managed-provider path (settings
   table, marker drill) is documented and waits for the account.
+- 9.3 documents (`scripts/storage/`): `backup.sh --root STORAGE_ROOT
+  [--media uploads/media]` writes `documents-<stamp>.tar.gz` (GNU tar
+  `--dereference` over a staging directory of symlinks, so the trees are
+  `storage/` and `media/` whatever the real paths; `--sort=name`) with
+  `.sha256`, a per-file `.manifest` (`sha256sum` format) and `.meta`, keep
+  14, success stamped; `restore.sh --to DIR | --root DIR --media DIR`
+  verifies the sidecar first and every restored file against the manifest
+  after, refuses a non-empty destination without `--overwrite`;
+  `restore-drill.sh` compares a fresh manifest of the source with one of the
+  restore (CI, integration job, on the suites' evidence). `db-ops
+  documents-backup` mounts `api-storage` and `api-uploads` read-only at
+  `/data`; a restore onto the live volumes mounts them writable for that
+  one `run` (BACKUP_RESTORE.md). `imports/`, `exports/`, `tmp/` are never
+  archived.
+- 9.4 off-site + monitoring (`scripts/backup/`, `record_success` in
+  `scripts/db/lib.sh`): `offsite.sh push|check|list|fetch` is rclone with a
+  `crypt` remote configured from the environment only (`OFFSITE_REMOTE`,
+  `OFFSITE_CRYPT_PASSWORD` 32+ chars obscured at run time, optional
+  `OFFSITE_CRYPT_SALT`; the backend behind the remote name is
+  `RCLONE_CONFIG_<NAME>_*`; `local` is defined by the scripts because a
+  crypt remote must wrap a configured backend), `copy` then `cryptcheck
+  --one-way` (hashes are unavailable on crypt remotes, `check` is wrong
+  there), prune by `--min-age`, dot files excluded. `offsite-drill.sh`
+  ships a fresh set to `local:<dir>`, proves nothing readable in the bucket
+  (names, a `CREATE TABLE` line, a manifest line; guard the gzip pipe
+  against SIGPIPE), fetches into a clean workspace, verifies sidecars,
+  restores documents and the dump (CI integration job after an `apt-get
+  install rclone`; the compose smoke pushes to a local remote through the
+  db-ops image). Every job writes `<BACKUP_STATUS_DIR>/<kind>.last-success`
+  (ISO time, detail; default `BACKUP_DIR/status`; a failed stamp warns,
+  never fails the backup); `MonitoringConfig.backupStatusDir`
+  (`BACKUP_STATUS_DIR`) lets `ObservabilityCollectorsService` turn them
+  into `backup_last_success_timestamp_seconds{kind}` on each scrape (the
+  gauge is reset before the read, so a vanished file loses its series);
+  compose mounts `db-backups` read-only into the API. Alerts
+  `DukaanAiBackupStale` (binlog 900 s, nightly kinds 93600 s) and
+  `DukaanAiBackupNeverRecorded` (`absent()` keeps the equality matchers as
+  labels, so it is one alert per kind); `deploy/prometheus/alerts.test.yml`
+  proves both with `promtool test rules` (sample every minute: a 1 h
+  interval leaves 55 min gaps that break `for:`); CI runs it next to the
+  rule check.
 
 ## Toolchain
 

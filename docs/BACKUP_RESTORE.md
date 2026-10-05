@@ -1,6 +1,7 @@
-# Backups and restore (MySQL 8)
+# Backups and restore
 
-Roadmap 7.7 and 9.2. The procedure for the database copy. What must survive, the
+Roadmap 7.7, 9.2, 9.3 and 9.4. The procedures for the database copy, the
+documents copy and the off-site copy. What must survive, the
 recovery objectives per store, the full data inventory (documents, product
 images, Redis, secrets, browser state), the measured restore times and the
 gaps still open are in `docs/DATA_SAFETY.md` (roadmap 9.1); this file says
@@ -68,14 +69,18 @@ cron, or run the archive as the `binlog-archiver` service, which does the
 same without cron, and copy the volume off the host, e.g.:
 
 ```
-0 2 * * *    cd /srv/dukaanai && docker compose --profile ops run --rm db-ops backup
-*/5 * * * *  cd /srv/dukaanai && docker compose --profile ops run --rm db-ops binlog-archive --flush
+0 2 * * *    cd /srv/dukaanai && docker compose --profile ops run --rm db-ops backup                  # dump
+*/5 * * * *  cd /srv/dukaanai && docker compose --profile ops run --rm db-ops binlog-archive --flush  # binary logs
+10 2 * * *   cd /srv/dukaanai && docker compose --profile ops run --rm db-ops documents-backup        # evidence + images (9.3)
+30 2 * * *   cd /srv/dukaanai && docker compose --profile ops run --rm db-ops offsite push            # encrypted copy elsewhere (9.4)
 docker compose --profile ops up -d binlog-archiver     # instead of the */5 line: every BINLOG_ARCHIVE_INTERVAL_SECONDS (300)
-docker run --rm -v dukaanai_db-backups:/backups:ro -v /mnt/offsite:/out alpine \
-  sh -c 'cp -r /backups/. /out/'
 ```
 
-A backup that lives only on the database host is not a backup.
+A backup that lives only on the database host is not a backup: the last
+line ships everything in the volume to object storage in another account,
+encrypted ("Off-site copies" below). `db-ops status` shows every job's last
+success; the API turns the same stamps into a metric and an alert ("Backup
+monitoring" below).
 
 ## Binary-log archive (point in time, roadmap 9.2)
 
@@ -112,6 +117,183 @@ covers. Run it every few minutes: the recovery point is the interval.
 - A MariaDB `mysqlbinlog` cannot read MySQL 8 logs: point `MYSQLBINLOG_BIN`
   at the MySQL 8 client. Encrypted binary logs (`binlog_encryption`) are
   refused: a raw copy cannot be replayed without the key.
+
+## Documents: the storage root and product images (roadmap 9.3)
+
+```
+scripts/storage/backup.sh --root DIR [--media DIR] [--out DIR] [--keep N] [--label TEXT]
+scripts/storage/restore.sh ARCHIVE.tar.gz --to DIR | --root DIR [--media DIR]   [--yes] [--overwrite]
+scripts/storage/restore-drill.sh --root DIR [--media DIR]
+```
+
+The dump holds no file: billing evidence, captured bills, statements and
+customer files live under `STORAGE_ROOT`, product images under
+`uploads/media` (the files `MediaStorage.cdnUrl` rows point at). `backup.sh`
+writes one `documents-<UTC stamp>[-label].tar.gz` with the two trees as
+`storage/` and `media/` (GNU tar, `--dereference` over a staging directory
+of symlinks, sorted members), next to three sidecars: `.sha256` of the
+archive, `.manifest` with the SHA-256 of every file (`sha256sum` format), and
+`.meta` (roots, time, file count). It is written as `.partial` and renamed,
+the oldest archives are pruned (`--keep`, default 14), and the success is
+recorded for monitoring. Evidence files are written once and never replaced
+(roadmap 7.5), so an archive taken while the API runs is consistent; a file
+that changes while tar reads it fails the run and the next run succeeds.
+
+`restore.sh` verifies the `.sha256` sidecar before writing anything, extracts
+either the whole archive into one directory (`--to`, a drill or a new
+volume) or each tree onto its volume (`--root`, `--media`), and then verifies
+every restored file against the manifest, so a passing restore is byte
+for byte what was archived. A destination must be empty unless
+`--overwrite` is given (files in the archive replace same-named files;
+everything else stays), because a restore over a live volume is a
+deliberate act. The dry run prints the plan.
+
+With compose, where `db-ops` mounts the two volumes read-only at
+`/data/storage` and `/data/uploads`:
+
+```
+docker compose --profile ops run --rm db-ops documents-backup                       # into /backups/documents
+docker compose --profile ops run --rm db-ops documents-restore /backups/documents/<file>.tar.gz --to /backups/restore-check --yes
+# onto the live volumes (API stopped): mount them writable for that one run
+docker compose stop api
+docker compose --profile ops run --rm -v dukaanai_api-storage:/restore/storage -v dukaanai_api-uploads:/restore/uploads db-ops \
+  documents-restore /backups/documents/<file>.tar.gz --root /restore/storage --media /restore/uploads/media --overwrite --yes
+docker compose start api
+```
+
+The drill backs the trees up, restores the archive into a temporary
+directory, checks every restored file against the manifest, compares a
+fresh manifest of the source with a fresh manifest of the restore (every
+source file present with the same SHA-256, nothing else), and checks one
+file byte for byte. CI runs it in the "Integration tests (MySQL 8 + Redis)"
+job on the evidence the suites wrote, on every push.
+
+### Documents rehearsal record
+
+The local storage root of the integration suites plus the product images
+directory:
+
+```
+==> 1/4 Documents backup of apps/api/data/storage and apps/api/uploads/media
+==> Documents backup written: .../documents-20261005T173110Z-drill.tar.gz (12K, 81 files; .sha256, .manifest and .meta sidecars)
+==> 2/4 Restore into /tmp/.../restore
+==> Restored 81 files, every checksum identical to the manifest, in 0s
+==> 3/4 Every source file is in the restore with the same SHA-256, and nothing else is
+  81 files, 304169 bytes, identical
+==> 4/4 A single file restored from the archive is byte-identical
+  media/49/497790947d4666760ce38f3c00e852c71fdb66cae849bae8e9ede352719e1581.png: identical
+DOCUMENTS RESTORE DRILL PASSED: 81 files / 304169 bytes ..., archive 12K, every checksum identical, 0s
+```
+
+The refusals were exercised: a non-empty destination without `--overwrite`,
+a damaged `.sha256`, and a file altered after the restore (the manifest
+check reports it).
+
+## Off-site copies (roadmap 9.4)
+
+```
+scripts/backup/offsite.sh push | check | list | fetch DIR [--only GLOB]
+scripts/backup/offsite-drill.sh --root DIR [--media DIR]
+```
+
+`push` copies the whole backup directory (dumps and sidecars, the binary-log
+archive, the documents archives, the status stamps; in-flight and dot files
+excluded) to `OFFSITE_REMOTE` through rclone's `crypt` backend, verifies
+every file against its encrypted copy with `rclone cryptcheck`, prunes
+remote files older than `OFFSITE_KEEP_DAYS` (30) and records the success.
+File names and contents are encrypted on the way; a listing of the bucket
+shows nothing readable. `fetch DIR` brings everything (or `--only` a
+pattern) back, decrypted, for a restore on any machine that has rclone, the
+scripts and the key. `check` and `list` are the read-only views.
+
+Configuration is environment only, no `rclone.conf` with the key in it:
+
+| Variable | Meaning |
+|---|---|
+| `OFFSITE_REMOTE` | an rclone path on the target: `s3:bucket/dukaanai`, `b2:bucket/dukaanai`, `r2:bucket/dukaanai`, `gcs:bucket/dukaanai`; `local:/mnt/offsite` for a drill or a mounted drive |
+| `OFFSITE_CRYPT_PASSWORD` | the encryption key, 32+ characters, from the secret store; losing it loses every off-site copy |
+| `OFFSITE_CRYPT_SALT` | an optional second key (recommended), same rules |
+| `OFFSITE_KEEP_DAYS` | remote retention on push (30; 0 keeps all) |
+| `RCLONE_CONFIG_<NAME>_*` | the backend behind the remote name, e.g. `RCLONE_CONFIG_S3_TYPE=s3`, `RCLONE_CONFIG_S3_PROVIDER=AWS`, `RCLONE_CONFIG_S3_REGION=ap-south-1`, `RCLONE_CONFIG_S3_ACCESS_KEY_ID`, `RCLONE_CONFIG_S3_SECRET_ACCESS_KEY`; Cloudflare R2: `TYPE=s3 PROVIDER=Cloudflare ENDPOINT=https://<account>.r2.cloudflarestorage.com`; Backblaze B2: `RCLONE_CONFIG_B2_TYPE=b2 ACCOUNT KEY`; Google Cloud Storage: `RCLONE_CONFIG_GCS_TYPE=google cloud storage` with a service account file |
+
+Pick a bucket in another region and another account than the servers
+(a provider backup in the same account dies with the account), with
+versioning or object lock on if the provider offers it, and a key that is
+not stored next to the data. In compose the four `OFFSITE_*` variables come
+from `.env` into the `db-ops` service; `db-ops offsite push` refuses with the
+reason while they are blank.
+
+The drill (`offsite-drill.sh`) makes a fresh backup set (dump with its
+binary-log position, binary-log archive, documents archive), pushes it,
+proves the bucket holds only encrypted names and contents (no backup file
+name appears, a `CREATE TABLE` line of the dump and a line of the manifest
+are not found in the bucket), fetches everything into an empty workspace as
+a clean machine would, verifies every `.sha256` sidecar, restores the
+documents archive with every checksum identical, and restores the dump into
+a scratch database with the source's migration count. With
+`OFFSITE_REMOTE=local:<dir>` it needs no cloud account and runs the same
+code path; CI runs it that way in the integration job on every push, and
+the compose smoke pushes to a local remote through the `db-ops` image.
+
+### Off-site rehearsal record
+
+Local MySQL 8.0.46, rclone 1.60.1, a local remote:
+
+```
+==> 1/7 A fresh backup set: dump, binary-log archive, documents archive
+  80 files to ship
+==> 2/7 Ship it: offsite.sh push to local:/.../bucket
+==> Off-site copy: /tmp/.../backups -> local:/.../bucket (encrypted)
+==> Verifying every local file against its encrypted copy (rclone cryptcheck)
+==> Off-site copy complete: local:/.../bucket holds Total objects: 84 (84) Total size: 531.399 MiB
+==> 3/7 The bucket holds nothing readable
+  84 encrypted objects, no readable name among them
+  the dump text and the manifest text are not in the bucket
+==> 4/7 A clean machine: fetch everything into an empty workspace
+==> Fetched 84 file(s) into /tmp/.../clean; verify the .sha256 sidecars before restoring (sha256sum -c)
+==> 5/7 Every fetched .sha256 sidecar verifies
+  39 sidecars verified
+==> 6/7 The fetched documents archive restores with every checksum identical
+==> Restored 81 files, every checksum identical to the manifest, in 0s
+==> 7/7 The fetched dump restores into dukaanai_smoke_offsite_... with the source's migration count
+==> Restored 231 tables, 2 triggers, 21 applied migrations into dukaanai_smoke_offsite_... in 4s
+OFF-SITE DRILL PASSED: 84 files shipped ... encrypted, fetched on a clean workspace, 39 sidecars verified, documents and database restored, 17s
+```
+
+The first attempt was refused by rclone: a crypt remote must wrap a
+configured backend, so the scripts define `local` themselves and
+`local:/dir` needs no configuration.
+
+### Restoring on a clean machine
+
+1. Install rclone and the MySQL 8 clients, check out the repository at the
+   release that was running (the scripts and `prisma/` of that release).
+2. Set `OFFSITE_REMOTE`, `OFFSITE_CRYPT_PASSWORD` (and the salt) and the
+   backend variables from the secret store;
+   `scripts/backup/offsite.sh fetch /restore` (or `--only 'documents/*'`,
+   `--only '*.sql.gz*'`).
+3. `sha256sum -c` every sidecar; then the database restore of this
+   document, rolled forward with `--to` and `--binlogs /restore/binlog`
+   when the archive came back; then `scripts/storage/restore.sh` onto the
+   storage and media volumes; then `migrate status`, `migrate diff`, start
+   the API, sign in, the dashboard.
+
+## Backup monitoring (roadmap 9.4)
+
+Every job records its last success as `<BACKUP_STATUS_DIR>/<kind>.last-success`
+(`record_success` in `scripts/db/lib.sh`; the first line is the UTC time,
+the second a detail; `BACKUP_STATUS_DIR` defaults to `BACKUP_DIR/status`):
+`dump`, `binlog`, `documents`, `offsite`. `db-ops status` prints them. The
+API mounts the backups volume read-only (`BACKUP_STATUS_DIR`,
+`docker-compose.yml`) and turns the files into
+`backup_last_success_timestamp_seconds{kind}` on every metrics scrape;
+`deploy/prometheus/alerts.yml` raises `DukaanAiBackupStale` when a kind is
+older than its objective (binary logs 15 minutes, the three nightly jobs
+26 hours) and `DukaanAiBackupNeverRecorded` for a kind with no stamp at
+all. `deploy/prometheus/alerts.test.yml` makes both fire in a drill
+(`promtool test rules`, run by CI with the rule check). A stamp that cannot
+be written never fails a backup: the alert fires instead, which is the
+point. Runbook: `docs/OBSERVABILITY.md`.
 
 ## Restore
 
@@ -299,7 +481,13 @@ The compose smoke (CI job "Deployment (compose smoke)", on every push)
 proves the sentence of the roadmap literally: it takes a dump before the
 sale, makes the sale through the API, archives the binary logs, restores
 the dump alone (no invoice) and the dump rolled forward to now (the sale's
-invoice number), and starts the `binlog-archiver` service. The same run
+invoice number), and starts the `binlog-archiver` service. From the CI log
+of commit 88ba0e2:
+
+```
+==> ops (roadmap 9.2): archive the binary logs, restore the pre-sale dump alone and rolled forward to now: only the latter holds sale INV-2026-27-000001
+  the pre-sale dump holds no invoice; rolled forward to now it holds INV-2026-27-000001, the sale made after the dump
+``` The same run
 locally against the compose smoke database rolled a dump forward through
 three archived logs and matched the source's counts. The refusals were
 exercised too: a dump taken with `--coordinates skip` ("the
@@ -353,16 +541,14 @@ backup as the step before `migrate deploy`.
 
 ## What else to back up
 
-- The storage volume (`STORAGE_ROOT`, compose volume `api-storage`):
-  billing evidence written once and never replaced (roadmap 7.5). Copy it
-  with the backups (`docker run --rm -v dukaanai_api-storage:/s:ro ... tar`).
-- Product images: `uploads/media` on the `api-uploads` volume
-  (`MediaStorage.cdnUrl` and `MediaThumbnail.cdnUrl` rows point at them);
-  the rest of that volume (`imports`, `exports`, `tmp`) is reproducible.
-  Roadmap 9.3 schedules and drills both volumes; `docs/DATA_SAFETY.md` has
-  their objective and the measured file-level restore.
+- The storage volume (`STORAGE_ROOT`, compose volume `api-storage`) and
+  the product images (`uploads/media` on the `api-uploads` volume): the
+  documents backup above, nightly, shipped off-site with the dumps. The
+  rest of the uploads volume (`imports`, `exports`, `tmp`) is reproducible
+  and not archived.
 - Secrets (`.env`): `JWT_SECRET` (a new one ends every session),
-  `NEXTAUTH_SECRET`, `METRICS_TOKEN`, SMTP and Google credentials. Keep
-  them in the secret store, not with the dumps.
+  `NEXTAUTH_SECRET`, `METRICS_TOKEN`, `OFFSITE_CRYPT_PASSWORD` (without it
+  the off-site copies are noise), SMTP and Google credentials. Keep them in
+  the secret store, never with the dumps.
 - Redis needs no backup: queues rebuild from the outbox, caches from the
   database, rate-limit counters and cron locks expire.

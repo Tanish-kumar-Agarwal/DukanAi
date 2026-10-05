@@ -63,6 +63,14 @@ export const queueJobs = new Gauge({
   registers: [metricsRegistry],
 });
 
+/** Unix time of the last successful backup job of each kind, read from BACKUP_STATUS_DIR on every scrape (roadmap 9.4). */
+export const backupLastSuccessTimestampSeconds = new Gauge({
+  name: 'backup_last_success_timestamp_seconds',
+  help: 'Unix time of the last successful backup job by kind (dump, binlog, documents, offsite), from the <kind>.last-success files in BACKUP_STATUS_DIR',
+  labelNames: ['kind'] as const,
+  registers: [metricsRegistry],
+});
+
 export const retentionRowsPurgedTotal = new Counter({
   name: 'retention_rows_purged_total',
   help: 'Rows removed by the retention sweep, by table.',

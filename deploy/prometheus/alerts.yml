@@ -92,6 +92,39 @@ groups:
           summary: "Outbox rows exhausted their retries"
           description: "{{ $value }} outbox row(s) are FAILED. They carry their last error; list them with GET /sales/events?status=FAILED and re-queue with POST /sales/events/retry once the cause is fixed."
 
+      # ---- backups (roadmap 9.4) ------------------------------------------
+      # backup_last_success_timestamp_seconds{kind} is read by the API from
+      # BACKUP_STATUS_DIR, where every backup job records its last success
+      # (scripts/db/lib.sh record_success). Thresholds follow the objectives
+      # in docs/DATA_SAFETY.md: the binary-log archive runs every 5 minutes
+      # (15 min of slack), the dump, the documents archive and the off-site
+      # copy run nightly (26 h). alerts.test.yml proves both rules fire.
+      - alert: DukaanAiBackupStale
+        expr: |
+          (time() - backup_last_success_timestamp_seconds{job="dukaanai-api", kind="binlog"}) > 900
+          or (time() - backup_last_success_timestamp_seconds{job="dukaanai-api", kind="dump"}) > 93600
+          or (time() - backup_last_success_timestamp_seconds{job="dukaanai-api", kind="documents"}) > 93600
+          or (time() - backup_last_success_timestamp_seconds{job="dukaanai-api", kind="offsite"}) > 93600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backup job {{ $labels.kind }} has not succeeded in time"
+          description: "The last successful {{ $labels.kind }} backup was {{ $value | humanizeDuration }} ago (limits: binlog 15 min, dump / documents / offsite 26 h). The recovery point is growing: run `db-ops status`, then the job by hand (db-ops backup, binlog-archive --flush, documents-backup, offsite push) and read its error."
+
+      - alert: DukaanAiBackupNeverRecorded
+        expr: |
+          absent(backup_last_success_timestamp_seconds{job="dukaanai-api", kind="dump"})
+          or absent(backup_last_success_timestamp_seconds{job="dukaanai-api", kind="binlog"})
+          or absent(backup_last_success_timestamp_seconds{job="dukaanai-api", kind="documents"})
+          or absent(backup_last_success_timestamp_seconds{job="dukaanai-api", kind="offsite"})
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backup job {{ $labels.kind }} has never recorded a success"
+          description: "No backup_last_success_timestamp_seconds series for kind {{ $labels.kind }}. Either the job is not scheduled, or the API cannot read BACKUP_STATUS_DIR (the db-backups volume mounted read-only), or the job writes its stamp elsewhere."
+
       # ---- queues -------------------------------------------------------
       - alert: DukaanAiQueueBacklog
         expr: max by (queue) (queue_jobs{job="dukaanai-api", state="waiting"}) > 1000

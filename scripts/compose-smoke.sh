@@ -46,6 +46,9 @@ step "release step: migrate exited 0 and a second run is a no-op"
 [ "$("${COMPOSE[@]}" ps -a --format '{{.ExitCode}}' migrate)" = "0" ] || fail "migrate service did not exit 0"
 "${COMPOSE[@]}" run --rm migrate 2>&1 | tee /dev/stderr | grep -q "No pending migrations" || fail "a second migrate run was not a no-op"
 
+step "ops: build the db-ops image (deploy/db-ops/Dockerfile: MySQL clients, GNU tar, rclone)"
+"${COMPOSE[@]}" --profile ops build db-ops >/dev/null 2>&1 || fail "db-ops image build"
+
 step "ops (roadmap 9.2): a dump before the sale, with its binary-log position (db-ops backup)"
 out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops backup --label pre-sale 2>&1)" || { printf '%s\n' "$out"; fail "db-ops backup"; }
 printf '%s\n' "$out" | grep -q "binary-log position " || { printf '%s\n' "$out"; fail "the dump recorded no binary-log position"; }
@@ -73,6 +76,21 @@ rolled="$(sql "SELECT invoiceNumber FROM dukaanai_pitr_check.Invoice")"
 [ "$rolled" = "$invoice" ] || fail "the copy rolled forward to now holds '$rolled'; expected sale $invoice, written after the dump"
 printf '  the pre-sale dump holds no invoice; rolled forward to now it holds %s, the sale made after the dump\n' "$invoice"
 
+step "ops (roadmap 9.3): the documents backup of the storage and media volumes (db-ops documents-backup)"
+out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops documents-backup --label smoke 2>&1)" || { printf '%s\n' "$out"; fail "db-ops documents-backup"; }
+printf '%s\n' "$out" | grep -q "Documents backup written" || { printf '%s\n' "$out"; fail "no documents archive was written"; }
+
+step "ops (roadmap 9.4): the encrypted off-site copy to a local remote, verified by cryptcheck (db-ops offsite push)"
+out="$("${COMPOSE[@]}" --profile ops run --rm -T -e OFFSITE_REMOTE=local:/backups/.offsite-smoke -e OFFSITE_CRYPT_PASSWORD=smoke-only-password-of-at-least-32-chars db-ops offsite push 2>&1)" || { printf '%s\n' "$out"; fail "db-ops offsite push"; }
+printf '%s\n' "$out" | grep -q "Off-site copy complete" || { printf '%s\n' "$out"; fail "the off-site copy did not complete"; }
+
+step "ops (roadmap 9.4): the API reads the backup status stamps into backup_last_success_timestamp_seconds"
+metrics="$(curl -fsS "$API/metrics" 2>/dev/null || true)"
+for kind in dump binlog documents offsite; do
+  printf '%s\n' "$metrics" | grep -q "backup_last_success_timestamp_seconds{kind=\"$kind\"}" || { printf '%s\n' "$metrics" | grep backup_last || true; fail "no backup_last_success_timestamp_seconds series for kind $kind"; }
+done
+"${COMPOSE[@]}" --profile ops run --rm -T db-ops status 2>&1 | grep -E "^(dump|binlog|documents|offsite) " || fail "db-ops status lists no job"
+
 step "ops (roadmap 9.2): the binlog-archiver service archives on its own (docker compose --profile ops up -d binlog-archiver)"
 "${COMPOSE[@]}" --profile ops up -d binlog-archiver >/dev/null 2>&1 || fail "binlog-archiver did not start"
 for _ in $(seq 1 30); do sleep 1; "${COMPOSE[@]}" logs --no-color binlog-archiver 2>/dev/null | grep -q "Binary-log archive" && break; done
@@ -87,4 +105,4 @@ step "graceful stop: SIGTERM -> readiness 503 -> exit 0 (never SIGKILL)"
 for _ in $(seq 1 60); do sleep 2; curl -fsS -o /dev/null "$API/health/ready" && break; done
 curl -fsS -o /dev/null "$API/health/ready" || fail "api not ready after restart"
 
-printf '\nSMOKE PASSED: migrations applied, sign-in and a sale through the web and the API, the pre-sale dump rolled forward to now holds the sale, the archiver service runs, graceful stop verified.\n'
+printf '\nSMOKE PASSED: migrations applied, sign-in and a sale through the web and the API, the pre-sale dump rolled forward to now holds the sale, documents archived, encrypted off-site copy verified, backup metric exposed, the archiver service runs, graceful stop verified.\n'

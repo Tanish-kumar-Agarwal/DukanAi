@@ -1,0 +1,101 @@
+# promtool unit tests for the backup alerts (roadmap 9.4): the stale-backup
+# alert fires in a drill, on every CI run (job "Deployment (compose smoke)"):
+#   promtool test rules deploy/prometheus/alerts.test.yml
+# The test clock starts at 0: a series stuck at value 0 is a backup that has
+# not succeeded since the epoch, a series growing with the clock is fresh.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      # binlog: last success at t=0 and never again -> stale after 15 min
+      - series: 'backup_last_success_timestamp_seconds{job="dukaanai-api", instance="api:3002", kind="binlog"}'
+        values: '0x60'
+      # dump: fresh every minute -> never stale
+      - series: 'backup_last_success_timestamp_seconds{job="dukaanai-api", instance="api:3002", kind="dump"}'
+        values: '0+60x60'
+      # documents and offsite: recorded and fresh
+      - series: 'backup_last_success_timestamp_seconds{job="dukaanai-api", instance="api:3002", kind="documents"}'
+        values: '0+60x60'
+      - series: 'backup_last_success_timestamp_seconds{job="dukaanai-api", instance="api:3002", kind="offsite"}'
+        values: '0+60x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DukaanAiBackupStale
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: DukaanAiBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: dukaanai-api
+              instance: api:3002
+              kind: binlog
+            exp_annotations:
+              summary: "Backup job binlog has not succeeded in time"
+              description: "The last successful binlog backup was 25m 0s ago (limits: binlog 15 min, dump / documents / offsite 26 h). The recovery point is growing: run `db-ops status`, then the job by hand (db-ops backup, binlog-archive --flush, documents-backup, offsite push) and read its error."
+      - eval_time: 45m
+        alertname: DukaanAiBackupNeverRecorded
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      # only the dump has ever been recorded; the three other kinds are absent
+      - series: 'backup_last_success_timestamp_seconds{job="dukaanai-api", instance="api:3002", kind="dump"}'
+        values: '0+60x60'
+    alert_rule_test:
+      # absent() keeps the equality matchers as labels: one alert per missing kind.
+      - eval_time: 45m
+        alertname: DukaanAiBackupNeverRecorded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: dukaanai-api
+              kind: binlog
+            exp_annotations:
+              summary: "Backup job binlog has never recorded a success"
+              description: "No backup_last_success_timestamp_seconds series for kind binlog. Either the job is not scheduled, or the API cannot read BACKUP_STATUS_DIR (the db-backups volume mounted read-only), or the job writes its stamp elsewhere."
+          - exp_labels:
+              severity: warning
+              job: dukaanai-api
+              kind: documents
+            exp_annotations:
+              summary: "Backup job documents has never recorded a success"
+              description: "No backup_last_success_timestamp_seconds series for kind documents. Either the job is not scheduled, or the API cannot read BACKUP_STATUS_DIR (the db-backups volume mounted read-only), or the job writes its stamp elsewhere."
+          - exp_labels:
+              severity: warning
+              job: dukaanai-api
+              kind: offsite
+            exp_annotations:
+              summary: "Backup job offsite has never recorded a success"
+              description: "No backup_last_success_timestamp_seconds series for kind offsite. Either the job is not scheduled, or the API cannot read BACKUP_STATUS_DIR (the db-backups volume mounted read-only), or the job writes its stamp elsewhere."
+
+  - interval: 1m
+    input_series:
+      # dump: last success at t=0, sampled every minute for 27 hours -> stale after 26 h
+      - series: 'backup_last_success_timestamp_seconds{job="dukaanai-api", instance="api:3002", kind="dump"}'
+        values: '0x1620'
+      - series: 'backup_last_success_timestamp_seconds{job="dukaanai-api", instance="api:3002", kind="binlog"}'
+        values: '0+60x1620'
+      - series: 'backup_last_success_timestamp_seconds{job="dukaanai-api", instance="api:3002", kind="documents"}'
+        values: '0+60x1620'
+      - series: 'backup_last_success_timestamp_seconds{job="dukaanai-api", instance="api:3002", kind="offsite"}'
+        values: '0+60x1620'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: DukaanAiBackupStale
+        exp_alerts: []
+      - eval_time: 27h
+        alertname: DukaanAiBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: dukaanai-api
+              instance: api:3002
+              kind: dump
+            exp_annotations:
+              summary: "Backup job dump has not succeeded in time"
+              description: "The last successful dump backup was 1d 3h 0m 0s ago (limits: binlog 15 min, dump / documents / offsite 26 h). The recovery point is growing: run `db-ops status`, then the job by hand (db-ops backup, binlog-archive --flush, documents-backup, offsite push) and read its error."

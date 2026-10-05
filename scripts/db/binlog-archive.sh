@@ -22,8 +22,8 @@
 # size equals the server's, then renamed next to a SHA-256 sidecar. A log that
 # is already in the archive with the right size is skipped, so a run is
 # idempotent; a log the server has purged (binlog_expire_logs_seconds) but the
-# archive holds stays. Writes .last-success (UTC time and the newest archived
-# log) for monitoring. Exit 0 only when every closed log is in the archive.
+# archive holds stays. Records the success in BACKUP_STATUS_DIR (roadmap
+# 9.4). Exit 0 only when every closed log is in the archive.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
@@ -93,7 +93,7 @@ if [ "$KEEP_DAYS" -gt 0 ] && [ -n "$prefix" ]; then
   find "$OUT" -maxdepth 1 -type f -regex ".*/$prefix\.[0-9]+\(\.sha256\)?" -mtime +"$KEEP_DAYS" -print -delete | sed 's/^/  pruned /'
 fi
 
-printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${newest:-none}" > "$OUT/.last-success"
+record_success binlog "${newest:-none}"
 if [ -z "$newest" ]; then
   step "No closed binary log yet: the server is still writing $current (run with --flush to close it)"
 else
