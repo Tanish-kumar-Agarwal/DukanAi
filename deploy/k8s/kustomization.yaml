@@ -1,4 +1,4 @@
-# kubectl apply -k deploy/k8s   (after: cp dukaanai-dukaanai-secrets.env.example dukaanai-secrets.env and
+# kubectl apply -k deploy/k8s   (after: cp dukaanai-secrets.env.example dukaanai-secrets.env and
 # editing it, the hosts in configmap.yaml / ingress.yaml, and the image
 # names below to the registry the images were pushed to). README.md.
 apiVersion: kustomize.config.k8s.io/v1beta1

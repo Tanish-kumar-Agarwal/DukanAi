@@ -240,7 +240,7 @@ jobs:
             caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
       - name: Kubernetes manifests are valid (kustomize build + kubeconform)
         run: |
-          cp deploy/k8s/dukaanai-dukaanai-secrets.env.example deploy/k8s/dukaanai-secrets.env
+          cp deploy/k8s/dukaanai-secrets.env.example deploy/k8s/dukaanai-secrets.env
           kubectl kustomize deploy/k8s | docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary -
           rm deploy/k8s/dukaanai-secrets.env
       - name: Fresh clone -> compose up -> migrate -> login -> sale
