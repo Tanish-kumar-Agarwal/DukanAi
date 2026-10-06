@@ -95,5 +95,65 @@ LOAD_TARGET=https://api.staging.example.com LIMITS_SHOPS=1 LIMITS_FORWARD_FOR=0 
 (roadmap 9.16)", switched off with `SMOKE_LIMITS_GATE=0`, which the certify
 driver does because its overlay opens the limits for the load profile).
 
+## Simulated business day (roadmap 9.17)
+
+`load/business-day.yml` is the plan and `load/business-day.mjs` runs it
+against a deployment that is already up: ten shops, each with an owner, a
+manager and three cashiers on their own sessions, billing cash, UPI and
+credit sales with GST and discounts, returns, cancellations (manager),
+repayments, two stock receipts through the purchase order -> approval ->
+goods receipt chain, a mid-day drawer change, dashboard polling, eight
+hours of shop time compressed into ninety minutes; Redis is restarted once
+and one API instance is killed and started again mid-run through hook
+commands, with a checkout burst in flight at the kill. Two browser
+sessions per shop (`apps/web/e2e-load/business-day.spec.ts`, an owner on
+the dashboard and a cashier on the POS) do the same through the UI from
+the state the driver writes. Every document carries an idempotency key and
+is retried with the same key on a network failure, as the POS web does.
+The gate is read back over HTTP, no database access: zero 5xx answered by
+the API, the invoice list of every shop equal to the set the sessions
+confirmed (nothing lost, nothing duplicated), returns, cancellations and
+repayments accounted for, the keys in flight at the kill complete or
+absent, and `POST /reconciliation/run` CLEAN for every shop and business
+date. The report is `load/reports/business-day-<stamp>.{json,md}` with an
+`.attempts.jsonl` log of every request; `docs/BUSINESS_DAY.md` is the
+record.
+
+```bash
+cd apps/api
+# this machine: a dedicated Redis, two API instances on one disposable database, the web with real auth
+BUSINESS_DAY_DATABASE_URL='mysql://user:pass@127.0.0.1:3306/dukaanai_day' npm run load:business-day
+# a shorter rehearsal: BUSINESS_DAY_MINUTES=10 BUSINESS_DAY_SHOPS=3 BUSINESS_DAY_UI_SHOPS=1
+# staging (already running): the driver alone, with that stack's hook commands
+BUSINESS_DAY_TARGETS=https://api.staging.example.com BUSINESS_DAY_DATABASE_URL=... BUSINESS_DAY_WEB_URL=https://app.staging.example.com \
+BUSINESS_DAY_CHAOS_REDIS_RESTART='ssh staging docker compose -f docker-compose.prod.yml restart redis' \
+BUSINESS_DAY_CHAOS_API_KILL='ssh staging docker compose -f docker-compose.prod.yml kill api' \
+BUSINESS_DAY_CHAOS_API_START='ssh staging docker compose -f docker-compose.prod.yml start api' \
+node load/business-day.mjs
+# and, in parallel, the browser sessions:
+cd ../web && BUSINESS_DAY_STATE_FILE=../api/load/.business-day.state.json BUSINESS_DAY_WEB_URL=https://app.staging.example.com npm run test:business-day
+```
+
+- The driver needs `BUSINESS_DAY_DATABASE_URL`: the manager and the
+  cashiers are seeded directly (a bcrypt row each), because the only route
+  that creates a user sends an invitation by email; everything else goes
+  through the public routes. Give it a disposable database: the run writes
+  shops, staff, products, stock and thousands of documents.
+- `business-day.sh` needs `redis-server`, `redis-cli`, `curl` and a built
+  `dist/` (`BUSINESS_DAY_SKIP_BUILD=1` reuses it); it boots the web with
+  `next dev` and real authentication when `BUSINESS_DAY_UI_SHOPS` is not 0.
+  The second API instance is the one killed; the browser sessions use the
+  first through the web.
+- `scripts/certify/certify.sh` runs a shortened day (`CERTIFY_BUSINESS_DAY_MINUTES`,
+  6) against the release-candidate stack with compose as the hook runner
+  (`kill api` / `start api` / `restart redis`); with one API container the
+  kill takes the only instance down and every session waits the outage out
+  with the same key (`BUSINESS_DAY_RETRY_SECONDS`).
+- Through an edge that discards `X-Forwarded-For`, the whole day comes from
+  one address: either allow the generator's address in the edge's
+  `trusted_proxies` for the run and set `BUSINESS_DAY_FORWARD_FOR=1` (one
+  address per shop, as in production), or size `BUSINESS_DAY_SHOPS` to the
+  per-address limits (`docs/PRODUCTION_LIMITS.md`).
+
 Never run either script against a production database or a Redis db index
 a running API uses.

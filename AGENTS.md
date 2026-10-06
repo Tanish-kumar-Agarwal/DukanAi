@@ -742,6 +742,17 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   VIEWER (inserted with a bcrypt hash through `E2E_DATABASE_URL`) who sees no
   write buttons while the API answers 403. `docs/WEB_GATE_EVIDENCE.md` holds
   the exit-gate record (persistence suite, headers, Lighthouse).
+- Refresh-token hand-off (`src/lib/refresh-handoff.ts`, used by
+  `src/lib/auth.ts`, roadmap 9.17): the API rotates refresh tokens and ends
+  every session of an account when a consumed token is presented again, so
+  the `jwt` callback must answer every caller that still holds a rotated
+  token with the one exchange's successor, not only the callers that
+  overlapped the exchange in flight. `RefreshHandoff.once(token, exchange)`
+  keeps a successful outcome for two minutes keyed by the consumed token
+  (failures are not kept; the table is bounded). Without it, an owner with
+  the dashboard open was signed out of everything after one access-token
+  lifetime (the business day found it). `e2e/refresh-handoff.spec.ts`
+  covers the logic (pure, runs in the ordinary e2e project).
 - The shared axios instance (`src/lib/api.ts`) defaults to JSON and axios
   serialises a `FormData` body as JSON under that header (`{"file":{}}`); its
   request interceptor drops the content type for `FormData` so the browser
@@ -1482,6 +1493,48 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   billing authority table the owner signs (`BILLING_CASHIER_MAX_*`). The
   load profile (5.8) still needs the open test limits: it is a latency
   measurement from one address.
+- 9.17 business day: `apps/api/load/business-day.yml` is the plan (shops,
+  cashiers, the hourly profile summing to 104 sales per cashier, the tender
+  and discount mix, documents per 100 sales, catalogue, receipts, shift
+  change, dashboard cadence, the two failures) and `load/business-day.mjs`
+  runs it over HTTP against `BUSINESS_DAY_TARGETS` (one URL or several
+  instances; sessions are pinned round-robin and fail over on a network
+  error or an edge 5xx). Per shop: an owner (polls, purchase order ->
+  submit, GRN -> receive -> inspect -> accept, reconciliation), a manager
+  (approves the order, cancels, bills the 15 % discount), N cashiers (sales
+  via `POST /billing/calculate` then `/billing/invoice`, returns with the
+  `ReturnReason` enum, repayments to customers that carry credit, drawer
+  change), all seeded through `BUSINESS_DAY_DATABASE_URL` like the exploit
+  replay (no route creates a user without an emailed invitation). Access
+  tokens are refreshed after 12 min (`/auth/refresh`); auth calls are
+  queued 150 ms apart for the production throttlers. Every document carries
+  an idempotency key and `call()` retries the same body until both the
+  attempt count and `BUSINESS_DAY_RETRY_SECONDS` are spent (a step with
+  `retries: 0` never retries: procurement steps, cancel; a lost cancel
+  answer is read back). Chaos: `BUSINESS_DAY_CHAOS_REDIS_RESTART`,
+  `_API_KILL`, `_API_START` shell hooks at the plan's fractions; a checkout
+  burst is started at the doomed instance just before the kill and nobody
+  is told, the 3 s health probe and failed attempts discover it. Gate, all
+  over HTTP: zero API 5xx (a 5xx without the API's JSON body is an edge
+  error, reported separately), per shop the `GET /billing/invoices` set of
+  SALE and SALES_RETURN ids equals what the API and UI sessions confirmed
+  (lost = duplicated = 0), CANCELLED set equal, ledger PAYMENT rows per
+  customer equal, in-flight-at-kill keys `complete-after-retry` (200 on the
+  retry) or `absent-then-created` (201), `POST /reconciliation/run` CLEAN
+  for each IST business date touched (a run can cross midnight). Unresolved
+  keys are replayed once more before verification (what a cashier does).
+  `load/business-day.sh` is the local stack (dedicated Redis on 6391, two
+  `node dist/main` on 3041/3042 against `BUSINESS_DAY_DATABASE_URL`, the web
+  on 3043 with real auth; hooks = `kill -9` of instance 2 and
+  `--start-instance 2` / `--restart-redis` re-entries of the script);
+  `apps/web/e2e-load/business-day.spec.ts` (`playwright.business-day.config.ts`,
+  external servers only, `npm run test:business-day`) reads the driver's
+  state file and runs the two browser sessions per shop (owner: dashboard,
+  lists, cancel, repayment; cashier: drawer, POS sales by cash/UPI/credit
+  with the Retry button on a lost answer, returns, close), writing the UI
+  report the driver merges. certify runs a 6-minute day with compose as
+  the hook runner (`step_business_day`). `docs/BUSINESS_DAY.md` records the
+  runs; `js-yaml` is an API devDependency for the plan.
 
 ## Toolchain
 

@@ -171,6 +171,27 @@ step_load() {
   require_stack || return 1
   (cd apps/api && LOAD_TARGET="$API" LOAD_REPORT_DIR="$OUT/load" bash load/run.sh)
 }
+step_business_day() {
+  require_stack || return 1
+  mkdir -p "$OUT/business-day"
+  # Roadmap 9.17, shortened: CERTIFY_BUSINESS_DAY_MINUTES (6) of the compressed day over
+  # CERTIFY_BUSINESS_DAY_SHOPS (3) shops, Redis restarted and the API container killed and
+  # started again through compose, one shop with the two browser sessions. The stack has a
+  # single API instance, so every session waits the outage out with the same idempotency key.
+  (cd apps/api && BUSINESS_DAY_TARGETS="${API%/api}" BUSINESS_DAY_DATABASE_URL="$DB_URL" BUSINESS_DAY_WEB_URL="$WEB" \
+    BUSINESS_DAY_MINUTES="${CERTIFY_BUSINESS_DAY_MINUTES:-6}" BUSINESS_DAY_SHOPS="${CERTIFY_BUSINESS_DAY_SHOPS:-3}" BUSINESS_DAY_CASHIERS=2 BUSINESS_DAY_UI_SHOPS=1 \
+    BUSINESS_DAY_STATE_FILE="$OUT/business-day/state.json" BUSINESS_DAY_REPORT="$OUT/business-day/business-day.json" \
+    BUSINESS_DAY_CHAOS_REDIS_RESTART="${COMPOSE[*]} restart redis" BUSINESS_DAY_CHAOS_API_KILL="${COMPOSE[*]} kill api" BUSINESS_DAY_CHAOS_API_START="${COMPOSE[*]} start api" \
+    node load/business-day.mjs) &
+  local driver=$!
+  (cd apps/web && BUSINESS_DAY_STATE_FILE="$OUT/business-day/state.json" BUSINESS_DAY_WEB_URL="$WEB" BUSINESS_DAY_MINUTES="${CERTIFY_BUSINESS_DAY_MINUTES:-6}" BUSINESS_DAY_UI_SHOPS=1 \
+    BUSINESS_DAY_UI_JSON="$OUT/business-day/ui-playwright.json" npx playwright test --config playwright.business-day.config.ts > "$OUT/business-day/ui.log" 2>&1) &
+  local ui=$!
+  local rc=0
+  wait "$driver" || rc=$?
+  wait "$ui" || echo "(browser sessions exited non-zero; see business-day/ui.log)"
+  return $rc
+}
 step_upload_gate() {
   require_stack || return 1
   local container; container="$("${COMPOSE[@]}" ps -q api)"
@@ -236,6 +257,7 @@ run_step security "the security regression suite with every request sent to the 
 run_step exploits "every audit exploit replayed over HTTP against the running images, each refused with its documented code" step_exploits
 run_step playwright "the real-authentication browser suite against the web and API images" step_playwright
 run_step load "the 3x-peak load profile against the API image (checkout p95 < 500 ms, zero errors)" step_load
+run_step business-day "a shortened simulated business day (roadmap 9.17): sales, returns, cancellations, repayments, receipts, shifts, browser sessions, Redis restarted and the API killed mid-run; no lost or duplicated invoice, reconciliation CLEAN" step_business_day
 run_step upload-gate "twelve 300 MB uploads refused with 413; container RSS and temp directory" step_upload_gate
 run_step restore-db "database backup and restore drill with point in time (--pitr require) on the stack's MySQL" step_restore_db
 run_step restore-docs "documents backup and restore drill on a copy of the stack's storage root and media" step_restore_docs

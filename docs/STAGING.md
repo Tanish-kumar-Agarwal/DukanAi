@@ -90,6 +90,7 @@ An image that was never on staging never goes to production; a change to
 | The same image digests run on both environments | `docker compose -f docker-compose.prod.yml images` on both hosts | pending |
 | The `.env` key sets are equal | the `diff` above | pending |
 | The production rate limits hold a shop's traffic on staging (roadmap 9.16) | `LOAD_TARGET=https://<API_HOST> LIMITS_SHOPS=1 LIMITS_FORWARD_FOR=0 node apps/api/load/limits-gate.mjs` from a quiet address: `PASS`, 0 x 429 for the legitimate phase, 429 in the flood; the JSON report kept with the release note (`docs/PRODUCTION_LIMITS.md` §5) | pending (proven on every CI run by the reference compose smoke) |
+| A simulated business day on staging (roadmap 9.17) | `apps/api/load/business-day.mjs` with `BUSINESS_DAY_TARGETS=https://<API_HOST>` and the stack's hook commands, plus the browser sessions (`npm run test:business-day` in apps/web); the report's gate all PASS, kept with the release note (`docs/BUSINESS_DAY.md`) | pending (proven on this machine with two API instances, and shortened on every certify run) |
 | External penetration test (roadmap 9.15) | `docs/security/PENTEST_SCOPE.md`: scope letter signed, test run against staging, every finding closed or accepted with a date | pending the owner's vendor |
 
 Until staging exists, the repository proves the mechanism on every CI run:

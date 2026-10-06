@@ -4,6 +4,7 @@ import CredentialsProvider from 'next-auth/providers/credentials';
 import GoogleProvider from 'next-auth/providers/google';
 import { clientConfig, serverConfig } from '../config/env';
 import { decodeJwtExpiryMs } from './jwt';
+import { RefreshHandoff } from './refresh-handoff';
 
 // ---------------------------------------------------------------------------
 // Augmented user payload — what our NestJS backend returns and what we store
@@ -122,14 +123,21 @@ async function provisionUserFromBackend(
 // ---------------------------------------------------------------------------
 // Refresh-token exchange. `POST /api/auth/refresh { refresh_token }` returns a
 // brand new `{ access_token, refresh_token, user }` pair and revokes the old
-// refresh token. Because the old token is single-use, concurrent JWT callbacks
-// (parallel `getSession()` calls) must share one in-flight exchange per token.
+// refresh token. Because the old token is single-use, every JWT callback that
+// still holds it (parallel `getSession()` calls, and the ones that arrive just
+// after the first exchange with the browser's old cookie) must be answered
+// with the one exchange's successor: see `refreshHandoff` below.
 // ---------------------------------------------------------------------------
 type RefreshOutcome =
   | { ok: true; accessToken: string; refreshToken: string; accessTokenExpires: number }
   | { ok: false };
 
-const inflightRefreshes = new Map<string, Promise<RefreshOutcome>>();
+// A rotated token's successor is handed to every caller that still holds the
+// consumed token for a while (roadmap 9.17): sharing the exchange only while
+// it was in flight signed the account out of everything after one token
+// lifetime, because late callers with the old cookie tripped the API's reuse
+// detection. Two minutes covers the slowest poll that can carry an old cookie.
+const refreshHandoff = new RefreshHandoff<RefreshOutcome>({ graceMs: 2 * 60 * 1000 });
 
 async function exchangeRefreshToken(refreshToken: string): Promise<RefreshOutcome> {
   try {
@@ -156,13 +164,7 @@ async function exchangeRefreshToken(refreshToken: string): Promise<RefreshOutcom
 }
 
 function refreshOnce(refreshToken: string): Promise<RefreshOutcome> {
-  const existing = inflightRefreshes.get(refreshToken);
-  if (existing) return existing;
-  const pending = exchangeRefreshToken(refreshToken).finally(() => {
-    inflightRefreshes.delete(refreshToken);
-  });
-  inflightRefreshes.set(refreshToken, pending);
-  return pending;
+  return refreshHandoff.once(refreshToken, () => exchangeRefreshToken(refreshToken));
 }
 
 async function refreshAccessToken(token: JWT): Promise<JWT> {

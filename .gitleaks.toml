@@ -57,5 +57,8 @@ paths = [
   '''(^|/)\.next/''',
   '''(^|/)dist/''',
   '''apps/api/load/\.state\.json$''',
+  '''apps/api/load/\.business-day\.state\.json$''',
+  '''apps/api/load/\.business-day-run/''',
+  '''apps/api/load/reports/''',
   '''(^|/)\.env(\..*)?$''',
 ]

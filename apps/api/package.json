@@ -30,6 +30,7 @@
     "reconcile": "ts-node scripts/reconcile.ts",
     "sessions:revoke-all": "ts-node scripts/revoke-all-sessions.ts",
     "certify:exploits": "ts-node test/certification/exploit-replay.ts",
+    "load:business-day": "bash load/business-day.sh",
     "postinstall": "prisma generate"
   },
   "dependencies": {
@@ -116,6 +117,7 @@
     "eslint-plugin-prettier": "^5.2.2",
     "globals": "^17.0.0",
     "jest": "^30.0.0",
+    "js-yaml": "^4.3.2",
     "mysql2": "^3.24.5",
     "prettier": "^3.4.2",
     "socket.io-client": "^4.8.3",
