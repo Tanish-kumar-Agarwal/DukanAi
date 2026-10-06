@@ -237,6 +237,13 @@ jobs:
       # then a graceful stop of the API (SIGTERM, readiness 503, exit 0).
       # Roadmap 7.6: the alert rules and the example scrape config must parse
       # before they can be mounted into Prometheus.
+      # Roadmap 9.14: the image vulnerability gate is not a no-op. Trivy must flag a
+      # pinned known-vulnerable image; if it ever comes back clean the control fails
+      # loudly (so the release gate that scans the real images is never silently empty).
+      - name: Vulnerability scanner catches a known-vulnerable image (control)
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+        run: bash scripts/certify/trivy-scan.sh control
       - name: Alert rules are valid (promtool)
         run: |
           docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" --entrypoint promtool prom/prometheus:v3.5.0 check rules /rules/alerts.yml

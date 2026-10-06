@@ -102,6 +102,7 @@ which keeps every report in one evidence bundle:
 | migrate-diff | the image's own `prisma migrate deploy`, `migrate diff --exit-code`, `migrate status` and a no-op redeploy on a fresh MySQL 8 and a fresh MariaDB | `migrate-diff/migrate-diff.json` with the logs |
 | smoke | `scripts/compose-smoke.sh` with `SMOKE_PREBUILT=1` on the reference compose stack built from the candidates (`scripts/certify/compose.certify.yml`): migrations, the business flow through the web and the API, a CLEAN reconciliation, the pre-sale dump rolled forward to the sale, documents and off-site backups, the backup metric, the monitoring stack, the graceful stop; the stack stays up for the next steps | `smoke.log` |
 | route-walk, security | `test/integration/route-walker.integration-spec.ts` and `test/security/*.security-spec.ts` with `CERTIFY_API_URL`: the fixtures (shops, users, tokens) come from the checkout's module on the stack's database, every request goes over HTTP to the API container, and a route the image does not serve fails the walk | `route-walk/route-walk.json` (every route x identity), `*/jest.json` |
+| exploits | `test/certification/exploit-replay.ts` with `EXPLOIT_TARGET` the API container and `EXPLOIT_WEB_URL` the web container (roadmap 9.13): every audit exploit replayed as an attacker would — unauthenticated access, a forged / alg:none JWT, a cross-tenant id, over-refund, a ledger-overflow amount, an SSRF webhook, a 30 MB upload, a brute-force flood, MANAGER→OWNER mass assignment, a VIEWER write, an open redirect — each refused with its documented code | `exploits/exploit-replay.json` (one row per exploit) |
 | playwright | the real-authentication browser suite against the web and API containers (`E2E_EXTERNAL_SERVERS=1`) | `playwright/real-auth.json`, the HTML report |
 | load, upload-gate | `load/run.sh` and `load/upload-gate.sh` with `LOAD_TARGET` on the API container (RSS and the temp directory read through `docker exec`) | `load/pos-peak-*.json`, `load.log`, `upload-gate.log` |
 | restore-db, restore-docs, restore-offsite | `scripts/db/restore-drill.sh --pitr require` on the stack's MySQL; the documents and off-site drills on a copy of the stack's storage volume | the three logs |
@@ -126,6 +127,28 @@ bash scripts/certify/certify.sh --api ghcr.io/<owner>/dukaanai-api:v1.2.3 \
   --web ghcr.io/<owner>/dukaanai-web:v1.2.3 --db-ops ghcr.io/<owner>/dukaanai-db-ops:v1.2.3 \
   --out /tmp/certification-v1.2.3 [--skip playwright,load] [--keep]
 ```
+
+## Supply-chain gates
+
+Roadmap 9.14, in `.github/workflows/release.yml` and `.github/workflows/ci.yml`:
+
+- **Image vulnerabilities.** The release `images` job scans each built image
+  with Trivy (`scripts/certify/trivy-scan.sh gate`, the binary pinned by
+  sha256 in that script, no third-party action) and refuses to push an image
+  that carries a HIGH or CRITICAL vulnerability *with a fix available*
+  (`--ignore-unfixed`). The CI deploy job runs the same scanner against a
+  pinned known-vulnerable image (`trivy-scan.sh control`) and fails if Trivy
+  reports it clean, so the gate can never be a silent no-op.
+- **Bill of materials.** The release job writes a CycloneDX SBOM per image
+  (`trivy-scan.sh sbom`), uploads them as the workflow artifact
+  `sbom-<sha>`, and on a `v*` tag attaches `sbom-dukaanai-{api,web,db-ops}.cdx.json`
+  to the tag's release (`scripts/certify/attach-release.sh`).
+- **Secrets.** gitleaks scans the tree and the whole history on every push
+  (CI lint job, roadmap 9.11); a planted secret turns CI red.
+- **Dependencies.** `npm audit --omit=dev --audit-level=high` stays green in
+  the lint job, and `.github/dependabot.yml` opens weekly grouped pull
+  requests for npm (the root and each workspace) next to the github-actions
+  pin updates.
 
 ## Release step: migrations
 

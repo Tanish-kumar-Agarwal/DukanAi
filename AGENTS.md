@@ -1404,6 +1404,46 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   native AIO off) answered 660-670 ms against the 215 ms baseline of
   `docs/LOAD_TEST_BASELINE.md`, so a FAIL on that one step is read with
   the table, not as a verdict on the image.
+- 9.13 exploit replay: `apps/api/test/certification/exploit-replay.ts`
+  (`npm run certify:exploits`, `EXPLOIT_TARGET` the API base URL) replays
+  every audit finding as a remote attacker would — black-box over HTTP — and
+  exits non-zero if any is not refused with its documented status/code. It
+  registers throwaway shops through the public routes; with
+  `EXPLOIT_DATABASE_URL` it seeds a VIEWER and a MANAGER (a bcrypt row, as
+  `real-auth.spec.ts` does) so the two role-escalation exploits run, else
+  they report SKIPPED; `EXPLOIT_WEB_URL` adds the open-redirect check,
+  `EXPLOIT_REPORT` writes the JSON. The twelve: unauthenticated-access
+  (401; the deployed server never honours AUTH_DISABLED), forged-jwt
+  (wrong-secret and alg:none → 401), long-user-agent (login still 201),
+  cross-tenant-id (404), over-refund (409 RETURN_QTY_EXCEEDS), ledger-overflow
+  (amount past the money bound → 400), ssrf-webhook (400 WEBHOOK_URL_*),
+  oversize-upload (413), brute-force-login (the victim is stopped by 429 OR
+  the per-account lockout — its own correct password then 401 — and a
+  bystander still signs in, so it holds under both the open test limits and
+  production limits), manager-to-owner (400, role unchanged),
+  viewer-stock-adjust (403), open-redirect (no off-origin 30x). The certify
+  driver runs it as the `exploits` step (`CERTIFY_API_URL` stack, DB seeded,
+  web for the redirect); `exploits/exploit-replay.json` goes in the bundle.
+  It is not a `.spec.ts`, so jest never picks it up; it is type-checked and
+  linted (the `require` of mysql2/bcrypt carries eslint-disable lines).
+- 9.14 supply chain: `scripts/certify/trivy-scan.sh` (Trivy pinned by sha256,
+  no third-party action) has three modes: `gate IMAGE...` fails on a HIGH/
+  CRITICAL vulnerability WITH a fix (`--ignore-unfixed`); `sbom IMAGE OUT`
+  writes a CycloneDX SBOM; `control [IMAGE]` scans a pinned known-vulnerable
+  image (`TRIVY_CONTROL_IMAGE`, default `alpine:3.12.0`) WITHOUT
+  `--ignore-unfixed` and fails if Trivy finds nothing (so the gate is never a
+  no-op — bump the control image if it ever reads clean). The release
+  `images` job scans the three images before pushing and writes a per-image
+  SBOM after, uploads them as `sbom-<sha>` and, on a `v*` tag, attaches
+  `sbom-dukaanai-{api,web,db-ops}.cdx.json` to the release
+  (`attach-release.sh` now takes many files). The CI deploy job runs the
+  control on every push. gitleaks (9.11) and `npm audit --omit=dev
+  --audit-level=high` stay the secret and advisory gates;
+  `.github/dependabot.yml` adds weekly grouped npm PRs (root + each
+  workspace) beside the github-actions pins. No docker here, so the image
+  scan, SBOM and control are proven by the jobs; locally the pinned Trivy
+  was shown to produce a valid CycloneDX document and `trivy fs` of the
+  tree is clean.
 
 ## Toolchain
 

@@ -146,6 +146,15 @@ suite() { # suite NAME PATTERN: one jest run of the integration config with ever
 }
 step_route_walk() { suite route-walk 'route-walker'; }
 step_security() { suite security '\.security-spec\.ts$'; }
+step_exploits() {
+  require_stack || return 1
+  mkdir -p "$OUT/exploits"
+  # Every audit exploit replayed over HTTP against the API container, as an attacker would
+  # (roadmap 9.13). The two role-escalation exploits seed a VIEWER and a MANAGER directly, as
+  # the real-auth suite does; the open-redirect check loads the web container's login page.
+  (cd apps/api && EXPLOIT_TARGET="$API/api" EXPLOIT_WEB_URL="$WEB" EXPLOIT_DATABASE_URL="$DB_URL" EXPLOIT_REPORT="$OUT/exploits/exploit-replay.json" \
+    npx ts-node test/certification/exploit-replay.ts)
+}
 step_playwright() {
   require_stack || return 1
   mkdir -p "$OUT/playwright"
@@ -222,6 +231,7 @@ run_step migrate-diff "the image's migrations on MySQL 8 and MariaDB: deploy, di
 run_step smoke "compose stack from the images: migrations, business flow, reconciliation, point-in-time restore, documents and off-site backups, monitoring, graceful stop" step_smoke
 run_step route-walk "every registered route over HTTP against the API image, four identities" step_route_walk
 run_step security "the security regression suite with every request sent to the API image" step_security
+run_step exploits "every audit exploit replayed over HTTP against the running images, each refused with its documented code" step_exploits
 run_step playwright "the real-authentication browser suite against the web and API images" step_playwright
 run_step load "the 3x-peak load profile against the API image (checkout p95 < 500 ms, zero errors)" step_load
 run_step upload-gate "twelve 300 MB uploads refused with 413; container RSS and temp directory" step_upload_gate
@@ -257,6 +267,7 @@ for r in "${RESULTS[@]}"; do [ "$r" = FAIL ] && overall=FAIL; done
   printf -- '- `smoke.log`: the compose smoke transcript (business flow, reconciliation, point-in-time restore, backups, monitoring, graceful stop)\n'
   printf -- '- `route-walk/route-walk.json`: every route x identity with its status; `route-walk/jest.json` the assertions\n'
   printf -- '- `security/jest.json`: the security regression suite (open findings are `it.failing`, see apps/api/test/security/README.md)\n'
+  printf -- '- `exploits/exploit-replay.json`: every audit exploit replayed over HTTP, one row per exploit with its status and the documented refusal (roadmap 9.13)\n'
   printf -- '- `playwright/real-auth.json`, `playwright/html-report/`: the real-authentication browser suite\n'
   printf -- '- `load/pos-peak-*.json` and `load.log`: the artillery report and the gate table (docs/LOAD_TEST_BASELINE.md for the format)\n'
   printf -- '- `upload-gate.log`: one line per upload, RSS before / peak / after, temp directory leftovers, the control upload\n'

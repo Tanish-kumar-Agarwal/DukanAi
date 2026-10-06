@@ -29,6 +29,7 @@
     "storage:migrate-legacy": "ts-node scripts/migrate-storage.ts",
     "reconcile": "ts-node scripts/reconcile.ts",
     "sessions:revoke-all": "ts-node scripts/revoke-all-sessions.ts",
+    "certify:exploits": "ts-node test/certification/exploit-replay.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

@@ -41,6 +41,9 @@ jobs:
     name: Build and push images (ghcr.io)
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    permissions:
+      contents: write # on a tag, the CycloneDX SBOMs are attached to the release (roadmap 9.14)
+      packages: write
     outputs:
       registry: ${{ steps.meta.outputs.registry }}
       sha: ${{ steps.meta.outputs.sha }}
@@ -69,6 +72,14 @@ jobs:
           docker build -f apps/api/Dockerfile -t "$REG/dukaanai-api:$SHA" .
           docker build -f apps/web/Dockerfile -t "$REG/dukaanai-web:$SHA" .
           docker build -f deploy/db-ops/Dockerfile -t "$REG/dukaanai-db-ops:$SHA" .
+      # Roadmap 9.14: a release image with a fixable HIGH/CRITICAL vulnerability is not pushed.
+      # Trivy is pinned by sha256 in the script (no third-party action).
+      - name: Vulnerability gate on the images (Trivy, fixable HIGH/CRITICAL)
+        env:
+          REG: ${{ steps.meta.outputs.registry }}
+          SHA: ${{ steps.meta.outputs.sha }}
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+        run: bash scripts/certify/trivy-scan.sh gate "$REG/dukaanai-api:$SHA" "$REG/dukaanai-web:$SHA" "$REG/dukaanai-db-ops:$SHA"
       - name: Push
         env:
           REG: ${{ steps.meta.outputs.registry }}
@@ -83,6 +94,28 @@ jobs:
             fi
           done
           echo "Pushed $REG/dukaanai-{api,web,db-ops}:$SHA${EXTRA:+ and :$EXTRA}" >> "$GITHUB_STEP_SUMMARY"
+      # Roadmap 9.14: a CycloneDX SBOM per image is the release's bill of materials.
+      - name: Software bill of materials (CycloneDX) per image
+        env:
+          REG: ${{ steps.meta.outputs.registry }}
+          SHA: ${{ steps.meta.outputs.sha }}
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+        run: |
+          mkdir -p "$RUNNER_TEMP/sbom"
+          for image in api web db-ops; do
+            bash scripts/certify/trivy-scan.sh sbom "$REG/dukaanai-$image:$SHA" "$RUNNER_TEMP/sbom/sbom-dukaanai-$image.cdx.json"
+          done
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: sbom-${{ steps.meta.outputs.sha }}
+          path: ${{ runner.temp }}/sbom
+          retention-days: 90
+          if-no-files-found: error
+      - name: Attach the SBOMs to the release of the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/certify/attach-release.sh "${GITHUB_REF#refs/tags/}" "$RUNNER_TEMP"/sbom/sbom-*.cdx.json
 
   certify:
     name: Certify the release candidate images

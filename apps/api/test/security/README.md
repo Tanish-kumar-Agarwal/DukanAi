@@ -18,6 +18,17 @@ exercises the real guard (for example a VIEWER is refused on `POST /products`).
 
 Never delete or skip a failing test to get green. Fix the behaviour and flip it.
 
+## The exploit replay (roadmap 9.13)
+
+`test/certification/exploit-replay.ts` is the black-box sibling of this suite:
+it replays the same findings over HTTP against a running deployment (the
+certify stack or a staging URL) and asserts each is refused with its
+documented status and code. It is not a `.spec.ts`, so jest never runs it;
+`npm run certify:exploits` (with `EXPLOIT_TARGET`) runs it on demand, and the
+certify driver runs it as the `exploits` step. The in-process suite here is
+the source of truth for the assertions; the replay proves they hold on the
+wire.
+
 ## Against a running image
 
 With `CERTIFY_API_URL=http://host:port` (roadmap 9.12, `scripts/certify`)
