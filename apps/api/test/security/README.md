@@ -18,6 +18,16 @@ exercises the real guard (for example a VIEWER is refused on `POST /products`).
 
 Never delete or skip a failing test to get green. Fix the behaviour and flip it.
 
+## Against a running image
+
+With `CERTIFY_API_URL=http://host:port` (roadmap 9.12, `scripts/certify`)
+every request of these specs goes over HTTP to that API instead of the
+in-process server: the booted module only creates the fixtures (shops,
+users, tokens through the real `AuthService`) on the same database and with
+the same `JWT_SECRET` as the target (`httpTarget` in
+`test/integration/pos-fixtures.ts`). The assertions are unchanged, so the
+suite certifies the release candidate image with the same findings.
+
 ## Coverage
 
 | Spec | Audit finding | Roadmap phase |

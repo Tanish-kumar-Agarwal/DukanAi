@@ -52,7 +52,11 @@ identifiers, who holds the secrets, the DNS record owner, the date.
 
 1. A commit on `main` (or a `v*` tag) triggers the release workflow; it
    pushes `ghcr.io/<owner>/dukaanai-{api,web,db-ops}:sha-<commit>` (and
-   `:v<version>`). The CI run of the same commit must be green.
+   `:v<version>`). The CI run of the same commit must be green. A release
+   is a `v*` tag: its `certify` job (roadmap 9.12) must be green as well,
+   and its evidence bundle (`certification-<tag>`, also attached to the
+   tag's draft release) is read before the tag goes anywhere; a red
+   certification is not promoted.
 2. On the staging host: set `IMAGE_TAG=sha-<commit>` in `.env`, then
 
    ```

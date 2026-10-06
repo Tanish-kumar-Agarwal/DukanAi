@@ -1362,6 +1362,48 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   fixtures by file AND pattern and the NestJS README badge; a real value
   in those files still fails. The staging rotations themselves wait for
   staging and are logged in the register.
+- 9.12 certification of a release candidate: the job `certify` of
+  `.github/workflows/release.yml` (every `v*` tag and every manual run,
+  after the images are pushed) pulls the three images back and runs
+  `scripts/certify/certify.sh --api --web --db-ops --out DIR`, which
+  re-runs the checklist against the IMAGES, never stops on a failure and
+  writes one evidence bundle (`SUMMARY.md` with PASS / FAIL per step, the
+  digests, `summary.json`, every log): `boot-matrix.sh` boots the API image
+  under every case of `apps/api/test/boot-matrix.json` (the JSON the
+  boot-regression spec now reads too; the image bakes `NODE_ENV=production`
+  in, so a case that leaves a variable out unsets it with `sh -c 'unset ...;
+  exec node dist/main'`); `migrate-diff.sh` runs the image's own `prisma
+  migrate deploy` / `diff --exit-code` / `status` / no-op redeploy on fresh
+  `mysql:8.0` and `mariadb:10.11` containers; `scripts/compose-smoke.sh`
+  with `SMOKE_PREBUILT=1` + `SMOKE_ENV_FILE` + `COMPOSE_FILE=docker-compose.yml:
+  scripts/certify/compose.certify.yml` (images by `CERTIFY_*_IMAGE`, `build`
+  reset, db-ops on its baked scripts, MySQL and Redis published, the test
+  profile's open rate limits and billing timeout on the API: one address
+  drives everything, the production values are roadmap 9.16) with `KEEP=1`;
+  then the route walker and the security suite under `CERTIFY_API_URL`
+  (`httpTarget(app)` in `test/integration/pos-fixtures.ts`: the booted
+  module is the fixture factory on the stack's database with the stack's
+  `JWT_SECRET`, every request goes to the container, `CERTIFY_REPORT_DIR`
+  receives `route-walk.json`, and a Nest "Cannot GET /..." 404 fails the
+  walk); Playwright real auth with `E2E_EXTERNAL_SERVERS=1` (no
+  `webServer`) and `E2E_JSON_REPORT`; `load/run.sh` and `load/upload-gate.sh`
+  with `LOAD_TARGET` (the gate reads RSS and the temp directory through
+  `docker exec` on `UPLOAD_GATE_CONTAINER`, or `UPLOAD_GATE_PID` locally);
+  the database drill (`--pitr require`, host clients) and the documents and
+  off-site drills on a `docker cp` of the storage volume. The bundle is the
+  workflow artefact `certification-<tag>` and, on a tag, an asset of the
+  tag's release, created as a DRAFT when none exists (`attach-release.sh`,
+  plain REST with the job token, `contents: write` on that job only). The
+  bundle is written outside the checkout (`--out`, default a temp dir): the
+  root `.gitignore` is not to be edited. No docker here: the hybrid modes
+  were proven locally against `node dist/main` (856 walker outcomes over
+  HTTP, 21 security tests, the boot matrix, the load profile delivered with
+  zero errors, the upload gate in PID mode, Playwright against `next
+  start`); the compose and docker steps are proven by the job itself. The
+  load's p95 gate depends on the host: this box's MariaDB (started as root,
+  native AIO off) answered 660-670 ms against the 215 ms baseline of
+  `docs/LOAD_TEST_BASELINE.md`, so a FAIL on that one step is read with
+  the table, not as a verdict on the image.
 
 ## Toolchain
 

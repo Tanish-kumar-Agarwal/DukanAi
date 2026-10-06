@@ -3,12 +3,14 @@ import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { DiscoveryService, MetadataScanner } from '@nestjs/core';
 import { Role } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import { mkdirSync, writeFileSync } from 'fs';
+import * as path from 'path';
 import request from 'supertest';
 import { ANY_AUTHENTICATED_KEY } from '../../src/auth/any-authenticated.decorator';
 import { IS_PUBLIC_KEY } from '../../src/auth/public.decorator';
 import { ROLES_KEY } from '../../src/auth/roles.decorator';
 import { bearerToken, createUser, ownerOf } from '../security/security-fixtures';
-import { bootApp, createShop, TestShop } from './pos-fixtures';
+import { bootApp, createShop, httpTarget, TestShop } from './pos-fixtures';
 
 /**
  * Phase 4 exit gate: every registered route, as nobody, a VIEWER, the OWNER of
@@ -20,7 +22,11 @@ import { bootApp, createShop, TestShop } from './pos-fixtures';
  * write before any validation runs, and an id of another shop never answers
  * 2xx. The handler list comes from the Nest discovery metadata, the same
  * source `RouteAuthorizationAssertion` uses at boot, so a new controller is
- * walked without touching this file.
+ * walked without touching this file. Under CERTIFY_API_URL (roadmap 9.12)
+ * every request goes to the running release candidate image instead of the
+ * in-process server, the booted module only supplies the fixtures, and a
+ * route the image does not serve (Nest's "Cannot GET /..." 404) fails the
+ * walk; CERTIFY_REPORT_DIR receives every outcome as route-walk.json.
  */
 jest.setTimeout(240_000);
 
@@ -115,8 +121,7 @@ describe('route walker (phase 4 exit gate): every handler, four identities, neve
 
   async function hit(who: string, token: string | null, handler: Handler): Promise<void> {
     const url = withRandomIds(handler.path);
-    const server = app.getHttpServer();
-    let req = request(server)[handler.method.toLowerCase() as 'get' | 'post' | 'put' | 'patch' | 'delete'](url);
+    let req = request(httpTarget(app))[handler.method.toLowerCase() as 'get' | 'post' | 'put' | 'patch' | 'delete'](url);
     if (token) req = req.set('Authorization', `Bearer ${token}`);
     if (handler.method !== 'GET') req = req.set('Content-Type', 'application/json').send({});
     const res = await req;
@@ -146,6 +151,21 @@ describe('route walker (phase 4 exit gate): every handler, four identities, neve
   });
 
   afterAll(async () => {
+    if (process.env.CERTIFY_REPORT_DIR) {
+      mkdirSync(process.env.CERTIFY_REPORT_DIR, { recursive: true });
+      writeFileSync(
+        path.join(process.env.CERTIFY_REPORT_DIR, 'route-walk.json'),
+        JSON.stringify(
+          {
+            target: process.env.CERTIFY_API_URL ?? 'in-process',
+            handlers: handlers.length,
+            outcomes: outcomes.map((o) => ({ who: o.who, route: o.handler.key, status: o.status, body: o.body })),
+          },
+          null,
+          2,
+        ),
+      );
+    }
     await app?.close();
   });
 
@@ -155,6 +175,14 @@ describe('route walker (phase 4 exit gate): every handler, four identities, neve
     expect(handlers.length).toBeGreaterThan(200);
     expect(handlers.some((h) => h.key === 'POST /api/billing/invoice')).toBe(true);
     for (const key of DESTRUCTIVE_TAIL) expect(handlers.some((h) => h.key === key)).toBe(true);
+  });
+
+  it('every enumerated route is served by the target (no "Cannot <METHOD> /..." answer)', () => {
+    // Nest answers an unregistered path with a 404 whose message starts with "Cannot <METHOD>";
+    // a handler's own NotFoundException names a code instead. Under CERTIFY_API_URL this is
+    // what proves the image carries the same route surface as the checkout it was built from.
+    const missing = outcomes.filter((o) => o.status === 404 && /Cannot (GET|POST|PUT|PATCH|DELETE) /.test(o.body)).map(describeOutcome);
+    expect(missing).toEqual([]);
   });
 
   it('no handler answers 500 (or drops the connection) for any identity', () => {

@@ -28,6 +28,12 @@ LOAD_REDIS_URL='redis://127.0.0.1:6379/2' \
 load/run.sh
 ```
 
+- Against an API that is already running (the release candidate image under
+  `scripts/certify`, roadmap 9.12): `LOAD_TARGET=http://host:port load/run.sh`
+  skips the build and the boot and only needs the target to run with the test
+  profile's open rate limits; `load/upload-gate.sh` takes the same variable
+  plus `UPLOAD_GATE_CONTAINER` (RSS and the temp directory through
+  `docker exec`) or `UPLOAD_GATE_PID` (a local process).
 - The database must be migrated (`DATABASE_URL=... npx prisma migrate deploy`)
   and disposable: the run writes `LOAD_SHOPS` shops with an owner, a product,
   stock and a shift each, and about a thousand invoices. Give the URL the

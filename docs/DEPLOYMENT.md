@@ -79,11 +79,53 @@ the release with `IMAGE_TAG` (`IMAGE_REGISTRY` defaults to the owner's
 ghcr.io namespace); staging runs a tag first, production runs the same tag
 after the staging smoke passed (`docs/STAGING.md`). Promotion and rollback
 are therefore `IMAGE_TAG` changes followed by `pull`, the release step and
-`up -d --wait`. `docker-compose.build.yml` is the overlay that builds the
+`up -d --wait`. A `v*` tag is certified first: the `certify` job of the same
+workflow re-runs the checklist against the pushed images and attaches the
+evidence to the tag's release (next section). `docker-compose.build.yml` is the overlay that builds the
 images from a checkout instead (the compose smoke, local work); the
 Kubernetes manifests take the same tag in `kustomization.yaml`. A private
 package needs `docker login ghcr.io` on the host with a token that has
 `read:packages` (or make the packages public).
+
+## Certification of a release candidate
+
+Roadmap 9.12: before a tag is promoted, the checklist the repository runs on
+the source tree is re-run against the IMAGES that would be deployed. The job
+`certify` of `.github/workflows/release.yml` does it on every `v*` tag (and
+on a manual run of the workflow) right after the images are pushed: it pulls
+them back by tag, records their digests and runs `scripts/certify/certify.sh`,
+which keeps every report in one evidence bundle:
+
+| Step | What runs against the images | Report |
+|---|---|---|
+| boot-matrix | every refusal case of the boot matrix (`apps/api/test/boot-matrix.json`, the file the boot-regression spec also uses) booted from the API image: each must exit non-zero with `[Bootstrap FATAL]` and the reason | `boot-matrix/boot-matrix.json`, one log per case |
+| migrate-diff | the image's own `prisma migrate deploy`, `migrate diff --exit-code`, `migrate status` and a no-op redeploy on a fresh MySQL 8 and a fresh MariaDB | `migrate-diff/migrate-diff.json` with the logs |
+| smoke | `scripts/compose-smoke.sh` with `SMOKE_PREBUILT=1` on the reference compose stack built from the candidates (`scripts/certify/compose.certify.yml`): migrations, the business flow through the web and the API, a CLEAN reconciliation, the pre-sale dump rolled forward to the sale, documents and off-site backups, the backup metric, the monitoring stack, the graceful stop; the stack stays up for the next steps | `smoke.log` |
+| route-walk, security | `test/integration/route-walker.integration-spec.ts` and `test/security/*.security-spec.ts` with `CERTIFY_API_URL`: the fixtures (shops, users, tokens) come from the checkout's module on the stack's database, every request goes over HTTP to the API container, and a route the image does not serve fails the walk | `route-walk/route-walk.json` (every route x identity), `*/jest.json` |
+| playwright | the real-authentication browser suite against the web and API containers (`E2E_EXTERNAL_SERVERS=1`) | `playwright/real-auth.json`, the HTML report |
+| load, upload-gate | `load/run.sh` and `load/upload-gate.sh` with `LOAD_TARGET` on the API container (RSS and the temp directory read through `docker exec`) | `load/pos-peak-*.json`, `load.log`, `upload-gate.log` |
+| restore-db, restore-docs, restore-offsite | `scripts/db/restore-drill.sh --pitr require` on the stack's MySQL; the documents and off-site drills on a copy of the stack's storage volume | the three logs |
+
+`SUMMARY.md` in the bundle lists every step with PASS / FAIL, the image
+digests, the commit and the one deviation from production configuration:
+the API container runs with the test profile's open rate limits and billing
+timeout (every suite and the load come from one address; roadmap 9.16 is
+where the production values are exercised). A failing step never stops the
+run, so the bundle always holds every report; the job is red when any step
+failed. The bundle is the workflow artefact `certification-<tag>` and, on a
+tag, the asset `certification-<tag>.tar.gz` of the tag's GitHub release,
+which the job creates as a draft when none exists (`scripts/certify/
+attach-release.sh`): the owner publishes it after reading the evidence. A
+tag whose certification is red is not promoted (`docs/STAGING.md`).
+
+Locally, with docker, the workspace installed, Chromium for Playwright and
+the MySQL 8 clients plus rclone on PATH:
+
+```
+bash scripts/certify/certify.sh --api ghcr.io/<owner>/dukaanai-api:v1.2.3 \
+  --web ghcr.io/<owner>/dukaanai-web:v1.2.3 --db-ops ghcr.io/<owner>/dukaanai-db-ops:v1.2.3 \
+  --out /tmp/certification-v1.2.3 [--skip playwright,load] [--keep]
+```
 
 ## Release step: migrations
 

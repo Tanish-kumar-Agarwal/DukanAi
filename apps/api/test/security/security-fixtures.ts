@@ -12,7 +12,7 @@ import request from 'supertest';
 import { AuthService } from '../../src/auth/auth.service';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { UsersService } from '../../src/users/users.service';
-import { tenantRunner, TestShop } from '../integration/pos-fixtures';
+import { httpTarget, tenantRunner, TestShop } from '../integration/pos-fixtures';
 
 export interface TestUser {
   id: string;
@@ -43,7 +43,7 @@ export async function bearerToken(app: INestApplication, _shop: TestShop, user: 
 
 /** supertest calls pre-authenticated as `user` of `shop`. */
 export async function httpAs(app: INestApplication, shop: TestShop, user: TestUser) {
-  const server = app.getHttpServer();
+  const server = httpTarget(app);
   const auth = `Bearer ${await bearerToken(app, shop, user)}`;
   return {
     get: (url: string) => request(server).get(url).set('Authorization', auth),

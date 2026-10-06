@@ -16,7 +16,7 @@ import { AuthConfig } from '../../src/config/domains/auth.config';
 import { JwtConfig } from '../../src/config/domains/jwt.config';
 import { hydrateFromEnv } from '../../src/config/hydrate-from-env';
 import { PrismaService } from '../../src/prisma/prisma.service';
-import { bootApp, createShop, TestShop } from '../integration/pos-fixtures';
+import { bootApp, createShop, httpTarget, TestShop } from '../integration/pos-fixtures';
 import { createUser, httpAs, ownerOf } from './security-fixtures';
 
 const API_ROOT = path.resolve(__dirname, '..', '..');
@@ -36,7 +36,7 @@ describe('security: authentication and limits', () => {
   });
 
   const login = (email: string, password: string, userAgent = 'jest') =>
-    request(app.getHttpServer()).post('/api/auth/login').set('User-Agent', userAgent).send({ email, password });
+    request(httpTarget(app)).post('/api/auth/login').set('User-Agent', userAgent).send({ email, password });
 
   it('control: the login route issues a token for the right password and refuses a wrong one', async () => {
     const user = await createUser(app, shop, Role.CASHIER, PASSWORD);
@@ -54,7 +54,7 @@ describe('security: authentication and limits', () => {
       expect((await login(user.email, `wrong-${i}`)).status).toBe(401);
     }
 
-    const profile = await request(app.getHttpServer()).get('/api/auth/profile').set('Authorization', `Bearer ${session.body.access_token}`);
+    const profile = await request(httpTarget(app)).get('/api/auth/profile').set('Authorization', `Bearer ${session.body.access_token}`);
     expect(profile.status).toBe(200);
   });
 

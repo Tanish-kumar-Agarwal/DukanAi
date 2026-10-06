@@ -11,12 +11,16 @@
 # (64) above the value before it.
 #
 #   LOAD_DATABASE_URL=mysql://... LOAD_REDIS_URL=redis://127.0.0.1:6379/2 load/upload-gate.sh
+#
+# Against an API that is already running (the release candidate image under
+# scripts/certify, roadmap 9.12): LOAD_TARGET=http://host:port skips the build
+# and the boot, and the process is observed through UPLOAD_GATE_CONTAINER (a
+# docker container whose PID 1 is the API: RSS from /proc/1/status and the
+# temp directory, UPLOAD_GATE_TEMP_DIR relative to the image's working
+# directory, through `docker exec`) or UPLOAD_GATE_PID (a local process; the
+# temp directory is then a path on this machine).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-: "${LOAD_DATABASE_URL:?set LOAD_DATABASE_URL to a disposable database the API can migrate}"
-: "${LOAD_REDIS_URL:?set LOAD_REDIS_URL (a Redis db index no other process uses)}"
-PORT="${LOAD_PORT:-3019}"
-BASE="http://127.0.0.1:${PORT}/api"
 ROUNDS="${UPLOAD_GATE_ROUNDS:-12}"
 MB="${UPLOAD_GATE_MB:-300}"
 MAX_GROWTH="${UPLOAD_GATE_MAX_GROWTH_MB:-64}"
@@ -26,21 +30,43 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-if [ "${LOAD_SKIP_BUILD:-0}" != "1" ]; then
-  echo "== build"; npx @nestjs/cli build >/dev/null
-fi
-UPLOAD_TMP="uploads/tmp-upload-gate"
-rm -rf "$UPLOAD_TMP"; mkdir -p "$UPLOAD_TMP"
+if [ -n "${LOAD_TARGET:-}" ]; then
+  BASE="${LOAD_TARGET%/}/api"
+  UPLOAD_TMP="${UPLOAD_GATE_TEMP_DIR:-uploads/tmp}"
+  if [ -n "${UPLOAD_GATE_CONTAINER:-}" ]; then
+    echo "== target $BASE, container $UPLOAD_GATE_CONTAINER (PID 1, temp dir $UPLOAD_TMP)"
+    rss() { docker exec "$UPLOAD_GATE_CONTAINER" awk '/VmRSS/ {printf "%.1f", $2/1024}' /proc/1/status; }
+    leftovers() { docker exec "$UPLOAD_GATE_CONTAINER" sh -c "find '$UPLOAD_TMP' -type f 2>/dev/null | wc -l" | tr -d '[:space:]'; }
+  elif [ -n "${UPLOAD_GATE_PID:-}" ]; then
+    echo "== target $BASE, process $UPLOAD_GATE_PID (temp dir $UPLOAD_TMP)"
+    rss() { awk '/VmRSS/ {printf "%.1f", $2/1024}' "/proc/$UPLOAD_GATE_PID/status"; }
+    leftovers() { find "$UPLOAD_TMP" -type f 2>/dev/null | wc -l | tr -d '[:space:]'; }
+  else
+    echo "LOAD_TARGET needs UPLOAD_GATE_CONTAINER or UPLOAD_GATE_PID to observe the process"; exit 1
+  fi
+  curl -sf "$BASE/health" >/dev/null || { echo "no API answers at $BASE/health"; exit 1; }
+else
+  : "${LOAD_DATABASE_URL:?set LOAD_DATABASE_URL to a disposable database the API can migrate}"
+  : "${LOAD_REDIS_URL:?set LOAD_REDIS_URL (a Redis db index no other process uses)}"
+  PORT="${LOAD_PORT:-3019}"
+  BASE="http://127.0.0.1:${PORT}/api"
+  if [ "${LOAD_SKIP_BUILD:-0}" != "1" ]; then
+    echo "== build"; npx @nestjs/cli build >/dev/null
+  fi
+  UPLOAD_TMP="uploads/tmp-upload-gate"
+  rm -rf "$UPLOAD_TMP"; mkdir -p "$UPLOAD_TMP"
 
-echo "== boot API on :$PORT"
-NODE_ENV=test PORT="$PORT" DATABASE_URL="$LOAD_DATABASE_URL" REDIS_URL="$LOAD_REDIS_URL" CRON_ENABLED=false \
-  PRISMA_LOG_QUERIES=false UPLOAD_TEMP_DIR="$UPLOAD_TMP" \
-  node dist/main > "$REPORT_DIR/upload-gate-api-$STAMP.log" 2>&1 &
-API=$!
-trap 'kill $API 2>/dev/null || true; wait $API 2>/dev/null || true; rm -rf "$TMP_DIR"' EXIT
-for _ in $(seq 1 90); do curl -sf "$BASE/health" >/dev/null 2>&1 && break; sleep 1; done
-curl -sf "$BASE/health" >/dev/null || { echo "API did not come up; see $REPORT_DIR/upload-gate-api-$STAMP.log"; exit 1; }
-rss() { awk '/VmRSS/ {printf "%.1f", $2/1024}' "/proc/$API/status"; }
+  echo "== boot API on :$PORT"
+  NODE_ENV=test PORT="$PORT" DATABASE_URL="$LOAD_DATABASE_URL" REDIS_URL="$LOAD_REDIS_URL" CRON_ENABLED=false \
+    PRISMA_LOG_QUERIES=false UPLOAD_TEMP_DIR="$UPLOAD_TMP" \
+    node dist/main > "$REPORT_DIR/upload-gate-api-$STAMP.log" 2>&1 &
+  API=$!
+  trap 'kill $API 2>/dev/null || true; wait $API 2>/dev/null || true; rm -rf "$TMP_DIR"' EXIT
+  for _ in $(seq 1 90); do curl -sf "$BASE/health" >/dev/null 2>&1 && break; sleep 1; done
+  curl -sf "$BASE/health" >/dev/null || { echo "API did not come up; see $REPORT_DIR/upload-gate-api-$STAMP.log"; exit 1; }
+  rss() { awk '/VmRSS/ {printf "%.1f", $2/1024}' "/proc/$API/status"; }
+  leftovers() { find "$UPLOAD_TMP" -type f | wc -l | tr -d '[:space:]'; }
+fi
 
 echo "== owner and product through the public routes"
 SUFFIX="$(head -c 8 /proc/sys/kernel/random/uuid)"
@@ -67,7 +93,7 @@ for n in $(seq 1 "$ROUNDS"); do
 done
 sleep 2
 AFTER=$(rss)
-LEFT=$(find "$UPLOAD_TMP" -type f | wc -l)
+LEFT=$(leftovers)
 GROWTH=$(node -e "console.log(($AFTER - $BEFORE).toFixed(1))")
 echo "RSS before $BEFORE MB, peak $PEAK MB, after $AFTER MB (growth $GROWTH MB, allowed $MAX_GROWTH MB)"
 echo "temp dir leftovers: $LEFT"

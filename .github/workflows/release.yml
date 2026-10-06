@@ -10,6 +10,16 @@
 #   ghcr.io/<owner>/dukaanai-db-ops:sha-<7 hex>
 #   ...:main                                    the newest main build
 #   ...:v1.2.3                                  a release tag
+#
+# On a v* tag (and on a manual run) the `certify` job then re-runs the
+# repository's checklist against the images just pushed, not the source tree
+# (roadmap 9.12, scripts/certify/certify.sh): boot matrix on the API image,
+# migrations on MySQL 8 and MariaDB, the compose stack from the images with
+# the business flow and the backup drills, the route walk, the security
+# suite and the browser suite over HTTP against the running images, the load
+# profile and the upload gate, the three restore drills. The evidence bundle
+# is a workflow artefact and, on a tag, an asset of the tag's release (created
+# as a draft when none exists, so the owner publishes after reading it).
 name: Release images
 
 on:
@@ -31,6 +41,10 @@ jobs:
     name: Build and push images (ghcr.io)
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    outputs:
+      registry: ${{ steps.meta.outputs.registry }}
+      sha: ${{ steps.meta.outputs.sha }}
+      extra: ${{ steps.meta.outputs.extra }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Image names and tags
@@ -69,3 +83,59 @@ jobs:
             fi
           done
           echo "Pushed $REG/dukaanai-{api,web,db-ops}:$SHA${EXTRA:+ and :$EXTRA}" >> "$GITHUB_STEP_SUMMARY"
+
+  certify:
+    name: Certify the release candidate images
+    needs: images
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    permissions:
+      contents: write # the evidence bundle is attached to the tag's (draft) release
+      packages: read
+    env:
+      REG: ${{ needs.images.outputs.registry }}
+      SHA: ${{ needs.images.outputs.sha }}
+      LABEL: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || needs.images.outputs.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Log in to ghcr.io
+        run: printf '%s' "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Pull the images the previous job pushed (the candidates, by tag; the digests go into the bundle)
+        run: |
+          for image in dukaanai-api dukaanai-web dukaanai-db-ops; do docker pull "$REG/$image:$SHA"; done
+      # The suites boot the fixture module from the checkout (same commit as
+      # the images) and send every request to the containers; the drills run
+      # the repository's scripts against the stack's MySQL (mysql, mysqldump
+      # and mysqlbinlog 8 come with the runner image).
+      - run: npm ci
+      - run: npx turbo run build --filter=@dukaanai/invoice-math
+      - name: Chromium for the browser suite
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+      - name: rclone for the off-site drill
+        run: sudo apt-get install -y -q rclone >/dev/null
+      - name: Certify
+        run: bash scripts/certify/certify.sh --api "$REG/dukaanai-api:$SHA" --web "$REG/dukaanai-web:$SHA" --db-ops "$REG/dukaanai-db-ops:$SHA" --out "$RUNNER_TEMP/certification" --label "$LABEL"
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/certification/SUMMARY.md" ]; then cat "$RUNNER_TEMP/certification/SUMMARY.md" >> "$GITHUB_STEP_SUMMARY"; else echo "no SUMMARY.md was written" >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: certification-${{ env.LABEL }}
+          path: ${{ runner.temp }}/certification
+          retention-days: 90
+          if-no-files-found: error
+      - name: Attach the evidence bundle to the release of the tag
+        if: always() && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/certification-$LABEL.tar.gz" certification
+          bash scripts/certify/attach-release.sh "$LABEL" "$RUNNER_TEMP/certification-$LABEL.tar.gz"

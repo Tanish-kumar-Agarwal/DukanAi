@@ -8,6 +8,13 @@
 #
 # A missing .env is created from .env.example with generated secrets, exactly
 # what a first-time operator does by hand.
+#
+# On release candidate images instead of a build (scripts/certify, roadmap
+# 9.12): SMOKE_PREBUILT=1 never builds (the images must already be present
+# or pullable under the names the compose files resolve to), SMOKE_ENV_FILE
+# is the environment file handed to compose instead of ./.env (which is
+# then neither read nor created), and COMPOSE_FILE (compose's own variable)
+# adds the overlay that names the images.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -16,7 +23,9 @@ API_PORT="${API_PORT:-3002}"
 API="http://127.0.0.1:${API_PORT}/api"
 WEB="http://127.0.0.1:${WEB_PORT}"
 KEEP="${KEEP:-0}"
+PREBUILT="${SMOKE_PREBUILT:-0}"
 COMPOSE=(docker compose)
+if [ -n "${SMOKE_ENV_FILE:-}" ]; then COMPOSE+=(--env-file "$SMOKE_ENV_FILE"); fi
 step() { printf '\n==> %s\n' "$*"; }
 fail() { printf '\nSMOKE FAILED: %s\n' "$*" >&2; "${COMPOSE[@]}" logs --no-color --tail=80 api web migrate >&2 || true; exit 1; }
 cleanup() {
@@ -26,7 +35,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [ ! -f .env ]; then
+if [ -z "${SMOKE_ENV_FILE:-}" ] && [ ! -f .env ]; then
   step ".env missing: creating it from .env.example with generated secrets"
   cp .env.example .env
   gen() { node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))"; }
@@ -39,15 +48,22 @@ if [ ! -f .env ]; then
   "
 fi
 
-step "docker compose up --build -d --wait (mysql, redis, migrate, api, web)"
-"${COMPOSE[@]}" up --build -d --wait --wait-timeout 600 || fail "compose up did not reach a healthy state"
+if [ "$PREBUILT" = "1" ]; then
+  step "docker compose up -d --wait on the prebuilt images (mysql, redis, migrate, api, web)"
+  "${COMPOSE[@]}" up -d --wait --wait-timeout 600 || fail "compose up did not reach a healthy state"
+else
+  step "docker compose up --build -d --wait (mysql, redis, migrate, api, web)"
+  "${COMPOSE[@]}" up --build -d --wait --wait-timeout 600 || fail "compose up did not reach a healthy state"
+fi
 
 step "release step: migrate exited 0 and a second run is a no-op"
 [ "$("${COMPOSE[@]}" ps -a --format '{{.ExitCode}}' migrate)" = "0" ] || fail "migrate service did not exit 0"
 "${COMPOSE[@]}" run --rm migrate 2>&1 | tee /dev/stderr | grep -q "No pending migrations" || fail "a second migrate run was not a no-op"
 
-step "ops: build the db-ops image (deploy/db-ops/Dockerfile: MySQL clients, GNU tar, rclone)"
-"${COMPOSE[@]}" --profile ops build db-ops >/dev/null 2>&1 || fail "db-ops image build"
+if [ "$PREBUILT" != "1" ]; then
+  step "ops: build the db-ops image (deploy/db-ops/Dockerfile: MySQL clients, GNU tar, rclone)"
+  "${COMPOSE[@]}" --profile ops build db-ops >/dev/null 2>&1 || fail "db-ops image build"
+fi
 
 step "ops (roadmap 9.2): a dump before the sale, with its binary-log position (db-ops backup)"
 out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops backup --label pre-sale 2>&1)" || { printf '%s\n' "$out"; fail "db-ops backup"; }
