@@ -97,6 +97,45 @@ step "ops (roadmap 9.2): the binlog-archiver service archives on its own (docker
 for _ in $(seq 1 30); do sleep 1; "${COMPOSE[@]}" logs --no-color binlog-archiver 2>/dev/null | grep -q "Binary-log archive" && break; done
 "${COMPOSE[@]}" logs --no-color binlog-archiver | grep -q "Binary-log archive" || { "${COMPOSE[@]}" logs --no-color binlog-archiver; fail "binlog-archiver did not archive within 30 s"; }
 
+step "observability (roadmap 9.10): the monitoring stack delivers: a request found by its correlation id in Loki, Alertmanager wired and routing, Grafana provisioned, uptime probes green"
+"${COMPOSE[@]}" --profile ops up -d prometheus alertmanager blackbox loki alloy grafana >/dev/null 2>&1 || fail "the monitoring stack did not start"
+LOKI="http://127.0.0.1:${LOKI_PORT:-3100}"; GRAFANA="http://127.0.0.1:${GRAFANA_PORT:-3001}"; AM="http://127.0.0.1:${ALERTMANAGER_PORT:-9093}"; PROM="http://127.0.0.1:${PROMETHEUS_PORT:-9090}"; BLACKBOX="http://127.0.0.1:${BLACKBOX_PORT:-9115}"
+for _ in $(seq 1 60); do curl -fsS -o /dev/null "$LOKI/ready" 2>/dev/null && curl -fsS -o /dev/null "$GRAFANA/api/health" 2>/dev/null && curl -fsS -o /dev/null "$AM/-/ready" 2>/dev/null && break; sleep 2; done
+curl -fsS -o /dev/null "$LOKI/ready" || fail "Loki is not ready after 120 s"
+curl -fsS -o /dev/null "$GRAFANA/api/health" || fail "Grafana is not ready after 120 s"
+curl -fsS -o /dev/null "$AM/-/ready" || fail "Alertmanager is not ready after 120 s"
+# A request with a client-chosen correlation id: the API echoes it and logs an access line (a 401 is fine: guard rejections are logged too).
+cid="smoke-$(node -e "process.stdout.write(require('crypto').randomUUID())")"
+echoed="$(curl -sS -D - -o /dev/null -H "x-correlation-id: $cid" "$API/products" | tr -d '\r' | sed -n 's/^x-correlation-id: //Ip')"
+[ "$echoed" = "$cid" ] || fail "the API did not echo the correlation id (got '$echoed')"
+found=""
+for _ in $(seq 1 45); do
+  found="$(curl -sS --get "$LOKI/loki/api/v1/query_range" --data-urlencode "query={service=\"api\"} | json | message_correlationId=\"$cid\"" --data-urlencode "since=10m" --data-urlencode "limit=5" 2>/dev/null | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>{try{const r=JSON.parse(b).data.result;process.stdout.write(String(r.reduce((n,s)=>n+s.values.length,0)))}catch{process.stdout.write('0')}})")"
+  [ "${found:-0}" -gt 0 ] 2>/dev/null && break
+  sleep 2
+done
+[ "${found:-0}" -gt 0 ] || { "${COMPOSE[@]}" logs --no-color --tail=40 alloy loki >&2; fail "no API log line with correlation id $cid in Loki after 90 s"; }
+printf '  correlation id %s found in Loki (%s line(s), query {service="api"} | json | message_correlationId=...)\n' "$cid" "$found"
+# Alertmanager: Prometheus delivers to it, and a critical alert is routed to the on-call and the team receivers.
+active="$(curl -fsS "$PROM/api/v1/alertmanagers" | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>process.stdout.write(String(JSON.parse(b).data.activeAlertmanagers.length)))")"
+[ "$active" = "1" ] || fail "Prometheus has $active active Alertmanager(s), expected 1"
+curl -fsS -o /dev/null -X POST -H 'content-type: application/json' "$AM/api/v2/alerts" -d '[{"labels":{"alertname":"DukaanAiSmokeTest","severity":"critical","job":"smoke"},"annotations":{"summary":"compose smoke: routing check"}}]' || fail "Alertmanager refused the test alert"
+receivers="$(curl -fsS --get "$AM/api/v2/alerts" --data-urlencode 'filter=alertname="DukaanAiSmokeTest"' | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>{const a=JSON.parse(b);process.stdout.write(a.length?a[0].receivers.map((r)=>r.name).sort().join(','):'')})")"
+[ "$receivers" = "oncall,team" ] || fail "the critical test alert was routed to '$receivers', expected oncall,team"
+printf '  Prometheus -> Alertmanager wired; a critical alert is routed to %s (delivery channels come from ALERT_* in .env)\n' "$receivers"
+# Grafana: both data sources and both dashboards are provisioned.
+dash="$(curl -fsS -u "${GRAFANA_ADMIN_USER:-admin}:${GRAFANA_ADMIN_PASSWORD:-admin}" "$GRAFANA/api/search?type=dash-db" | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>process.stdout.write(JSON.parse(b).map((d)=>d.uid).sort().join(',')))")"
+case "$dash" in *dukaanai-logs*dukaanai-ops*) ;; *) fail "Grafana dashboards provisioned: '$dash', expected dukaanai-logs and dukaanai-ops" ;; esac
+ds="$(curl -fsS -u "${GRAFANA_ADMIN_USER:-admin}:${GRAFANA_ADMIN_PASSWORD:-admin}" "$GRAFANA/api/datasources" | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>process.stdout.write(JSON.parse(b).map((d)=>d.uid).sort().join(',')))")"
+[ "$ds" = "loki,prometheus" ] || fail "Grafana data sources: '$ds', expected loki,prometheus"
+printf '  Grafana: data sources %s, dashboards %s\n' "$ds" "$dash"
+# Uptime probes: the readiness route and the login page answer the blackbox modules.
+for probe in "http_2xx|http://api:3002/api/health/ready" "http_login_page|http://web:3000/login"; do
+  module="${probe%%|*}"; target="${probe#*|}"
+  curl -fsS --get "$BLACKBOX/probe" --data-urlencode "module=$module" --data-urlencode "target=$target" | grep -q '^probe_success 1' || fail "blackbox probe $module of $target did not succeed"
+done
+printf '  blackbox: readiness and login-page probes succeed\n'
+
 step "graceful stop: SIGTERM -> readiness 503 -> exit 0 (never SIGKILL)"
 "${COMPOSE[@]}" stop -t 40 api
 [ "$("${COMPOSE[@]}" ps -a --format '{{.ExitCode}}' api)" = "0" ] || fail "api did not exit 0 on SIGTERM (exit $("${COMPOSE[@]}" ps -a --format '{{.ExitCode}}' api))"
@@ -106,4 +145,4 @@ step "graceful stop: SIGTERM -> readiness 503 -> exit 0 (never SIGKILL)"
 for _ in $(seq 1 60); do sleep 2; curl -fsS -o /dev/null "$API/health/ready" && break; done
 curl -fsS -o /dev/null "$API/health/ready" || fail "api not ready after restart"
 
-printf '\nSMOKE PASSED: migrations applied, sign-in and a sale through the web and the API, the books of the day reconcile, the pre-sale dump rolled forward to now holds the sale, documents archived, encrypted off-site copy verified, backup metric exposed, the archiver service runs, graceful stop verified.\n'
+printf '\nSMOKE PASSED: migrations applied, sign-in and a sale through the web and the API, the books of the day reconcile, the pre-sale dump rolled forward to now holds the sale, documents archived, encrypted off-site copy verified, backup metric exposed, the archiver service runs, a request found by its correlation id in Loki, Alertmanager routing a critical alert, Grafana provisioned, uptime probes green, graceful stop verified.\n'

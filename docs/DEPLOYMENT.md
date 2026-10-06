@@ -62,9 +62,28 @@ user, with the `HEALTHCHECK` on the liveness route.
 | `dukaanai-api` | `docker build -f apps/api/Dockerfile -t dukaanai-api .` | `apps/api/dist`, production `node_modules` of the API only, Prisma schema + migrations | `node dist/main` on `PORT` (3002) |
 | `dukaanai-web` | `docker build -f apps/web/Dockerfile --build-arg NEXT_PUBLIC_API_URL=<browser-facing API URL> -t dukaanai-web .` | Next.js standalone output (`NEXT_STANDALONE=true` at build) | `node apps/web/server.js` on `PORT` (3000) |
 
-The web image inlines `NEXT_PUBLIC_API_URL` into the browser bundle: build one
-image per public API URL. Everything else is runtime environment. No `.env`
-file is copied into either image; every value comes from the orchestrator.
+The web image carries no environment-specific value: the browser-facing API
+URL is read at run time from `API_PUBLIC_URL` (the root layout hands it to
+the browser in `<meta name="dukaanai-api-url">`, the proxy puts it in the
+CSP; `NEXT_PUBLIC_API_URL` is only the local default and the build-time
+fallback). One build therefore serves every environment. No `.env` file is
+copied into either image; every value comes from the orchestrator.
+
+## Images and promotion
+
+Roadmap 9.9: nothing is built on a server. `.github/workflows/release.yml`
+builds the three images once per commit on `main` (and per `v*` tag) and
+pushes `ghcr.io/<owner>/dukaanai-api`, `dukaanai-web` and `dukaanai-db-ops`
+tagged `sha-<7 hex>` (plus `main`, plus the version tag). A deployment names
+the release with `IMAGE_TAG` (`IMAGE_REGISTRY` defaults to the owner's
+ghcr.io namespace); staging runs a tag first, production runs the same tag
+after the staging smoke passed (`docs/STAGING.md`). Promotion and rollback
+are therefore `IMAGE_TAG` changes followed by `pull`, the release step and
+`up -d --wait`. `docker-compose.build.yml` is the overlay that builds the
+images from a checkout instead (the compose smoke, local work); the
+Kubernetes manifests take the same tag in `kustomization.yaml`. A private
+package needs `docker login ghcr.io` on the host with a token that has
+`read:packages` (or make the packages public).
 
 ## Release step: migrations
 
@@ -198,7 +217,8 @@ without MySQL and Redis, with the `edge` always on, no port published but
 | `DATABASE_URL` | `mysql://<user>:<pass>@<host>:3306/<db>?connection_limit=20&sslaccept=strict` (+ `&sslcert=/etc/dukaanai/db-ca.pem` with `DB_CA_FILE=<path to the provider CA>` for a private CA) |
 | `REDIS_URL` | `redis://` or `rediss://<host>:6379/0` |
 | `WEB_HOST`, `API_HOST` | the two public DNS names (A records at this host) |
-| `WEB_ORIGIN`, `API_PUBLIC_URL` | `https://<WEB_HOST>`, `https://<API_HOST>/api` (the latter is baked into the web image at build) |
+| `IMAGE_TAG` (`IMAGE_REGISTRY`) | the release to run: `sha-<commit>` or `v<version>` from the release workflow ("Images and promotion") |
+| `WEB_ORIGIN`, `API_PUBLIC_URL` | `https://<WEB_HOST>`, `https://<API_HOST>/api` (the latter is read by the web at run time) |
 | `EDGE_TLS_LINE` | blank: automatic public certificates; `tls internal` for a host without public DNS |
 | `STORAGE_PATH`, `UPLOADS_PATH`, `BACKUPS_PATH` | absolute paths on the cloud disk(s); blank = named volumes on the host disk |
 | `TRUST_PROXY` | `1` (the edge); `2` with a load balancer in front of it |
@@ -206,10 +226,12 @@ without MySQL and Redis, with the `edge` always on, no port published but
 | `JWT_SECRET`, `NEXTAUTH_SECRET`, `OFFSITE_*`, integrations | as in the reference stack |
 
 ```
-docker compose -f docker-compose.prod.yml up --build -d --wait      # first deploy
-docker compose -f docker-compose.prod.yml build \
+docker compose -f docker-compose.prod.yml pull                      # the images of IMAGE_TAG
+docker compose -f docker-compose.prod.yml up -d --wait              # first deploy (migrate runs first)
+docker compose -f docker-compose.prod.yml pull \
   && docker compose -f docker-compose.prod.yml run --rm migrate \
-  && docker compose -f docker-compose.prod.yml up -d                # redeploy
+  && docker compose -f docker-compose.prod.yml up -d --wait         # a new IMAGE_TAG
+docker compose -f docker-compose.prod.yml --profile ops up -d prometheus alertmanager blackbox loki alloy grafana   # monitoring
 docker compose -f docker-compose.prod.yml --profile ops run --rm db-ops status   # the backup jobs
 ```
 
@@ -217,8 +239,10 @@ docker compose -f docker-compose.prod.yml --profile ops run --rm db-ops status  
 (compose smoke)", after the reference smoke): it generates a private CA,
 starts a throwaway MySQL 8 that refuses plaintext and a Redis
 (`scripts/smoke-prod/external-services.yml`, layered over the production
-file for the run), writes the operator's `.env`, brings the variant up with
-`tls internal`, and proves: the release step and the API connected over TLS
+file for the run), writes the operator's `.env`, builds the images with
+`docker-compose.build.yml` (the web one without any API URL) and brings the
+variant up with `tls internal`, and proves: the web serves the runtime
+`API_PUBLIC_URL`; the release step and the API connected over TLS
 with the certificate verified; HTTP redirected to HTTPS, HSTS, no `Server`
 header; registration, API and web sign-in, stock, shift, a sale, the
 dashboard and the reconciliation through the edge over HTTPS
@@ -285,15 +309,23 @@ code depends on.
    refuses to invite without it), `OFFSITE_REMOTE` +
    `OFFSITE_CRYPT_PASSWORD` + the backend's `RCLONE_CONFIG_<NAME>_*` for the
    off-site copies (`docs/BACKUP_RESTORE.md`), `SENTRY_DSN` when used.
-6. **First deploy**: `docker compose -f docker-compose.prod.yml up --build
-   -d --wait`; then `DEPLOYMENT_CHECKLIST.md` from phase 3 (probes through
+6. **First deploy**: `IMAGE_TAG` in `.env` (the tag that passed on
+   staging), `docker compose -f docker-compose.prod.yml pull`, then
+   `docker compose -f docker-compose.prod.yml up -d --wait`; then
+   `DEPLOYMENT_CHECKLIST.md` from phase 3 (probes through
    the edge, a sale, the observability checks), `db-ops status` after the
    agent's first run (a minute after boot), and the restore drill against
    a restored copy of the managed instance (`docs/BACKUP_RESTORE.md`,
    "Managed MySQL"). Record the deployed topology in `docs/DATA_SAFETY.md`
    section 2 if any path above differs from this document.
-7. **Every release**: `git pull`, the redeploy line above (backup first:
-   the checklist), `docker compose -f docker-compose.prod.yml ps`.
+7. **Every release**: the promotion steps of `docs/STAGING.md` (a tag that
+   passed on staging, backup first, `pull`, `migrate`, `up -d --wait`,
+   `scripts/smoke-remote.sh ... --probes-only`).
+8. **Monitoring and alerting** (roadmap 9.10): `ALERT_*`, `GRAFANA_*` in
+   `.env`, `docker compose -f docker-compose.prod.yml --profile ops up -d
+   prometheus alertmanager blackbox loki alloy grafana`, the public probe
+   targets in `deploy/prometheus/prometheus.yml`, the external uptime
+   checker, and the test alert to the on-call phone: `docs/OBSERVABILITY.md`.
 
 ## The edge
 
@@ -347,9 +379,11 @@ the Ingress controller, the web and the monitoring namespace only).
 
 ## Operations
 
-- Logs, metrics, error tracking and the alert rules: `docs/OBSERVABILITY.md`
-  (`deploy/prometheus/` holds the rules and a scrape configuration;
-  `docker compose --profile ops up -d prometheus` runs them against the stack).
+- Logs, metrics, error tracking, the alert rules and their delivery, the
+  dashboards, the log search and the uptime checks: `docs/OBSERVABILITY.md`
+  (`deploy/observability/compose.yml`, included by both compose files:
+  `docker compose --profile ops up -d prometheus alertmanager blackbox loki
+  alloy grafana`).
 - Backups, the binary-log archive, the documents archive, the encrypted
   off-site copy, restore to a point in time and the rehearsed drills:
   `docs/BACKUP_RESTORE.md` (`scripts/db/`, `scripts/storage/`,

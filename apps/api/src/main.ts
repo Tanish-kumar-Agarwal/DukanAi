@@ -13,6 +13,7 @@ import { waitForQueueConnections } from './common/lifecycle/queue-readiness';
 import { LoggingConfig } from './config/domains/logging.config';
 import { MonitoringConfig } from './config/domains/monitoring.config';
 import { ErrorTracking } from './common/observability/error-tracking';
+import { httpAccessLogMiddleware } from './common/observability/http-access-log.middleware';
 import { httpMetricsMiddleware } from './common/observability/http-metrics.middleware';
 
 async function bootstrap() {
@@ -52,6 +53,7 @@ async function bootstrap() {
 
   // Request metrics (roadmap 7.6): every answer, guard rejections included.
   app.use(httpMetricsMiddleware);
+  app.use(httpAccessLogMiddleware);
 
   // Reverse proxies: decides what req.ip is (rate limiting, login audit rows).
   applyTrustProxy(app, appConfig.trustProxy, logger);

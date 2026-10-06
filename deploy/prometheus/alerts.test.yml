@@ -133,3 +133,42 @@ tests:
             exp_annotations:
               summary: "No financial reconciliation run in 26 hours"
               description: "The most recent reconciliation run finished 1d 3h 0m 0s ago. Check CRON_ENABLED on at least one instance, CRON_RECONCILIATION, the cron:reconciliation lock and the 'Reconciliation' lines in the API logs; run one by hand with POST /reconciliation/run."
+
+  # Uptime (roadmap 9.10): a probe that fails for two minutes pages; a
+  # certificate inside 14 days of expiry warns after an hour.
+  - interval: 1m
+    input_series:
+      - series: 'probe_success{job="blackbox-http", instance="http://api:3002/api/health/ready"}'
+        values: '1x5 0x10'
+      - series: 'probe_success{job="blackbox-login", instance="http://web:3000/login"}'
+        values: '1x16'
+      # expiry 10 days after the test epoch (the clock starts at 0)
+      - series: 'probe_ssl_earliest_cert_expiry{job="blackbox-http", instance="https://api.example.com/api/health/ready"}'
+        values: '864000x120'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: DukaanAiEndpointDown
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: DukaanAiEndpointDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: blackbox-http
+              instance: http://api:3002/api/health/ready
+            exp_annotations:
+              summary: "http://api:3002/api/health/ready has failed its probe for 2 minutes"
+              description: "The readiness route or the login page does not answer as expected (blackbox-http). Check the edge, then GET /api/health/ready for the failing dependency."
+      - eval_time: 30m
+        alertname: DukaanAiCertificateExpiring
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: DukaanAiCertificateExpiring
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: blackbox-http
+              instance: https://api.example.com/api/health/ready
+            exp_annotations:
+              summary: "The certificate of https://api.example.com/api/health/ready expires in under 14 days"
+              description: "Automatic renewal has not happened (Caddy: ports 80/443 reachable, DNS; cert-manager: the Certificate resource). Renew before it lapses."

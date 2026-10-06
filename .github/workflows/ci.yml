@@ -233,6 +233,17 @@ jobs:
       # Roadmap 9.7 / 9.8: the edge configuration and the Kubernetes manifests
       # must be valid before they are shipped (the hostnames are placeholders:
       # validation never contacts a CA or a cluster).
+      # Roadmap 9.10: the Alertmanager template renders (none, email-only and
+      # fully configured) into a config amtool accepts, and routes a critical
+      # alert to the on-call and the team, a warning to the team only.
+      - name: Alert delivery configuration renders and routes (amtool)
+        run: |
+          docker run --rm -v "$PWD/deploy/alertmanager:/tmpl:ro" --entrypoint /bin/sh prom/alertmanager:v0.34.1 -c '
+            sh /tmpl/render.sh --out /tmp/none.yml --secrets /tmp/s0 && amtool check-config /tmp/none.yml &&
+            ALERT_EMAIL_TO=ops@example.com ALERT_SMTP_SMARTHOST=smtp.example.com:587 sh /tmpl/render.sh --out /tmp/email.yml --secrets /tmp/s1 && amtool check-config /tmp/email.yml &&
+            ALERT_EMAIL_TO=ops@example.com ALERT_SMTP_SMARTHOST=smtp.example.com:587 ALERT_SMTP_USERNAME=u ALERT_SMTP_PASSWORD=p ALERT_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/x ALERT_PAGERDUTY_ROUTING_KEY=k sh /tmpl/render.sh --out /tmp/all.yml --secrets /tmp/s2 && amtool check-config /tmp/all.yml &&
+            test "$(amtool config routes test --config.file /tmp/all.yml severity=critical alertname=DukaanAiApiDown)" = "oncall,team" &&
+            test "$(amtool config routes test --config.file /tmp/all.yml severity=warning alertname=DukaanAiOutboxLag)" = "team"'
       - name: Edge configuration is valid (caddy validate)
         run: |
           docker run --rm -v "$PWD/deploy/edge/Caddyfile:/etc/caddy/Caddyfile:ro" \

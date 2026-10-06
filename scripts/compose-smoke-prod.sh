@@ -41,7 +41,10 @@ API_ORIGIN="https://${API_HOST}$(port_suffix "$HTTPS_PORT" 443)"
 API="${API_ORIGIN}/api"
 PROJECT=dukaanai-prod
 WORK="$(mktemp -d)"
-COMPOSE=(docker compose -p "$PROJECT" -f docker-compose.prod.yml -f scripts/smoke-prod/external-services.yml --env-file "$WORK/.env")
+# docker-compose.build.yml builds the images from this checkout (a server
+# pulls the release tag instead); the web image gets no build-time API URL,
+# so the flow below also proves the runtime API_PUBLIC_URL (roadmap 9.9).
+COMPOSE=(docker compose -p "$PROJECT" -f docker-compose.prod.yml -f docker-compose.build.yml -f scripts/smoke-prod/external-services.yml --env-file "$WORK/.env")
 CURL_IMAGE=curlimages/curl:8.16.0
 
 step() { printf '\n==> %s\n' "$*"; }
@@ -85,6 +88,8 @@ chmod 755 "$WORK" "$WORK/certs"; chmod 644 "$WORK"/certs/*
 step "the operator's .env for docker-compose.prod.yml (external TLS DATABASE_URL, REDIS_URL, hosts, secrets)"
 DB_PW="$(gen 12)"; DB_ROOT_PW="$(gen 12)"
 cat > "$WORK/.env" <<ENV
+IMAGE_REGISTRY=dukaanai-smoke
+IMAGE_TAG=smoke
 DATABASE_URL=mysql://dukaanai:${DB_PW}@dukaanai-ext-mysql:3306/dukaanai?connection_limit=20&sslaccept=strict&sslcert=/etc/dukaanai/db-ca.pem
 DB_CA_FILE=${WORK}/certs/ca.pem
 REDIS_URL=redis://dukaanai-ext-redis:6379/0
@@ -104,9 +109,14 @@ SMOKE_DB_ROOT_PASSWORD=${DB_ROOT_PW}
 SMOKE_CERT_DIR=${WORK}/certs
 ENV
 
-step "docker compose -f docker-compose.prod.yml up --build -d --wait (external mysql + redis, migrate, api, web, edge, backup-agent)"
+step "docker compose -f docker-compose.prod.yml -f docker-compose.build.yml up --build -d --wait (external mysql + redis, migrate, api, web, edge, backup-agent)"
 "${COMPOSE[@]}" up --build -d --wait --wait-timeout 900 || fail "the production stack did not reach a healthy state"
 [ "$("${COMPOSE[@]}" ps -a --format '{{.ExitCode}}' migrate)" = "0" ] || fail "migrate did not exit 0"
+# The web image carries the build-time default (http://localhost:3002/api);
+# the browser-facing URL must come from API_PUBLIC_URL at run time.
+meta="$("${COMPOSE[@]}" exec -T web node -e "fetch('http://127.0.0.1:3000/login').then((r) => r.text()).then((t) => { const m = /<meta name=\"dukaanai-api-url\" content=\"([^\"]+)\"/.exec(t); process.stdout.write(m ? m[1] : 'MISSING'); })" 2>/dev/null || true)"
+[ "$meta" = "$API" ] || fail "the web serves the API URL '$meta' in <meta name=dukaanai-api-url>, expected the runtime API_PUBLIC_URL $API"
+printf '  the web image was built without an API URL and serves %s from API_PUBLIC_URL at run time\n' "$meta"
 printf '  migrate and the API connected to dukaanai-ext-mysql, which refuses plaintext (require_secure_transport=ON), with the certificate verified against the private CA\n'
 
 step "the edge issued certificates from its local CA; exporting the root for the clients"

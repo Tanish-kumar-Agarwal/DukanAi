@@ -41,7 +41,9 @@ spec:
               value: 0.0.0.0
             - name: NEXTAUTH_URL
               valueFrom: { configMapKeyRef: { name: dukaanai-config, key: WEB_ORIGIN } }
-            - name: NEXT_PUBLIC_API_URL
+            # Read at run time by the web server (the root layout hands it to
+            # the browser): one image per release for every environment.
+            - name: API_PUBLIC_URL
               valueFrom: { configMapKeyRef: { name: dukaanai-config, key: API_PUBLIC_URL } }
             - name: API_INTERNAL_URL
               value: http://dukaanai-api:3002/api

@@ -1,0 +1,71 @@
+# Release images (roadmap 9.9): every push to main and every v* tag builds the
+# three images ONCE and pushes them to the GitHub Container Registry. Staging
+# runs a tag; production runs the same tag after the staging smoke passed.
+# Nothing is ever built on a server (docs/DEPLOYMENT.md, "Images and
+# promotion"; docs/STAGING.md). Only `docker build` / `docker push` with the
+# workflow's own token: no third-party action beyond the pinned checkout.
+#
+#   ghcr.io/<owner>/dukaanai-api:sha-<7 hex>      every build
+#   ghcr.io/<owner>/dukaanai-web:sha-<7 hex>
+#   ghcr.io/<owner>/dukaanai-db-ops:sha-<7 hex>
+#   ...:main                                    the newest main build
+#   ...:v1.2.3                                  a release tag
+name: Release images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  images:
+    name: Build and push images (ghcr.io)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Image names and tags
+        id: meta
+        run: |
+          owner="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          echo "registry=ghcr.io/${owner}" >> "$GITHUB_OUTPUT"
+          echo "sha=sha-$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+          case "$GITHUB_REF" in
+            refs/tags/*) echo "extra=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT" ;;
+            refs/heads/main) echo "extra=main" >> "$GITHUB_OUTPUT" ;;
+            *) echo "extra=" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - name: Log in to ghcr.io
+        run: printf '%s' "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build the three images from the repository root
+        env:
+          REG: ${{ steps.meta.outputs.registry }}
+          SHA: ${{ steps.meta.outputs.sha }}
+        run: |
+          # The web image carries no public API URL: the running container sets API_PUBLIC_URL.
+          docker build -f apps/api/Dockerfile -t "$REG/dukaanai-api:$SHA" .
+          docker build -f apps/web/Dockerfile -t "$REG/dukaanai-web:$SHA" .
+          docker build -f deploy/db-ops/Dockerfile -t "$REG/dukaanai-db-ops:$SHA" .
+      - name: Push
+        env:
+          REG: ${{ steps.meta.outputs.registry }}
+          SHA: ${{ steps.meta.outputs.sha }}
+          EXTRA: ${{ steps.meta.outputs.extra }}
+        run: |
+          for image in dukaanai-api dukaanai-web dukaanai-db-ops; do
+            docker push "$REG/$image:$SHA"
+            if [ -n "$EXTRA" ]; then
+              docker tag "$REG/$image:$SHA" "$REG/$image:$EXTRA"
+              docker push "$REG/$image:$EXTRA"
+            fi
+          done
+          echo "Pushed $REG/dukaanai-{api,web,db-ops}:$SHA${EXTRA:+ and :$EXTRA}" >> "$GITHUB_STEP_SUMMARY"

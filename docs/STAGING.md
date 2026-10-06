@@ -1,0 +1,92 @@
+# Staging
+
+Roadmap 9.9. Staging is production with other names: the same images, the
+same compose file (or manifests), a managed MySQL 8 and Redis of the
+production class, the edge with real certificates, secrets from the secret
+store, real SMTP, Sentry and a metrics token. Nothing is built on the
+servers: a release is an image tag, built once by
+`.github/workflows/release.yml`, run on staging first and on production
+second (`docs/DEPLOYMENT.md`, "Images and promotion").
+
+## Addresses
+
+Filled in by the owner when the environment exists; until then the column
+holds the naming convention. Everything else in this document is already
+true of the repository.
+
+| Item | Staging | Production |
+|---|---|---|
+| Web | `https://staging-app.<domain>` (`WEB_HOST`) | `https://app.<domain>` |
+| API | `https://staging-api.<domain>` (`API_HOST`; the browser-facing URL is `/api` on it) | `https://api.<domain>` |
+| Host | one VM, `/srv/dukaanai`, `docker-compose.prod.yml` | same |
+| MySQL 8 | managed instance, own database `dukaanai`, TLS, PITR window ≥ 7 days | own instance, never shared with staging |
+| Redis | managed instance, db 0 | own instance |
+| Edge | Caddy, automatic certificates (`EDGE_TLS_LINE` blank) | same |
+| SMTP | the production relay with a staging sender (`EMAIL_FROM`) | production sender |
+| Sentry | `SENTRY_ENVIRONMENT=staging`, same project | `production` |
+| Metrics | `METRICS_TOKEN` set; Grafana on the host, port 3001 behind the firewall | same |
+| Alerts | `ALERT_*` set; staging alerts go to the team channel only (`ALERT_PAGERDUTY_ROUTING_KEY` blank) | critical alerts page |
+| Uptime | the external checker watches both hosts (docs/OBSERVABILITY.md, "Uptime checks") | same |
+| Data | throwaway: the smoke registers a fresh shop on every run; wipe by recreating the database | real |
+
+Record here, when provisioned: the provider and region, the instance
+identifiers, who holds the secrets, the DNS record owner, the date.
+
+## What makes it identical
+
+- **Images**: `IMAGE_REGISTRY`/`IMAGE_TAG` in `.env` name the release; the
+  web image carries no environment-specific value (the API URL is
+  `API_PUBLIC_URL` at run time, roadmap 9.9), so the digest staging ran is
+  the digest production runs.
+- **Configuration**: the same `docker-compose.prod.yml`; the differences
+  are `.env` values only (hosts, URLs, credentials, sizes). Compare the two
+  files with `diff <(sed 's/=.*//' staging/.env | sort) <(sed 's/=.*//' production/.env | sort)`:
+  the key sets must be equal.
+- **Services**: managed MySQL 8 with `require_secure_transport=ON` and
+  `log_bin_trust_function_creators=1`, managed Redis, the edge, the
+  monitoring stack (`--profile ops`), the backup agent.
+- **Smoke**: `scripts/smoke-remote.sh` runs the same business flow against
+  staging that the CI smoke runs against the compose stack.
+
+## Promotion
+
+1. A commit on `main` (or a `v*` tag) triggers the release workflow; it
+   pushes `ghcr.io/<owner>/dukaanai-{api,web,db-ops}:sha-<commit>` (and
+   `:v<version>`). The CI run of the same commit must be green.
+2. On the staging host: set `IMAGE_TAG=sha-<commit>` in `.env`, then
+
+   ```
+   docker compose -f docker-compose.prod.yml pull
+   docker compose -f docker-compose.prod.yml --profile ops run --rm db-ops backup --label pre-<tag>
+   docker compose -f docker-compose.prod.yml run --rm migrate
+   docker compose -f docker-compose.prod.yml up -d --wait
+   ```
+
+3. From any machine: `bash scripts/smoke-remote.sh https://staging-app.<domain> https://staging-api.<domain>`
+   (registration, API and web sign-in, stock, shift, a sale, the dashboard,
+   a CLEAN reconciliation, HTTP redirected, HSTS, metrics hidden). Then the
+   manual checks of the release (`DEPLOYMENT_CHECKLIST.md`, phase 4 and 5)
+   on staging.
+4. Production: the same three commands with the same `IMAGE_TAG`, then
+   `bash scripts/smoke-remote.sh https://app.<domain> https://api.<domain> --probes-only`
+   (no shop is registered on production). Record the tag, the date and the
+   staging evidence in the release note.
+5. Rollback is the previous tag: `IMAGE_TAG=<previous>`, `up -d --wait`
+   (`apps/api/prisma/MIGRATIONS.md` for the database side).
+
+An image that was never on staging never goes to production; a change to
+`.env` on production is made on staging first.
+
+## Evidence (gate of row 9.9)
+
+| Check | Where | Result |
+|---|---|---|
+| The addresses above are real and resolve to the edge | `getent hosts`, `scripts/smoke-remote.sh` first step | pending the owner's provisioning |
+| `scripts/smoke-remote.sh` passes against staging | the command's `REMOTE SMOKE PASSED` line, kept with the release note | pending |
+| The same image digests run on both environments | `docker compose -f docker-compose.prod.yml images` on both hosts | pending |
+| The `.env` key sets are equal | the `diff` above | pending |
+
+Until staging exists, the repository proves the mechanism on every CI run:
+`scripts/compose-smoke-prod.sh` brings the production compose file up with
+images built from the checkout and no build-time API URL, and the flow
+passes over HTTPS with the URL supplied at run time.

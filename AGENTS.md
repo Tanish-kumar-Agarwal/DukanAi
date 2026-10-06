@@ -1284,6 +1284,59 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   per-account throttle stays out) and gets 429, client B sending
   `X-Forwarded-For: <A>` gets 401.
 
+- 9.9 staging and promotion: one web image serves every environment. The
+  browser-facing API URL is resolved at RUN time (`publicApiUrl()` in
+  `apps/web/src/config/env.ts`: server `API_PUBLIC_URL` else the build-time
+  `NEXT_PUBLIC_API_URL`; browser the `<meta name="dukaanai-api-url">` the
+  root layout renders through `generateMetadata().other`, else the inlined
+  value); `clientConfig.NEXT_PUBLIC_API_URL` is a lazy getter, the axios
+  client re-reads it per request, the proxy's CSP reads `API_PUBLIC_URL`
+  first. Never read `process.env.NEXT_PUBLIC_API_URL` directly for a URL
+  the browser uses. `.github/workflows/release.yml` builds the three images
+  once per main commit / `v*` tag and pushes `ghcr.io/<owner>/dukaanai-
+  {api,web,db-ops}:sha-<7>` (plain `docker build`/`push`, no third-party
+  action); `docker-compose.prod.yml` pulls `${IMAGE_REGISTRY}/...:${IMAGE_TAG:?}`
+  and never builds; `docker-compose.build.yml` is the overlay that builds
+  from a checkout (the prod smoke uses it, web image WITHOUT an API URL, and
+  asserts the served `<meta>` equals the runtime `API_PUBLIC_URL`);
+  `deploy/k8s/kustomization.yaml` carries the same tag. `scripts/smoke-remote.sh
+  <web> <api> [--probes-only]` is the smoke against a deployed edge
+  (`--probes-only` on production: the flow registers a shop).
+  `docs/STAGING.md` holds the address table (owner fills it), the promotion
+  steps (same tag staging -> production, `pull`, backup, `migrate`, `up`)
+  and the evidence table; `docs/DEPLOYMENT.md` "Images and promotion".
+- 9.10 alerting, dashboards, logs, uptime: `deploy/observability/compose.yml`
+  is included (`include:` with `project_directory: .`) by both compose
+  files under profile `ops`: prometheus (moved out of docker-compose.yml),
+  alertmanager (`deploy/alertmanager/alertmanager.yml.tmpl` rendered at
+  start by `render.sh` from `ALERT_*`: `#@email`/`#@slack`/`#@pagerduty`/
+  `#@smtpauth` lines on when their variable is set, secrets written to
+  files for the `*_file` fields; critical -> `oncall` + `team` hourly,
+  warning -> `team` muted 22:00-08:00 and Sunday in `ALERT_TIMEZONE`;
+  ApiDown inhibits warnings; CI renders three variants and checks routing
+  with amtool), blackbox (`deploy/blackbox/blackbox.yml`: `http_2xx` on
+  `/api/health/ready`, `http_login_page` on `/login`, jobs `blackbox-http`
+  / `blackbox-login` every minute, alerts `DukaanAiEndpointDown` 2 min
+  critical and `DukaanAiCertificateExpiring` 14 d warning with promtool
+  tests), loki 3.7 (filesystem, 31 d), alloy (`loki.source.docker` through
+  the socket; labels `service`/`project`/`container`), grafana 12
+  (provisioned data sources `prometheus` and `loki`, dashboards
+  `deploy/grafana/dashboards/dukaanai-{operations,logs}.json`, read-only in
+  the UI). The API logs one access line per answer
+  (`httpAccessLogMiddleware`, context `HttpAccess`, event `http`, after the
+  metrics middleware; `/api/health*` and `/api/metrics` are silent) and
+  `CorrelationLogger` keeps an explicit `correlationId` on an object
+  message (guard rejections have no tenant store). Loki query:
+  `{service="api"} | json | message_correlationId="<id>"` (Nest nests the
+  object under `message`). `src/common/observability/dashboards.spec.ts`
+  fails on a panel or alert naming an unregistered metric (aggregation
+  operators and `by (...)` lists are stripped before the check). The
+  reference compose smoke brings the stack up and proves: correlation id
+  found in Loki, Prometheus -> Alertmanager with a critical test alert
+  routed to `oncall,team`, both dashboards and data sources, both probes
+  green. Owner-side gates (page on a phone, external checker, staging
+  addresses) are recorded in `docs/STAGING.md` / `docs/OBSERVABILITY.md`.
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and

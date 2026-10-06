@@ -1,8 +1,43 @@
 import { z } from 'zod';
 
-const clientSchema = z.object({
-  NEXT_PUBLIC_API_URL: z.string().url().default('http://localhost:3002/api'),
-});
+const DEFAULT_API_URL = 'http://localhost:3002/api';
+const apiUrlSchema = z.string().url();
+
+/** The `<meta>` the root layout renders so the browser learns the API URL at request time. */
+export const API_URL_META_NAME = 'dukaanai-api-url';
+
+let resolvedApiUrl: string | undefined;
+
+/**
+ * The API as the browser reaches it, resolved at RUN time so one web image
+ * serves every environment (roadmap 9.9: promotion is an image tag, nothing
+ * is rebuilt per environment).
+ *
+ * - On the server: `API_PUBLIC_URL` (runtime, never inlined by Next because
+ *   it is not `NEXT_PUBLIC_`), else the build-time `NEXT_PUBLIC_API_URL`.
+ * - In the browser: the `<meta name="dukaanai-api-url">` the root layout
+ *   renders from the server value, else the build-time value inlined here.
+ *
+ * `NEXT_PUBLIC_API_URL` stays as the local default (`next dev`, Playwright)
+ * and as the build-time fallback of an image run without `API_PUBLIC_URL`.
+ */
+export function publicApiUrl(): string {
+  if (resolvedApiUrl) return resolvedApiUrl;
+  const candidate =
+    typeof window === 'undefined'
+      ? process.env.API_PUBLIC_URL || process.env.NEXT_PUBLIC_API_URL || DEFAULT_API_URL
+      : document.querySelector<HTMLMetaElement>(`meta[name="${API_URL_META_NAME}"]`)?.content ||
+        process.env.NEXT_PUBLIC_API_URL ||
+        DEFAULT_API_URL;
+  const parsed = apiUrlSchema.safeParse(candidate);
+  if (!parsed.success) {
+    throw new Error(`The public API URL is not an absolute URL: "${candidate}" (API_PUBLIC_URL / NEXT_PUBLIC_API_URL)`);
+  }
+  // In the browser the <meta> is in <head> before any module evaluates, so
+  // the first answer is final; on the server the environment does not change.
+  resolvedApiUrl = parsed.data;
+  return resolvedApiUrl;
+}
 
 /** Values the committed templates and generators leave behind. */
 const PLACEHOLDER = /replace_me|your_|change_?me|placeholder|todo|xxx/i;
@@ -40,9 +75,12 @@ const serverSchema = z
     }
   });
 
-export const clientConfig = clientSchema.parse({
-  NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
-});
+/** Read lazily: `NEXT_PUBLIC_API_URL` here is the runtime value of `publicApiUrl()`, not the inlined one. */
+export const clientConfig = {
+  get NEXT_PUBLIC_API_URL(): string {
+    return publicApiUrl();
+  },
+};
 
 export const serverConfig = typeof window === 'undefined' 
   ? serverSchema.parse({

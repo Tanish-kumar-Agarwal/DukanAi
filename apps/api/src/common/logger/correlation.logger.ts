@@ -25,7 +25,11 @@ export class CorrelationLogger extends ConsoleLogger {
       return { message: message.message, error: message.name, stack: message.stack, correlationId };
     }
     if (typeof message === 'object' && message !== null && !Array.isArray(message)) {
-      return { ...(redact(message) as Record<string, unknown>), correlationId };
+      const redacted = redact(message) as Record<string, unknown>;
+      // An object that names its own correlation id (the access line of a
+      // request that ended in a guard, before any tenant context) keeps it.
+      const explicit = typeof redacted.correlationId === 'string' && redacted.correlationId ? redacted.correlationId : undefined;
+      return { ...redacted, correlationId: explicit ?? correlationId };
     }
     return { message: typeof message === 'string' ? message : redact(message), correlationId };
   }

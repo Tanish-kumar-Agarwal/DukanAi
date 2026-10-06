@@ -24,6 +24,8 @@ COPY packages/invoice-math/package.json packages/invoice-math/
 RUN npm ci --ignore-scripts
 
 FROM deps AS build
+# The build-time value is only the fallback: the running container sets
+# API_PUBLIC_URL and one image serves staging and production (roadmap 9.9).
 ARG NEXT_PUBLIC_API_URL=http://localhost:3002/api
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} NEXT_STANDALONE=true NODE_ENV=production
 COPY packages/invoice-math packages/invoice-math

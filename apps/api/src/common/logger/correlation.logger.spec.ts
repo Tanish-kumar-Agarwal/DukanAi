@@ -37,6 +37,12 @@ describe('CorrelationLogger', () => {
     expect(parsed.message).toEqual({ event: 'sale', password: '[REDACTED]', correlationId: 'corr-123' });
   });
 
+  it('keeps an explicit correlation id on an object logged outside a request context', () => {
+    new CorrelationLogger('HttpAccess').log({ event: 'http', status: 401, correlationId: 'corr-from-request' });
+    const parsed = JSON.parse(captured[0]) as { message: Record<string, unknown> };
+    expect(parsed.message).toEqual({ event: 'http', status: 401, correlationId: 'corr-from-request' });
+  });
+
   it('tags entries outside a request as system-job and wraps plain strings', () => {
     new CorrelationLogger('Spec').warn('disk almost full');
     const parsed = JSON.parse(captured[0]) as { message: Record<string, unknown> };

@@ -14,6 +14,13 @@
 # environment from their orchestrator: see docs/DEPLOYMENT.md.
 name: dukaanai
 
+# The monitoring stack (profile "ops": Prometheus, Alertmanager, blackbox
+# probes, Loki, Alloy, Grafana; roadmap 7.6, 9.10) lives in one file both
+# this stack and docker-compose.prod.yml include.
+include:
+  - path: deploy/observability/compose.yml
+    project_directory: .
+
 services:
   mysql:
     image: mysql:8.0
@@ -226,24 +233,6 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Optional (profile "ops"): Prometheus with the alert rules in
-  # deploy/prometheus, scraping the API over the compose network.
-  #   docker compose --profile ops up -d prometheus   -> http://localhost:9090
-  # With METRICS_TOKEN set, uncomment the `authorization` block in
-  # deploy/prometheus/prometheus.yml and mount the token file it names.
-  prometheus:
-    image: prom/prometheus:v3.5.0
-    profiles: ["ops"]
-    volumes:
-      - ./deploy/prometheus:/etc/prometheus:ro
-      - prometheus-data:/prometheus
-    ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
-    depends_on:
-      api:
-        condition: service_healthy
-    restart: unless-stopped
-
   # The edge (roadmap 9.8; profile "edge"): Caddy terminates HTTPS for both
   # hostnames, redirects HTTP, forwards the client address (the API runs with
   # TRUST_PROXY=1) and hides /api/metrics from the internet. Locally the
@@ -286,6 +275,5 @@ volumes:
   api-storage:
   api-uploads:
   db-backups:
-  prometheus-data:
   caddy-data:
   caddy-config:

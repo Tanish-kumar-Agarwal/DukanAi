@@ -170,3 +170,24 @@ groups:
         annotations:
           summary: "BullMQ queue {{ $labels.queue }} holds failed jobs"
           description: "{{ $value }} job(s) on {{ $labels.queue }} failed every attempt. The job data and the last error are in Redis (the queue's failed set); a job that names an outbox row also marked that row FAILED."
+
+  # Uptime (roadmap 9.10): the blackbox probes of the readiness route and the
+  # login page (deploy/blackbox/blackbox.yml, every minute).
+  - name: dukaanai-uptime
+    rules:
+      - alert: DukaanAiEndpointDown
+        expr: probe_success{job=~"blackbox-http|blackbox-login"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }} has failed its probe for 2 minutes"
+          description: "The readiness route or the login page does not answer as expected ({{ $labels.job }}). Check the edge, then GET /api/health/ready for the failing dependency."
+      - alert: DukaanAiCertificateExpiring
+        expr: (probe_ssl_earliest_cert_expiry{job=~"blackbox-http|blackbox-login"} - time()) < 14 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The certificate of {{ $labels.instance }} expires in under 14 days"
+          description: "Automatic renewal has not happened (Caddy: ports 80/443 reachable, DNS; cert-manager: the Certificate resource). Renew before it lapses."

@@ -46,9 +46,10 @@ Kubernetes Ingress routes it to a Service with no endpoints, so from the
 internet the route does not exist (roadmap 9.8); Prometheus reads
 `api:3002` on the compose network or `dukaanai-api.dukaanai.svc:3002`
 through the NetworkPolicy's monitoring rule.
-`deploy/prometheus/prometheus.yml` is a working scrape configuration;
+`deploy/prometheus/prometheus.yml` is the scrape configuration;
 `docker compose --profile ops up -d prometheus` runs it against the compose
-stack on <http://localhost:9090>.
+stack on <http://localhost:9090> (the whole monitoring stack:
+`deploy/observability/compose.yml`, included by both compose files).
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
@@ -123,15 +124,145 @@ the rules; `severity` is `critical` for the two the roadmap requires and
 | `DukaanAiReconciliationDrift` | a shop's newest reconciliation run ended in DRIFT or FAILED (at once) | `GET /reconciliation/latest` as that shop's owner, or `npm run reconcile -- --shop <id> --date <day>` from a checkout: every drift names the check, the document or row and the two figures that disagree (`docs/POS_BILLING_CONTRACT.md` §11). A FAILED run carries the error. Nothing is corrected by the job; find the write that produced the row and fix the data with a recorded adjustment. |
 | `DukaanAiReconciliationStale` | no reconciliation run finished anywhere for 26 h, for 30 min | `CRON_ENABLED` on at least one instance, `CRON_RECONCILIATION`, the `cron:reconciliation` lock (a dead pod's lock expires after 30 min), the `Reconciliation` lines in the logs; run one by hand with `POST /reconciliation/run`. |
 
+## Alert delivery
+
+Roadmap 9.10. Prometheus sends every firing rule to Alertmanager
+(`deploy/observability/compose.yml`, service `alertmanager`;
+`deploy/alertmanager/alertmanager.yml.tmpl` rendered by `render.sh` from
+the `ALERT_*` variables of `.env`):
+
+| Severity | Who | How | Repeat |
+|---|---|---|---|
+| `critical` (API down, 5xx wave, ledger failure, stale backup, drift, endpoint down) | the on-call AND the team | PagerDuty when `ALERT_PAGERDUTY_ROUTING_KEY` is set (a page), else Slack + email at once | hourly until resolved |
+| `warning` (everything else) | the team | Slack and/or email | every 4 h; held between 22:00 and 08:00 and on Sunday in `ALERT_TIMEZONE`, delivered when the window ends |
+
+While `DukaanAiApiDown` fires every warning is inhibited (one page, not a
+dozen). Each channel is on when its variable is set (`ALERT_EMAIL_TO` with
+`ALERT_SMTP_*`, `ALERT_SLACK_WEBHOOK_URL`, `ALERT_PAGERDUTY_ROUTING_KEY`);
+with none set the service starts, logs that alerts reach nobody, and the
+compose smoke still proves the routing. Validate a change with
+`sh deploy/alertmanager/render.sh --out /tmp/am.yml --secrets /tmp/s &&
+amtool check-config /tmp/am.yml` and read the routing with
+`amtool config routes test --config.file /tmp/am.yml severity=critical`
+(CI does both, in the `prom/alertmanager` image).
+
+### On-call
+
+The rota is kept where the pager is (the PagerDuty schedule, or this table
+when Slack + email are the page):
+
+| Week of | Primary | Phone | Backup |
+|---|---|---|---|
+| (filled in by the owner) | | | |
+
+Expectations: a critical page is acknowledged within 15 minutes, day and
+night; a warning is looked at the next working morning. The runbook column
+of the alert table below says where to look first.
+
+### Test the delivery (gate of row 9.10)
+
+With the stack up and `ALERT_*` set, fire a synthetic critical alert and
+confirm it reaches the on-call phone:
+
+```
+curl -fsS -X POST -H 'content-type: application/json' http://localhost:9093/api/v2/alerts \
+  -d '[{"labels":{"alertname":"DukaanAiDeliveryTest","severity":"critical","job":"manual"},"annotations":{"summary":"delivery test: reply in the channel when received"}}]'
+```
+
+Alertmanager lists it under `/api/v2/alerts` with receivers `oncall` and
+`team`; the page (or the Slack message and the mail) must arrive within
+`group_wait` (30 s). Record the date, who received it and on which channel
+in `docs/STAGING.md`. Resolve it with the same POST and `"endsAt"` in the
+past, or let it expire (`resolve_timeout`, 5 min).
+
+## Dashboards
+
+Grafana (`docker compose --profile ops up -d grafana`,
+<http://localhost:3001>, admin / `GRAFANA_ADMIN_PASSWORD`) provisions two
+dashboards from `deploy/grafana/dashboards` (folder "DukaanAI", read-only in
+the UI: edit the JSON in the repository):
+
+- **DukaanAI operations** (`dukaanai-ops`): API up, 5xx ratio, checkout p95,
+  outbox lag and failing probes at the top; then checkout latency
+  percentiles and checkouts per minute by outcome, requests per second by
+  status class, 5xx per route, latency p95 per route, tracked errors;
+  outbox rows by status and queue depth by queue and state; ledger posting
+  failures, reconciliation drift and age, backup age by kind, retention
+  purges; the uptime probes. Every threshold matches the alert it mirrors.
+- **DukaanAI logs** (`dukaanai-logs`): the log search below.
+
+`apps/api/src/common/observability/dashboards.spec.ts` fails the unit suite
+when a panel or an alert names a metric the API does not register.
+
+## Log search
+
+Every container's stdout is shipped to Loki by Alloy through the Docker
+socket (`deploy/alloy/config.alloy`, `deploy/loki/loki.yml`; 31 days,
+`docker compose --profile ops up -d loki alloy`), labelled `service`
+(the compose service: `api`, `web`, `edge`, ...), `project` and
+`container`. The API prints one JSON line per entry
+(`{"level","pid","timestamp","message":{...,"correlationId"},"context"}`)
+and, since roadmap 9.10, one access line per answer
+(`context: HttpAccess`, `message.event: http`, method, path, route pattern,
+status, duration, client address, correlation id; the probes and the scrape
+are silent), so a correlation id a client quoted (every API answer echoes
+`x-correlation-id`) always finds its request, guard rejections included.
+
+The saved query is the "DukaanAI logs" dashboard: type the id into the
+`correlationId` box. Its panels run, in LogQL:
+
+```
+{service="api"} |~ "<id>"                                      # every line mentioning it
+{service="api"} |~ "<id>" | json | message_correlationId="<id>" # the API's parsed lines
+{service="api"} | json | level="error"                          # unhandled and Prisma errors
+```
+
+(`| json` flattens `message.correlationId` to `message_correlationId`.) The
+compose smoke sends a request with a chosen id and finds its access line
+in Loki on every CI run; on staging, do the same by hand once and note the
+date in `docs/STAGING.md`. A hosted store (Grafana Cloud, Datadog, ...)
+replaces `loki.write` in the Alloy file and nothing else.
+
+## Uptime checks
+
+Two layers:
+
+- **Inside the stack**: the blackbox exporter (`deploy/blackbox/blackbox.yml`)
+  probes `GET /api/health/ready` (module `http_2xx`: 200, which means
+  database and Redis up and not draining) and the login page (module
+  `http_login_page`: 200 and the DukaanAI sign-in in the body) every minute
+  (`deploy/prometheus/prometheus.yml`, jobs `blackbox-http` and
+  `blackbox-login`). The inner targets watch the containers; add the public
+  URLs through the edge (commented there) to watch what customers see.
+  `DukaanAiEndpointDown` pages after two failed minutes;
+  `DukaanAiCertificateExpiring` warns 14 days before a certificate lapses
+  (both with promtool tests).
+- **Outside**: a checker on another network, because a dead host cannot
+  report itself. Set up, with the owner's account (UptimeRobot, Better
+  Stack, Pingdom or the cloud provider's own): an HTTP(S) monitor on
+  `https://<API_HOST>/api/health/ready` expecting 200 and the string
+  `"status":"ok"`, one on `https://<WEB_HOST>/login` expecting 200 and
+  `DukaanAI`, both every minute from at least two regions, alerting the
+  same on-call channel (phone/SMS for the API monitor). Gate of row 9.10:
+  stop the API on staging (`docker compose -f docker-compose.prod.yml stop
+  api`) and confirm the checker reports the outage within two minutes and
+  the recovery after `start`; record it in `docs/STAGING.md`.
+
 ## Verification
 
 `deploy/prometheus/alerts.test.yml` is a promtool unit test: the two backup
-alerts fire on stale and missing series and stay quiet on fresh ones, and the
+alerts fire on stale and missing series and stay quiet on fresh ones, the
 two reconciliation alerts fire on a drifted shop and on a day without a run
-(roadmap 9.5). CI runs
+(roadmap 9.5), and the uptime alerts fire on a failed probe and a
+certificate inside 14 days (roadmap 9.10). CI runs
 `promtool test rules` with the rule check in the "Deployment (compose
 smoke)" job; locally: `promtool test rules deploy/prometheus/alerts.test.yml`
-from `deploy/prometheus`.
+from `deploy/prometheus`. The same job renders the Alertmanager template in
+three configurations and checks the routing with `amtool`, and the compose
+smoke brings the whole monitoring stack up: a request is found by its
+correlation id in Loki, Prometheus delivers to Alertmanager and a critical
+test alert is routed to `oncall` and `team`, Grafana has both data sources
+and both dashboards, the two blackbox probes succeed.
 
 - Unit: `apps/api/src/common/observability/*.spec.ts`,
   `src/common/filters/global-exception.filter.spec.ts`,

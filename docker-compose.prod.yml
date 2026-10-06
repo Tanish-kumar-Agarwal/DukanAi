@@ -4,8 +4,16 @@
 # edge terminates HTTPS. Nothing here publishes a port except the edge.
 #
 #   cp .env.example .env    # set JWT_SECRET, NEXTAUTH_SECRET, DATABASE_URL, REDIS_URL,
-#                           # WEB_HOST / API_HOST (+ WEB_ORIGIN / API_PUBLIC_URL), STORAGE_PATH
-#   docker compose -f docker-compose.prod.yml up --build -d --wait
+#                           # WEB_HOST / API_HOST (+ WEB_ORIGIN / API_PUBLIC_URL), STORAGE_PATH,
+#                           # IMAGE_TAG (the release to run: sha-<commit> or v<version>)
+#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml up -d --wait
+#
+# Nothing is built on a server (roadmap 9.9): the images come from the
+# registry the release workflow pushed them to (.github/workflows/release.yml,
+# ghcr.io/<owner>/dukaanai-{api,web,db-ops}:<tag>), and staging and
+# production run the same tag. docker-compose.build.yml is the overlay that
+# builds them from a checkout instead (the compose smoke, local work).
 #
 # Topology this file implements (docs/DEPLOYMENT.md, "Production topology"):
 #   one host, one API replica, documents on a cloud disk mounted at
@@ -17,6 +25,12 @@
 # (scripts/compose-smoke-prod.sh, CI job "Deployment (compose smoke)").
 name: dukaanai-prod
 
+# The monitoring stack (profile "ops": Prometheus, Alertmanager, blackbox
+# probes, Loki, Alloy, Grafana) is the same file the reference stack includes.
+include:
+  - path: deploy/observability/compose.yml
+    project_directory: .
+
 x-database-url: &database-url ${DATABASE_URL:?Set DATABASE_URL in .env (mysql://user:pass@host:3306/db?connection_limit=20&sslaccept=strict)}
 # The CA of a private certificate authority, mounted where DATABASE_URL's
 # sslcert= points (`sslcert=/etc/dukaanai/db-ca.pem`). Unset = the system
@@ -27,10 +41,7 @@ services:
   # Release step: applies pending migrations against the managed database and
   # exits; `api` starts only after it succeeded. Re-run on every deploy.
   migrate:
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
-    image: dukaanai-api
+    image: ${IMAGE_REGISTRY:-ghcr.io/shoryabansalgithub}/dukaanai-api:${IMAGE_TAG:?}
     command: ["npx", "prisma", "migrate", "deploy"]
     environment:
       DATABASE_URL: *database-url
@@ -39,7 +50,7 @@ services:
     restart: "no"
 
   api:
-    image: dukaanai-api
+    image: ${IMAGE_REGISTRY:-ghcr.io/shoryabansalgithub}/dukaanai-api:${IMAGE_TAG:?}
     environment:
       NODE_ENV: production
       PORT: "3002"
@@ -84,19 +95,16 @@ services:
     restart: unless-stopped
 
   web:
-    build:
-      context: .
-      dockerfile: apps/web/Dockerfile
-      args:
-        NEXT_PUBLIC_API_URL: ${API_PUBLIC_URL:?Set API_PUBLIC_URL in .env (https://api.example.com/api)}
-    image: dukaanai-web
+    image: ${IMAGE_REGISTRY:-ghcr.io/shoryabansalgithub}/dukaanai-web:${IMAGE_TAG:?}
     environment:
       NODE_ENV: production
       PORT: "3000"
       HOSTNAME: 0.0.0.0
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?Set NEXTAUTH_SECRET in .env (32+ characters, e.g. `openssl rand -hex 32`)}
       NEXTAUTH_URL: ${WEB_ORIGIN}
-      NEXT_PUBLIC_API_URL: ${API_PUBLIC_URL}
+      # The API as the browser reaches it, read at run time: the same image
+      # serves staging and production (roadmap 9.9).
+      API_PUBLIC_URL: ${API_PUBLIC_URL:?Set API_PUBLIC_URL in .env (https://api.example.com/api)}
       API_INTERNAL_URL: http://api:3002/api
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
@@ -151,10 +159,7 @@ services:
   # RELOAD + REPLICATION CLIENT (binary-log position in the dump) or the
   # application user with BACKUP_COORDINATES=skip.
   backup-agent:
-    build:
-      context: .
-      dockerfile: deploy/db-ops/Dockerfile
-    image: dukaanai-db-ops
+    image: ${IMAGE_REGISTRY:-ghcr.io/shoryabansalgithub}/dukaanai-db-ops:${IMAGE_TAG:?}
     command: ["backup-loop"]
     environment:
       DATABASE_URL: ${DB_OPS_DATABASE_URL:-${DATABASE_URL}}
@@ -185,7 +190,7 @@ services:
   #   docker compose -f docker-compose.prod.yml --profile ops run --rm db-ops offsite push|check|list|fetch DIR
   #   docker compose -f docker-compose.prod.yml --profile ops run --rm db-ops restore /backups/<file>.sql.gz --database dukaanai_restored --create --yes
   db-ops:
-    image: dukaanai-db-ops
+    image: ${IMAGE_REGISTRY:-ghcr.io/shoryabansalgithub}/dukaanai-db-ops:${IMAGE_TAG:?}
     profiles: ["ops"]
     environment:
       DATABASE_URL: ${DB_OPS_DATABASE_URL:-${DATABASE_URL}}

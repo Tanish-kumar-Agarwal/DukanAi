@@ -22,10 +22,15 @@ and validated with kubeconform in CI (job "Deployment (compose smoke)").
 
 ## Deploy
 
-1. Build and push the three images from the repository root (tag = release):
-   `apps/api/Dockerfile`, `apps/web/Dockerfile` with
-   `--build-arg NEXT_PUBLIC_API_URL=https://api.example.com/api`, and
-   `deploy/db-ops/Dockerfile`. Set `newName` / `newTag` in `kustomization.yaml`.
+1. Pick the release: the workflow `.github/workflows/release.yml` pushed
+   `ghcr.io/<owner>/dukaanai-{api,web,db-ops}:sha-<commit>` (and `:v<version>`
+   for a tag) for every commit on main. Set `newTag` in `kustomization.yaml`
+   to that tag; nothing is built for the cluster, and the same tag that
+   passed on staging is what production runs (`docs/STAGING.md`). The web
+   image carries no API URL: the ConfigMap's `API_PUBLIC_URL` is read at
+   run time. A private package needs an image pull secret in the
+   namespace (`kubectl create secret docker-registry ghcr --docker-server=ghcr.io ...`
+   and `imagePullSecrets` on the two Deployments and the Job).
 2. `cp dukaanai-secrets.env.example dukaanai-secrets.env` and fill it in (`.gitignore` keeps it
    out of the repository). For a managed MySQL whose CA is not in the system
    trust store, add `&sslcert=/etc/dukaanai/db-ca.pem` to `DATABASE_URL` and
