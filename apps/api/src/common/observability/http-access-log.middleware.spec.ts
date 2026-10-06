@@ -26,7 +26,7 @@ describe('httpAccessLogMiddleware', () => {
   afterEach(() => spy.mockRestore());
 
   it('logs one line per finished answer with the route pattern, status, duration and correlation id', () => {
-    const req = fakeRequest({ correlationId: 'corr-42', route: { path: '/:id' } as never, baseUrl: '/api/products' });
+    const req = fakeRequest({ correlationId: 'corr-42', route: { path: '/:id' } as never, baseUrl: '/api/products', user: { id: 'user-7' } as never });
     const res = fakeResponse(404);
     const next = jest.fn();
     httpAccessLogMiddleware(req, res, next);
@@ -34,7 +34,7 @@ describe('httpAccessLogMiddleware', () => {
     expect(lines).toHaveLength(0);
     res.emit('finish');
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({ event: 'http', method: 'GET', path: '/api/products', route: '/api/products/:id', status: 404, ip: '203.0.113.9', correlationId: 'corr-42' });
+    expect(lines[0]).toMatchObject({ event: 'http', method: 'GET', path: '/api/products', route: '/api/products/:id', status: 404, ip: '203.0.113.9', userId: 'user-7', correlationId: 'corr-42' });
     expect(typeof (lines[0] as { ms: number }).ms).toBe('number');
   });
 

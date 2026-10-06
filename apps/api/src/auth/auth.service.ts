@@ -54,32 +54,43 @@ export class AuthService {
     private jwtConfig: JwtConfig,
   ) {}
 
+  /**
+   * The credential check behind `POST /auth/login`. Every decision is logged
+   * (ASVS 7.2.1, roadmap 9.15) with the account and the reason, never the
+   * password; the caller still answers one generic 401 for every refusal.
+   */
   async validateUser(email: string, pass: string): Promise<SafeUserDto | null> {
     const user = await this.usersService.findByEmailWithPassword(email);
     // Google OAuth users have no password — they cannot use credentials login.
     if (!user || !user.password) {
+      this.logger.warn(`Login refused for ${email}: ${user ? 'no password set (Google sign-in account)' : 'unknown account'}`);
       return null;
     }
 
     if (user.isDeleted) {
+      this.logger.warn(`Login refused for user ${user.id}: account deleted`);
       return null;
     }
 
     if (!user.isActive) {
+      this.logger.warn(`Login refused for user ${user.id}: account suspended`);
       return null;
     }
 
     if (await this.usersService.isLockedNow(user)) {
+      this.logger.warn(`Login refused for user ${user.id}: account locked after repeated failures`);
       return null;
     }
 
     const passwordValid = await bcrypt.compare(pass, user.password);
     if (!passwordValid) {
       await this.usersService.incrementFailedAttempts(user.id);
+      this.logger.warn(`Login refused for user ${user.id}: wrong password`);
       return null;
     }
 
     await this.usersService.resetFailedAttempts(user.id);
+    this.logger.log(`Login succeeded for user ${user.id}`);
     return this.usersService.findSafeById(user.id);
   }
 

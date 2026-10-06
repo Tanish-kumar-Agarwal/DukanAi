@@ -100,7 +100,7 @@ which keeps every report in one evidence bundle:
 |---|---|---|
 | boot-matrix | every refusal case of the boot matrix (`apps/api/test/boot-matrix.json`, the file the boot-regression spec also uses) booted from the API image: each must exit non-zero with `[Bootstrap FATAL]` and the reason | `boot-matrix/boot-matrix.json`, one log per case |
 | migrate-diff | the image's own `prisma migrate deploy`, `migrate diff --exit-code`, `migrate status` and a no-op redeploy on a fresh MySQL 8 and a fresh MariaDB | `migrate-diff/migrate-diff.json` with the logs |
-| smoke | `scripts/compose-smoke.sh` with `SMOKE_PREBUILT=1` on the reference compose stack built from the candidates (`scripts/certify/compose.certify.yml`): migrations, the business flow through the web and the API, a CLEAN reconciliation, the pre-sale dump rolled forward to the sale, documents and off-site backups, the backup metric, the monitoring stack, the graceful stop; the stack stays up for the next steps | `smoke.log` |
+| smoke | `scripts/compose-smoke.sh` with `SMOKE_PREBUILT=1` on the reference compose stack built from the candidates (`scripts/certify/compose.certify.yml`): migrations, the business flow through the web and the API, a CLEAN reconciliation, the pre-sale dump rolled forward to the sale, documents and off-site backups, the backup metric, the monitoring stack, the graceful stop (the production-limits gate of the reference smoke is skipped here, `SMOKE_LIMITS_GATE=0`: the overlay opens the limits for the load step); the stack stays up for the next steps | `smoke.log` |
 | route-walk, security | `test/integration/route-walker.integration-spec.ts` and `test/security/*.security-spec.ts` with `CERTIFY_API_URL`: the fixtures (shops, users, tokens) come from the checkout's module on the stack's database, every request goes over HTTP to the API container, and a route the image does not serve fails the walk | `route-walk/route-walk.json` (every route x identity), `*/jest.json` |
 | exploits | `test/certification/exploit-replay.ts` with `EXPLOIT_TARGET` the API container and `EXPLOIT_WEB_URL` the web container (roadmap 9.13): every audit exploit replayed as an attacker would — unauthenticated access, a forged / alg:none JWT, a cross-tenant id, over-refund, a ledger-overflow amount, an SSRF webhook, a 30 MB upload, a brute-force flood, MANAGER→OWNER mass assignment, a VIEWER write, an open redirect — each refused with its documented code | `exploits/exploit-replay.json` (one row per exploit) |
 | playwright | the real-authentication browser suite against the web and API containers (`E2E_EXTERNAL_SERVERS=1`) | `playwright/real-auth.json`, the HTML report |
@@ -268,7 +268,11 @@ the API readiness probe passed. Data lives in the `mysql-data`, `redis-data`,
 `scripts/compose-smoke.sh` is the automated gate (CI job "Deployment (compose
 smoke)"): it creates `.env` when missing, brings the stack up, proves the
 release step is idempotent, both probes, registration, API and web sign-in,
-stock, an open shift, a cash sale, the dashboard figure, then stops the API
+stock, an open shift, a cash sale, the dashboard figure, the production
+rate limits under a shop's traffic (`apps/api/load/limits-gate.mjs`, roadmap
+9.16: the compose API runs the `SecurityConfig` defaults, which are the
+production values, so three shops x three terminals are never answered 429
+and a credential flood still is), then stops the API
 with `SIGTERM` and asserts exit code 0 and the shutdown log lines, and tears
 the stack down (`KEEP=1` leaves it running).
 

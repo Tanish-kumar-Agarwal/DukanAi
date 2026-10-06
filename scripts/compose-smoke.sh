@@ -152,6 +152,15 @@ for probe in "http_2xx|http://api:3002/api/health/ready" "http_login_page|http:/
 done
 printf '  blackbox: readiness and login-page probes succeed\n'
 
+if [ "${SMOKE_LIMITS_GATE:-1}" = "1" ]; then
+  step "rate limits (roadmap 9.16): the API runs the production limits (SecurityConfig defaults); a shop's legitimate traffic from one address is never 429 and the brute-force limits still hold (apps/api/load/limits-gate.mjs)"
+  # The compose API carries no env file, so its limits are the class defaults, the same
+  # values apps/api/.env.production holds; TRUST_PROXY=1 lets the gate give every shop its
+  # own forwarded address (the certify overlay opens the limits, so certify.sh skips this step).
+  mkdir -p "${SMOKE_REPORT_DIR:-apps/api/load/reports}"
+  LOAD_TARGET="http://127.0.0.1:${API_PORT}" LIMITS_REPORT="${SMOKE_REPORT_DIR:-apps/api/load/reports}/limits-smoke.json" node apps/api/load/limits-gate.mjs || fail "the production rate limits answered a legitimate shop 429, or the brute-force limits did not hold"
+fi
+
 step "graceful stop: SIGTERM -> readiness 503 -> exit 0 (never SIGKILL)"
 "${COMPOSE[@]}" stop -t 40 api
 [ "$("${COMPOSE[@]}" ps -a --format '{{.ExitCode}}' api)" = "0" ] || fail "api did not exit 0 on SIGTERM (exit $("${COMPOSE[@]}" ps -a --format '{{.ExitCode}}' api))"
@@ -161,4 +170,4 @@ step "graceful stop: SIGTERM -> readiness 503 -> exit 0 (never SIGKILL)"
 for _ in $(seq 1 60); do sleep 2; curl -fsS -o /dev/null "$API/health/ready" && break; done
 curl -fsS -o /dev/null "$API/health/ready" || fail "api not ready after restart"
 
-printf '\nSMOKE PASSED: migrations applied, sign-in and a sale through the web and the API, the books of the day reconcile, the pre-sale dump rolled forward to now holds the sale, documents archived, encrypted off-site copy verified, backup metric exposed, the archiver service runs, a request found by its correlation id in Loki, Alertmanager routing a critical alert, Grafana provisioned, uptime probes green, graceful stop verified.\n'
+printf '\nSMOKE PASSED: migrations applied, sign-in and a sale through the web and the API, the books of the day reconcile, the pre-sale dump rolled forward to now holds the sale, documents archived, encrypted off-site copy verified, backup metric exposed, the archiver service runs, a request found by its correlation id in Loki, Alertmanager routing a critical alert, Grafana provisioned, uptime probes green, production rate limits proven (0 x 429 for a shop, brute force 429), graceful stop verified.\n'

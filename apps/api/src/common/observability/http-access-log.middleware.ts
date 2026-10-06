@@ -5,7 +5,8 @@ import { routeLabel } from './metrics';
 
 /**
  * One JSON access line per HTTP answer (roadmap 9.10): method, path, route
- * pattern, status, duration and the request's correlation id, so a client's
+ * pattern, status, duration, the signed-in user (when one is) and the
+ * request's correlation id, so a client's
  * quoted `x-correlation-id` finds the request in the log store even when
  * nothing else logged (`deploy/grafana/dashboards/dukaanai-logs.json`).
  * Registered with `app.use` in main.ts next to the metrics middleware, so
@@ -30,6 +31,8 @@ export function httpAccessLogMiddleware(req: Request, res: Response, next: NextF
       status: res.statusCode,
       ms,
       ip: req.ip,
+      // Set by the JWT guard before the handler ran; absent on anonymous and refused requests.
+      userId: (req as { user?: { id?: string } }).user?.id,
       correlationId: (req as CorrelatedRequest).correlationId,
     });
   });

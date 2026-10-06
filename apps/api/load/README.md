@@ -55,8 +55,8 @@ load/run.sh
   `expect`/`ensure` checks: those plugins are not loaded and would be
   ignored silently.
 - `NODE_ENV=test` means `.env.test` applies: rate limits effectively off,
-  `BILLING_TRANSACTION_MAX_WAIT_MS` and the gateway timeout wide. A
-  measurement of the limiter itself needs another profile.
+  `BILLING_TRANSACTION_MAX_WAIT_MS` and the gateway timeout wide. The
+  limiter itself is measured by `load/limits-gate.mjs` (below).
 - `upload-gate.sh` is the upload half of the phase gate: it boots the API the
   same way, registers an owner, sends `UPLOAD_GATE_ROUNDS` (12) uploads of
   `UPLOAD_GATE_MB` (300) MB to the media route, samples the API's RSS and
@@ -67,5 +67,33 @@ load/run.sh
 - Reports go to `load/reports/` (untracked): the artillery JSON and the API
   log of each run.
 
-Never run it against a production database or a Redis db index a running
-API uses.
+## Production limits gate (roadmap 9.16)
+
+`load/limits-gate.mjs` is the other measurement: not latency but the
+**production rate limits** under a real shop's traffic
+(`docs/PRODUCTION_LIMITS.md`). Against an API that runs the production
+values (the compose stack, staging), it drives `LIMITS_SHOPS` shops x
+`LIMITS_TERMINALS` terminals, each shop behind one forwarded address, with
+the web's own request mix (page load, dashboard poll every 30 s,
+notifications every 60 s, a 5-request sale every 20 s), asserts that no
+legitimate request is answered 429 with at least `LIMITS_MIN_HEADROOM`
+(1.25x) to spare on every window, reads the limits the API advertises in
+`X-RateLimit-Limit-*` and checks they are the production values, then
+proves the brute-force limits still hold (429 at attempt
+`AUTH_RATE_LIMIT_SHORT_LIMIT + 1` from one address while another address
+signs in; 429 at `AUTH_RATE_LIMIT_ACCOUNT_LIMIT + 1` spread over many
+addresses). It writes a JSON report and exits non-zero on any failed check.
+
+```bash
+cd apps/api
+LOAD_TARGET=http://127.0.0.1:3002 node load/limits-gate.mjs
+# through an edge that discards X-Forwarded-For (staging):
+LOAD_TARGET=https://api.staging.example.com LIMITS_SHOPS=1 LIMITS_FORWARD_FOR=0 node load/limits-gate.mjs
+```
+
+`scripts/compose-smoke.sh` runs it on every CI push (step "rate limits
+(roadmap 9.16)", switched off with `SMOKE_LIMITS_GATE=0`, which the certify
+driver does because its overlay opens the limits for the load profile).
+
+Never run either script against a production database or a Redis db index
+a running API uses.

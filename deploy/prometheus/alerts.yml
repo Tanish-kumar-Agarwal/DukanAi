@@ -171,6 +171,21 @@ groups:
           summary: "BullMQ queue {{ $labels.queue }} holds failed jobs"
           description: "{{ $value }} job(s) on {{ $labels.queue }} failed every attempt. The job data and the last error are in Redis (the queue's failed set); a job that names an outbox row also marked that row FAILED."
 
+  # Abuse (roadmap 9.15, ASVS 7.2.3 / 11.1.8): the credential routes are
+  # answering 429 for ten minutes, i.e. the brute-force limits are doing
+  # their job against a sustained flood (one refused attempt every ten
+  # seconds on average, well above what a mistyped password produces).
+  - name: dukaanai-abuse
+    rules:
+      - alert: DukaanAiCredentialFlood
+        expr: sum(rate(http_requests_total{job="dukaanai-api", route=~"/api/auth/.*", status="429"}[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Credential routes are rate-limiting a sustained flood"
+          description: "{{ printf \"%.2f\" $value }} login/register/refresh attempts per second have been refused with 429 for 10 minutes. The limits hold (docs/PRODUCTION_LIMITS.md); read the access log for the source addresses and accounts (event=http, status=429, route=/api/auth/...) and block the source at the edge if it persists."
+
   # Uptime (roadmap 9.10): the blackbox probes of the readiness route and the
   # login page (deploy/blackbox/blackbox.yml, every minute).
   - name: dukaanai-uptime

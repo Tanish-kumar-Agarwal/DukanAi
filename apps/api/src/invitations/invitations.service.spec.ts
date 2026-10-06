@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, ServiceUnav
 import { Role } from '@prisma/client';
 import { EmailService } from '../common/email/email.service';
 import { AppConfig } from '../config/domains/app.config';
+import { SecurityConfig } from '../config/domains/security.config';
 import { PrismaService } from '../prisma/prisma.service';
 import { InvitationsService } from './invitations.service';
 
@@ -19,7 +20,7 @@ describe('InvitationsService', () => {
       $transaction: jest.fn().mockImplementation((fn: (t: unknown) => unknown) => fn(tx)),
     };
     const email = { isConfigured: configured, send: jest.fn().mockResolvedValue(undefined) };
-    const service = new InvitationsService(prisma as unknown as PrismaService, email as unknown as EmailService, appConfig);
+    const service = new InvitationsService(prisma as unknown as PrismaService, email as unknown as EmailService, appConfig, Object.assign(new SecurityConfig(), { bcryptRounds: 4 }));
     return { service, prisma, tx, email };
   }
   const owner = { id: 'owner-1', role: Role.OWNER };

@@ -130,7 +130,9 @@ step_images() {
 step_boot_matrix() { bash scripts/certify/boot-matrix.sh "$API_IMAGE" "$OUT/boot-matrix"; }
 step_migrate_diff() { bash scripts/certify/migrate-diff.sh "$API_IMAGE" "$OUT/migrate-diff"; }
 step_smoke() {
-  KEEP=1 SMOKE_PREBUILT=1 SMOKE_ENV_FILE="$ENV_FILE" API_PORT="$API_PORT" WEB_PORT="$WEB_PORT" bash scripts/compose-smoke.sh
+  # The certify overlay opens the rate limits so one address can drive the load profile; the
+  # production-limits gate (roadmap 9.16) runs in the reference smoke of CI, not here.
+  KEEP=1 SMOKE_PREBUILT=1 SMOKE_ENV_FILE="$ENV_FILE" SMOKE_LIMITS_GATE=0 API_PORT="$API_PORT" WEB_PORT="$WEB_PORT" bash scripts/compose-smoke.sh
   local rc=$?
   # The monitoring stack and the archiver proved themselves; free the host for the suites and the load.
   "${COMPOSE[@]}" --profile ops stop prometheus alertmanager blackbox loki alloy grafana binlog-archiver >/dev/null 2>&1 || true

@@ -1,4 +1,5 @@
-import { IsEmail, IsString, Length, Matches, MaxLength } from 'class-validator';
+import { IsEmail, IsString, Matches, MaxLength } from 'class-validator';
+import { IsAcceptablePassword, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from '../password-policy';
 import { ApiProperty } from '@nestjs/swagger';
 
 /** `POST /auth/forgot-password`: always answers the same message, whatever the address (no account enumeration). */
@@ -16,8 +17,8 @@ export class ResetPasswordDto {
   @Matches(/^[0-9a-f]{64}$/i, { message: 'token must be the 64-character code from the reset link' })
   token: string;
 
-  @ApiProperty({ minLength: 8, maxLength: 72 })
+  @ApiProperty({ minLength: MIN_PASSWORD_LENGTH, maxLength: MAX_PASSWORD_LENGTH })
   @IsString()
-  @Length(8, 72)
+  @IsAcceptablePassword()
   password: string;
 }

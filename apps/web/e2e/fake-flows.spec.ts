@@ -206,7 +206,7 @@ test.describe('employees page uses real accounts', () => {
     await expect(page.getByPlaceholder('Kumar General Store')).toHaveCount(0);
 
     await page.getByPlaceholder('Rajesh Kumar').fill('Invited Cashier');
-    await page.getByPlaceholder('Min. 8 characters').fill('Str0ngPassword!');
+    await page.getByPlaceholder('Min. 12 characters').fill('Str0ngPassword!');
     const accept = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/invitations/accept'));
     await page.getByRole('button', { name: 'Join Shop' }).click();
     expect((await accept).status()).toBe(404);

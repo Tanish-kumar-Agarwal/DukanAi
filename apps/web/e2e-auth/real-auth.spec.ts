@@ -33,7 +33,7 @@ async function registerOwner(page: Page): Promise<Owner> {
   await page.getByPlaceholder('Rajesh Kumar').fill('Real Owner');
   await page.getByPlaceholder('Kumar General Store').fill(owner.shopName);
   await page.getByPlaceholder('rajesh@example.com').fill(owner.email);
-  await page.getByPlaceholder('Min. 8 characters').fill(PASSWORD);
+  await page.getByPlaceholder('Min. 12 characters').fill(PASSWORD);
   await page.getByRole('button', { name: 'Create Store' }).click();
   await page.waitForURL('**/dashboard');
   return owner;

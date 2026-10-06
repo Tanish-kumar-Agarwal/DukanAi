@@ -1444,6 +1444,44 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   scan, SBOM and control are proven by the jobs; locally the pinned Trivy
   was shown to produce a valid CycloneDX document and `trivy fs` of the
   tree is clean.
+- 9.15 ASVS L2: `docs/security/ASVS_L2.md` is the control-by-control
+  record (Met / N/A / Fixed / Owner; no Open) and `docs/security/
+  PENTEST_SCOPE.md` the scope letter + findings tracker for the owner's
+  external test on staging. What the review changed: the one password rule
+  is `src/auth/password-policy.ts` (`@IsAcceptablePassword()`: 12..72
+  characters after collapsing spaces, a local denylist of common passwords
+  and shapes, the reason never echoes the value) on registration, invitation
+  accept, reset and the new `POST /auth/change-password` (`@AnyAuthenticated`
+  + `@AuthThrottle`, proves the current password, ends every session, emails
+  the account; reset emails too); invitations hash with `BCRYPT_ROUNDS`;
+  `AuthService.validateUser` logs every login outcome and `RolesGuard` warns
+  on a refused role check; the access log line carries `userId`;
+  `NoStoreMiddleware` (registered with the correlation middleware, so the
+  integration fixture has it too) puts `Cache-Control: no-store` on every
+  answer; `.env.production` sets `SESSION_ABSOLUTE_LIFETIME=12h` (ASVS 3.3.2);
+  alert `DukaanAiCredentialFlood` (sustained 429s on `/api/auth/*`, promtool
+  test). The web register / reset forms only changed their copy and
+  `minLength` to 12 (no layout change). Specs: `password-policy.spec.ts`,
+  `roles.guard.spec.ts`, `test/integration/password-policy.integration-spec.ts`,
+  `asvs-controls.integration-spec.ts`. Owner-side rows (§15 of the review)
+  are dated by the owner, never closed from here.
+- 9.16 production limits: `SecurityConfig` defaults = `.env.production` =
+  what compose / Kubernetes run (no env file in the image): general
+  60 / 10 s, 200 / 60 s, 10000 / h per address (were 20 / 100 / 1000, which
+  answered a two-terminal shop 429 within the hour); the brute-force limits
+  (5 / 20 / 100, account 10) are unchanged. `apps/api/load/limits-gate.mjs`
+  (`LOAD_TARGET`; `LIMITS_SHOPS`, `LIMITS_TERMINALS`, `LIMITS_DURATION_S`,
+  `LIMITS_FORWARD_FOR=0` through an edge, `LIMITS_EXPECT_*`, `LIMITS_REPORT`)
+  drives the web's own request mix per shop behind one forwarded address,
+  reads the advertised `X-RateLimit-Limit-*`, requires 0 x 429 with 1.25x
+  headroom on every window and proves the flood and the spread attack are
+  429 at the configured attempt. `scripts/compose-smoke.sh` runs it before
+  the graceful stop (`SMOKE_LIMITS_GATE=0` skips; certify does, its overlay
+  opens the limits for the load profile). `docs/PRODUCTION_LIMITS.md` holds
+  the traffic model, the measurement, the sizing rule per terminal and the
+  billing authority table the owner signs (`BILLING_CASHIER_MAX_*`). The
+  load profile (5.8) still needs the open test limits: it is a latency
+  measurement from one address.
 
 ## Toolchain
 

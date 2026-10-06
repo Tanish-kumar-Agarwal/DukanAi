@@ -38,11 +38,23 @@ export class SecurityConfig {
   @EnvVariable('RATE_LIMIT_SHORT_TTL_MS')
   rateLimitShortTtlMs: number = 10_000;
 
+  /**
+   * General limits per client address (roadmap 9.16, docs/PRODUCTION_LIMITS.md).
+   * A shop's terminals share one address (the shop's NAT; the web server
+   * forwards the browser's address). Per terminal the web's own traffic is a
+   * 7-request page load, 4 dashboard reads every 30 s, notifications every
+   * 60 s and a 5-request sale every 20 s: 24 requests a minute, 1,440 an
+   * hour, and three terminals loading and billing at once burst to 36 in a
+   * second. The defaults keep at least 1.25x headroom over that measured
+   * worst case (`load/limits-gate.mjs` proves it on every compose smoke)
+   * while staying far below an abusive rate; the AUTH_RATE_LIMIT_* values
+   * below are the brute-force limits and stay tight.
+   */
   @IsInt()
   @Min(1)
   @IntegerFromEnv()
   @EnvVariable('RATE_LIMIT_SHORT_LIMIT')
-  rateLimitShortLimit: number = 20;
+  rateLimitShortLimit: number = 60;
 
   @IsInt()
   @Min(1000)
@@ -54,7 +66,7 @@ export class SecurityConfig {
   @Min(1)
   @IntegerFromEnv()
   @EnvVariable('RATE_LIMIT_MEDIUM_LIMIT')
-  rateLimitMediumLimit: number = 100;
+  rateLimitMediumLimit: number = 200;
 
   @IsInt()
   @Min(1000)
@@ -66,7 +78,7 @@ export class SecurityConfig {
   @Min(1)
   @IntegerFromEnv()
   @EnvVariable('RATE_LIMIT_LONG_LIMIT')
-  rateLimitLongLimit: number = 1000;
+  rateLimitLongLimit: number = 10000;
 
   @IsInt()
   @Min(1)

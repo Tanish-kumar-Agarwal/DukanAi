@@ -18,6 +18,7 @@ import { UserMapper, safeUserSelect } from '../users/user.mapper';
 import { ADMIN_ROLES, outranks } from '../auth/role-sets';
 import { EmailService } from '../common/email/email.service';
 import { AppConfig } from '../config/domains/app.config';
+import { SecurityConfig } from '../config/domains/security.config';
 import { isProductionEnv } from '../config/validation/env-rules';
 
 /** Who is acting: the caller's id and role, as JwtStrategy put them on the request. */
@@ -44,6 +45,7 @@ export class InvitationsService {
     private readonly prisma: PrismaService,
     private readonly email: EmailService,
     private readonly appConfig: AppConfig,
+    private readonly securityConfig: SecurityConfig,
   ) {}
 
   async generate(shopId: string, inviter: Actor, data: CreateInvitationDto) {
@@ -126,7 +128,8 @@ export class InvitationsService {
       throw new BadRequestException('This invitation has expired');
     }
 
-    const salt = await bcrypt.genSalt();
+    // The same work factor as registration and reset (ASVS 2.4.x), never bcrypt's default.
+    const salt = await bcrypt.genSalt(this.securityConfig.bcryptRounds);
     const hashedPassword = await bcrypt.hash(data.password, salt);
     const userId = crypto.randomUUID();
 

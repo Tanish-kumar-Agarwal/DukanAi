@@ -82,7 +82,7 @@ export class PasswordResetService {
     const now = new Date();
     const row = await this.prisma.passwordResetToken.findUnique({
       where: { tokenHash: hashToken(rawToken.toLowerCase()) },
-      select: { id: true, userId: true, expiresAt: true, usedAt: true, user: { select: { isDeleted: true, isActive: true } } },
+      select: { id: true, userId: true, expiresAt: true, usedAt: true, user: { select: { email: true, isDeleted: true, isActive: true } } },
     });
     if (!row || row.usedAt || row.expiresAt <= now || row.user.isDeleted || !row.user.isActive) {
       throw new BadRequestException({ message: 'This reset link is invalid or has expired. Request a new one.', code: 'PASSWORD_RESET_INVALID' });
@@ -104,6 +104,67 @@ export class PasswordResetService {
     });
     this.socketSessions.disconnectUser(row.userId, 'Password changed');
     this.logger.log(`Password reset completed for user ${row.userId}`);
+    await this.notifyPasswordChanged(row.user.email, 'the reset link');
     return { message: 'Your password has been changed. Sign in with the new password.' };
+  }
+
+  /**
+   * `POST /auth/change-password` (ASVS 2.1.5, roadmap 9.15): the signed-in
+   * user proves the current password and sets a new one under the policy.
+   * Like a reset it ends every session of the account (tokenVersion bump,
+   * refresh tokens revoked, sockets dropped), so the caller signs in again;
+   * a notification goes to the account's address (ASVS 2.2.3).
+   */
+  async change(userId: string, currentPassword: string, newPassword: string): Promise<{ message: string }> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, password: true, isDeleted: true, isActive: true },
+    });
+    if (!user || user.isDeleted || !user.isActive) {
+      throw new BadRequestException({ message: 'This account cannot change its password.', code: 'PASSWORD_CHANGE_UNAVAILABLE' });
+    }
+    if (!user.password) {
+      // A Google-only account has no password to prove or replace.
+      throw new BadRequestException({ message: 'This account signs in with Google and has no password.', code: 'PASSWORD_NOT_SET' });
+    }
+    if (!(await bcrypt.compare(currentPassword, user.password))) {
+      this.logger.warn(`Password change refused for user ${userId}: current password incorrect`);
+      throw new BadRequestException({ message: 'The current password is incorrect.', code: 'PASSWORD_CURRENT_INVALID' });
+    }
+    if (await bcrypt.compare(newPassword, user.password)) {
+      throw new BadRequestException({ message: 'The new password must differ from the current one.', code: 'PASSWORD_UNCHANGED' });
+    }
+
+    const salt = await bcrypt.genSalt(this.securityConfig.bcryptRounds);
+    const hashed = await bcrypt.hash(newPassword, salt);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: user.id },
+        data: { password: hashed, tokenVersion: { increment: 1 }, isLocked: false, lockedUntil: null, failedAttempts: 0 },
+      });
+      await tx.refreshToken.updateMany({ where: { userId: user.id, isRevoked: false }, data: { isRevoked: true } });
+    });
+    this.socketSessions.disconnectUser(user.id, 'Password changed');
+    this.logger.log(`Password changed by user ${user.id}; every session ended`);
+    await this.notifyPasswordChanged(user.email, 'the account settings');
+    return { message: 'Your password has been changed. Sign in again with the new password.' };
+  }
+
+  /** ASVS 2.2.3: the account learns of a credential change by email; a delivery problem never undoes the change. */
+  private async notifyPasswordChanged(email: string, how: string): Promise<void> {
+    try {
+      await this.email.send({
+        to: email,
+        subject: 'Your DukaanAI password was changed',
+        text: [
+          `The password of your DukaanAI account was changed just now through ${how}, and every signed-in session was ended.`,
+          '',
+          'If this was you, sign in again with the new password.',
+          'If it was not you, use "Forgot password" on the sign-in page at once and contact the shop owner.',
+        ].join('\n'),
+      });
+    } catch (err) {
+      this.logger.warn(`Password change notification to ${email} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }

@@ -172,3 +172,29 @@ tests:
             exp_annotations:
               summary: "The certificate of https://api.example.com/api/health/ready expires in under 14 days"
               description: "Automatic renewal has not happened (Caddy: ports 80/443 reachable, DNS; cert-manager: the Certificate resource). Renew before it lapses."
+
+  # Abuse (roadmap 9.15): a sustained flood of refused credential attempts
+  # warns after ten minutes; a handful of 429s (a mistyped password) does not.
+  - interval: 1m
+    input_series:
+      # 429s on login: 12 per minute (0.2/s) from t=0 -> above 0.1/s
+      - series: 'http_requests_total{job="dukaanai-api", instance="api:3002", method="POST", route="/api/auth/login", status="429"}'
+        values: '0+12x30'
+      # a few 429s on register, then none: 1 per minute (0.017/s)
+      - series: 'http_requests_total{job="dukaanai-api", instance="api:3002", method="POST", route="/api/auth/register", status="429"}'
+        values: '0+1x30'
+      # 429s elsewhere never count
+      - series: 'http_requests_total{job="dukaanai-api", instance="api:3002", method="GET", route="/api/products", status="429"}'
+        values: '0+100x30'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: DukaanAiCredentialFlood
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: DukaanAiCredentialFlood
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Credential routes are rate-limiting a sustained flood"
+              description: "0.22 login/register/refresh attempts per second have been refused with 429 for 10 minutes. The limits hold (docs/PRODUCTION_LIMITS.md); read the access log for the source addresses and accounts (event=http, status=429, route=/api/auth/...) and block the source at the edge if it persists."

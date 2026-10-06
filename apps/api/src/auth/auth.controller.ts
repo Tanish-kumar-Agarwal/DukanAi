@@ -21,6 +21,8 @@ import { AnyAuthenticated } from './/any-authenticated.decorator';
 import { AuthThrottle } from '../common/throttling/auth-throttle.decorator';
 import { PasswordResetService } from './password-reset.service';
 import { ForgotPasswordDto, ResetPasswordDto } from './dto/password-reset.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
+import { CurrentUser } from '../iam/decorators';
 
 interface AuthenticatedRequest extends ExpressRequest {
   /** `sessionId` is set by JwtStrategy from the token's `sid` claim. */
@@ -111,6 +113,15 @@ export class AuthController {
   @ApiOperation({ summary: 'Set a new password with the emailed token; ends every session of the account' })
   resetPassword(@Body() body: ResetPasswordDto): Promise<{ message: string }> {
     return this.passwordReset.reset(body.token, body.password);
+  }
+
+  @AnyAuthenticated()
+  @AuthThrottle()
+  @Post('change-password')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Change the password of the signed-in account (proves the current one; every session ends, ASVS 2.1.5)' })
+  changePassword(@CurrentUser('id') userId: string, @Body() body: ChangePasswordDto): Promise<{ message: string }> {
+    return this.passwordReset.change(userId, body.currentPassword, body.newPassword);
   }
 
   @AnyAuthenticated()

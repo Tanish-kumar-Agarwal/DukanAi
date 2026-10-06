@@ -25,6 +25,14 @@ regexes = [
   '''integration-secret-0123456789''',
 ]
 
+# The common-password denylist (roadmap 9.15, ASVS 2.1.7): quoted lower-case
+# entries such as 'passwordpassword' or 'secret123456' that the policy refuses.
+[[allowlists]]
+description = "password policy denylist entries"
+paths = ['''apps/api/src/auth/password-policy\.ts$''']
+regexTarget = "line"
+regexes = ['''^\s*'[a-z0-9!@#$%^&*._\[\]=-]{12,32}',\s*$''']
+
 # The NestJS README badge that shipped with the scaffold: a public shields.io
 # URL whose `token` query parameter is a decoy.
 [[allowlists]]
