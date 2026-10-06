@@ -3,6 +3,7 @@
 This checklist enforces the exact execution order required to deploy Epic 1 safely.
 
 ## Phase 1: Environment & Secrets
+- [ ] Every secret comes from the secret store into the host's `.env` (mode 600) or the Kubernetes Secret, is listed in docs/SECRETS.md with its owner, and has been rotated once on staging with the procedure there (roadmap 9.11); staging and production share no secret; the gitleaks step of CI is green on the release commit.
 - [ ] Verify `DATABASE_URL` targets a live MySQL 8.x+ instance with `CREATE TRIGGER` privileges.
 - [ ] Verify `REDIS_URL` points to a Redis 6.2+ instance.
 - [ ] Verify `FRONTEND_URL` exactly matches production CORS origin(s), comma-separated.

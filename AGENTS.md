@@ -1337,6 +1337,32 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   green. Owner-side gates (page on a phone, external checker, staging
   addresses) are recorded in `docs/STAGING.md` / `docs/OBSERVABILITY.md`.
 
+- 9.11 secrets: `docs/SECRETS.md` is the register (every secret, what it
+  protects, who reads it, where it lives, owner, rotation effect and
+  procedure, the rotation log). `src/config/credential-register.spec.ts`
+  fails when a secret-looking variable (`*_SECRET`, `*_PASSWORD`, `*_TOKEN`,
+  `*_API_KEY`, `*_DSN`, `*_WEBHOOK_URL`, `*_ROUTING_KEY`, `*_CRYPT_*`,
+  `*_ACCESS_KEY`/`*_SECRET_KEY`, the four `*_URL`s with credentials) is in
+  a committed template without a register row, or a row names a variable
+  no template documents: a new secret gets a template line AND a row. A
+  `JWT_SECRET` rotation alone only refuses the access tokens (HS256): the
+  opaque refresh tokens keep minting new ones, so the procedure is restart
+  + `npm run sessions:revoke-all -- --yes` (`scripts/revoke-all-sessions.ts`
+  over `src/auth/session-revocation.ts`: every live refresh token revoked
+  and every `tokenVersion` bumped in one transaction; `--user <id|email>`
+  for one account; a dry run without `--yes`), proven by
+  `test/integration/credential-rotation.integration-spec.ts`. A
+  `NEXTAUTH_SECRET` rotation ends every web cookie by itself; the database
+  password rotates with MySQL 8 dual passwords (`RETAIN CURRENT PASSWORD`,
+  then `DISCARD OLD PASSWORD`); the off-site crypt key is never replaced in
+  place (re-ship under a new remote directory, retire the old after the
+  retention window). gitleaks v8.30.0 (release tarball pinned by sha256,
+  no third-party action) scans the tree and the whole history in the CI
+  lint job (`fetch-depth: 0`); `.gitleaks.toml` allowlists the test
+  fixtures by file AND pattern and the NestJS README badge; a real value
+  in those files still fails. The staging rotations themselves wait for
+  staging and are logged in the register.
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and

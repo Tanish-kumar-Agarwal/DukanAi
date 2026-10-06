@@ -589,9 +589,10 @@ backup as the step before `migrate deploy`.
   documents backup above, nightly, shipped off-site with the dumps. The
   rest of the uploads volume (`imports`, `exports`, `tmp`) is reproducible
   and not archived.
-- Secrets (`.env`): `JWT_SECRET` (a new one ends every session),
-  `NEXTAUTH_SECRET`, `METRICS_TOKEN`, `OFFSITE_CRYPT_PASSWORD` (without it
-  the off-site copies are noise), SMTP and Google credentials. Keep them in
-  the secret store, never with the dumps.
+- Secrets (`.env`): `JWT_SECRET` (a new one plus `sessions:revoke-all` ends
+  every session), `NEXTAUTH_SECRET`, `METRICS_TOKEN`,
+  `OFFSITE_CRYPT_PASSWORD` (without it the off-site copies are noise), SMTP
+  and Google credentials. Keep them in the secret store, never with the
+  dumps; the register and the rotation procedures are `docs/SECRETS.md`.
 - Redis needs no backup: queues rebuild from the outbox, caches from the
   database, rate-limit counters and cron locks expire.

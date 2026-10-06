@@ -181,7 +181,10 @@ Web:
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED` | runtime, optional (the flag is inlined at build) | Google sign-in is registered only with real values; the button shows only when the flag is `true` at build time |
 
 `NEXT_PUBLIC_AUTH_DISABLED` and `AUTH_DISABLED` are never set in a container:
-both builds and the API refuse them under `NODE_ENV=production`.
+both builds and the API refuse them under `NODE_ENV=production`. Every
+secret above comes from the secret store; `docs/SECRETS.md` is the register
+(owner, where it lives, rotation procedure) and `npm run sessions:revoke-all`
+the lever that ends every session after a `JWT_SECRET` rotation or a leak.
 
 ## Compose from a fresh clone
 
