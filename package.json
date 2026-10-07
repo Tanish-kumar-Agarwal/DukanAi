@@ -38,5 +38,8 @@
       "js-yaml": "^5.4.2"
     },
     "postcss": "^8.5.28"
+  },
+  "dependencies": {
+    "cross-env": "^10.1.0"
   }
 }
