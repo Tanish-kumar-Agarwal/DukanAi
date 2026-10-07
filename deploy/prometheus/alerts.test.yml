@@ -6,7 +6,8 @@
 rule_files:
   - alerts.yml
 
-evaluation_interval: 1m
+# 15 s, as in prometheus.yml: the 5xx drill regression below depends on it.
+evaluation_interval: 15s
 
 tests:
   - interval: 1m
@@ -107,9 +108,9 @@ tests:
       # every shop clean for ten minutes, then one shop's latest run is DRIFT
       - series: 'reconciliation_shops_with_drift{job="dukaanai-api", instance="api:3002"}'
         values: '0x10 1x10'
-      # a run recorded at t=0 and never again, sampled every minute for 27 h
+      # a run recorded at t=60 s and never again, sampled every minute for 27 h
       - series: 'reconciliation_last_run_timestamp_seconds{job="dukaanai-api", instance="api:3002"}'
-        values: '0x1620'
+        values: '60x1620'
     alert_rule_test:
       - eval_time: 5m
         alertname: DukaanAiReconciliationDrift
@@ -132,7 +133,153 @@ tests:
               severity: warning
             exp_annotations:
               summary: "No financial reconciliation run in 26 hours"
-              description: "The most recent reconciliation run finished 1d 3h 0m 0s ago. Check CRON_ENABLED on at least one instance, CRON_RECONCILIATION, the cron:reconciliation lock and the 'Reconciliation' lines in the API logs; run one by hand with POST /reconciliation/run."
+              description: "The most recent reconciliation run finished 1d 2h 59m 0s ago. Check CRON_ENABLED on at least one instance, CRON_RECONCILIATION, the cron:reconciliation lock and the 'Reconciliation' lines in the API logs; run one by hand with POST /reconciliation/run."
+
+  # A stack where nothing has been reconciled yet exports the gauge as 0
+  # (roadmap 9.18: a fresh drill stack went pending at once): no alert.
+  - interval: 1m
+    input_series:
+      - series: 'reconciliation_last_run_timestamp_seconds{job="dukaanai-api", instance="api:3002"}'
+        values: '0x1620'
+    alert_rule_test:
+      - eval_time: 27h
+        alertname: DukaanAiReconciliationStale
+        exp_alerts: []
+
+  # Failure drills (roadmap 9.18). The 60-second MySQL outage: 5xx for one
+  # minute out of steady traffic (about 2 requests a second) must not page
+  # once users are back; a sustained 6-minute error rate still pages.
+  - interval: 15s
+    input_series:
+      # 2 req/s: requests counter +30 per 15 s; 5xx +30 per 15 s during minutes 5-6 only
+      - series: 'http_requests_total{job="dukaanai-api", instance="api:3002", status="201"}'
+        values: '0+30x20 600+0x4 600+30x60'
+      - series: 'http_requests_total{job="dukaanai-api", instance="api:3002", status="503"}'
+        values: '0+0x20 0+30x4 120+0x60'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: DukaanAiHigh5xxRate
+        exp_alerts: []
+      # over a 5-minute ratio this is where the old rule paged, 4.5 minutes after recovery
+      - eval_time: 10m30s
+        alertname: DukaanAiHigh5xxRate
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: DukaanAiHigh5xxRate
+        exp_alerts: []
+  - interval: 15s
+    input_series:
+      - series: 'http_requests_total{job="dukaanai-api", instance="api:3002", status="201"}'
+        values: '0+30x80'
+      - series: 'http_requests_total{job="dukaanai-api", instance="api:3002", status="500"}'
+        values: '0+0x20 0+3x60'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: DukaanAiHigh5xxRate
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: DukaanAiHigh5xxRate
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "More than 1% of API answers are 5xx"
+              description: "9.091% of requests have failed server-side for 5 minutes. Read the JSON logs for the correlation ids of the 500s and the error tracker for the stack traces; 503 DATABASE_UNAVAILABLE and 507 STORAGE_FULL name their cause in the answer."
+
+  # Redis down for six minutes: sales keep answering 201, the readiness route
+  # answers 503 to every probe (2 a second). That is DukaanAiDependencyDown's
+  # page, not a user-facing 5xx rate.
+  - interval: 15s
+    input_series:
+      - series: 'http_requests_total{job="dukaanai-api", instance="api:3002", route="/api/billing/invoice", status="201"}'
+        values: '0+15x60'
+      - series: 'http_requests_total{job="dukaanai-api", instance="api:3002", route="/api/health/ready", status="503"}'
+        values: '0+0x8 0+30x24 720+0x28'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: DukaanAiHigh5xxRate
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: DukaanAiHigh5xxRate
+        exp_alerts: []
+
+  # A dependency down for two minutes pages and names itself; a 75-second
+  # blip (database away from 2m15s to 3m15s) does not, not even once two
+  # minutes have passed since it began.
+  - interval: 15s
+    input_series:
+      - series: 'dependency_up{job="dukaanai-api", instance="api:3002", dependency="database"}'
+        values: '1x8 0x4 1x8 0x12'
+      - series: 'dependency_up{job="dukaanai-api", instance="api:3002", dependency="redis"}'
+        values: '1x32'
+    alert_rule_test:
+      - eval_time: 4m30s
+        alertname: DukaanAiDependencyDown
+        exp_alerts: []
+      - eval_time: 8m30s
+        alertname: DukaanAiDependencyDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              dependency: database
+            exp_annotations:
+              summary: "The API cannot reach database"
+              description: "Every API instance has failed to reach database for 2 minutes. database: sign-in, sales and every page answer 503 until it is back; check the MySQL host or provider status and the connection limit. redis: sales continue, background jobs wait; check the Redis host. The readiness probe (DukaanAiEndpointDown on /api/health/ready) is held back while this fires."
+
+  # It keeps firing for two minutes after the dependency is back (the probes
+  # that it holds back clear up to a minute later), then resolves. Redis is
+  # away from 1m15s to 5m15s and answers again from 5m30s.
+  - interval: 15s
+    input_series:
+      - series: 'dependency_up{job="dukaanai-api", instance="api:3002", dependency="redis"}'
+        values: '1x4 0x16 1x20'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: DukaanAiDependencyDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              dependency: redis
+            exp_annotations:
+              summary: "The API cannot reach redis"
+              description: "Every API instance has failed to reach redis for 2 minutes. database: sign-in, sales and every page answer 503 until it is back; check the MySQL host or provider status and the connection limit. redis: sales continue, background jobs wait; check the Redis host. The readiness probe (DukaanAiEndpointDown on /api/health/ready) is held back while this fires."
+      - eval_time: 8m30s
+        alertname: DukaanAiDependencyDown
+        exp_alerts: []
+
+  # A volume filling up warns at 10 % free after 15 minutes and pages at 2 %
+  # after a minute (the storage-full drill fills it to the last byte).
+  - interval: 1m
+    input_series:
+      - series: 'storage_volume_size_bytes{job="dukaanai-api", instance="api:3002", volume="storage"}'
+        values: '1000000x40'
+      - series: 'storage_volume_free_bytes{job="dukaanai-api", instance="api:3002", volume="storage"}'
+        values: '500000x5 80000x20 0x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DukaanAiStorageLow
+        exp_alerts: []
+      - eval_time: 22m
+        alertname: DukaanAiStorageLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              volume: storage
+            exp_annotations:
+              summary: "The storage volume has less than 10% free"
+              description: "8% of the storage volume is free. Grow the disk (docs/DEPLOYMENT.md, production topology) or remove what is reproducible (imports/, exports/, tmp/ under the uploads volume) before documents are refused."
+      - eval_time: 25m
+        alertname: DukaanAiStorageFull
+        exp_alerts: []
+      - eval_time: 28m
+        alertname: DukaanAiStorageFull
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              volume: storage
+            exp_annotations:
+              summary: "The storage volume is full"
+              description: "Only 0% of the storage volume is free: bill photos, invoice PDFs and statements are refused with 507 STORAGE_FULL (sales continue). Free or grow the volume now; nothing partial is kept, so users repeat the upload once space is back."
 
   # Uptime (roadmap 9.10): a probe that fails for two minutes pages; a
   # certificate inside 14 days of expiry warns after an hour.
@@ -143,7 +290,7 @@ tests:
       - series: 'probe_success{job="blackbox-login", instance="http://web:3000/login"}'
         values: '1x16'
       # expiry 10 days after the test epoch (the clock starts at 0)
-      - series: 'probe_ssl_earliest_cert_expiry{job="blackbox-http", instance="https://api.example.com/api/health/ready"}'
+      - series: 'probe_ssl_earliest_cert_expiry{job="blackbox-tls", instance="https://api.example.com/api/health/ready"}'
         values: '864000x120'
     alert_rule_test:
       - eval_time: 6m
@@ -158,7 +305,7 @@ tests:
               instance: http://api:3002/api/health/ready
             exp_annotations:
               summary: "http://api:3002/api/health/ready has failed its probe for 2 minutes"
-              description: "The readiness route or the login page does not answer as expected (blackbox-http). Check the edge, then GET /api/health/ready for the failing dependency."
+              description: "The readiness route or the login page does not answer as expected (blackbox-http). Check the edge, then GET /api/health/ready for the failing dependency. An expired certificate pages as DukaanAiCertificateExpired and holds this alert back; a certificate that does not verify for another reason (wrong name, incomplete chain, unknown issuer) fails this probe too: curl -vI the address."
       - eval_time: 30m
         alertname: DukaanAiCertificateExpiring
         exp_alerts: []
@@ -167,11 +314,75 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: warning
-              job: blackbox-http
+              job: blackbox-tls
               instance: https://api.example.com/api/health/ready
             exp_annotations:
               summary: "The certificate of https://api.example.com/api/health/ready expires in under 14 days"
               description: "Automatic renewal has not happened (Caddy: ports 80/443 reachable, DNS; cert-manager: the Certificate resource). Renew before it lapses."
+
+  # Certificate expiry (roadmap 9.18): the certificate of app.example.com
+  # lapses 30 minutes in. Its warning was still pending (it needs an hour)
+  # and simply ends; DukaanAiCertificateExpired pages on the same
+  # evaluation, naming the cause. The verified login probe fails from then
+  # on and its DukaanAiEndpointDown fires two minutes later (Alertmanager
+  # holds it back while the certificate alert fires). At 40 minutes a
+  # renewed certificate is read; the page keeps firing for two more minutes
+  # so the probe recovers while it is still held back. The API address,
+  # renewed 90 days out, warns of nothing.
+  - interval: 1m
+    input_series:
+      - series: 'probe_ssl_earliest_cert_expiry{job="blackbox-tls", instance="https://app.example.com/login"}'
+        values: '1800x40 7776000x20'
+      - series: 'probe_success{job="blackbox-login", instance="https://app.example.com/login"}'
+        values: '1x30 0x30'
+      - series: 'probe_ssl_earliest_cert_expiry{job="blackbox-tls", instance="https://api.example.com/api/health/ready"}'
+        values: '7776000x60'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: DukaanAiCertificateExpired
+        exp_alerts: []
+      - eval_time: 29m
+        alertname: DukaanAiCertificateExpiring
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: DukaanAiCertificateExpired
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: blackbox-tls
+              instance: https://app.example.com/login
+            exp_annotations:
+              summary: "The certificate of https://app.example.com/login has expired"
+              description: "Every browser refuses this address and every client call to it fails (certificate has expired). Renew now: Caddy renews on restart when ports 80/443 and DNS are right (docker compose logs edge); cert-manager: kubectl describe certificate. The failing probe of the same address (DukaanAiEndpointDown) is held back while this fires."
+      - eval_time: 30m
+        alertname: DukaanAiCertificateExpiring
+        exp_alerts: []
+      - eval_time: 34m
+        alertname: DukaanAiEndpointDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: blackbox-login
+              instance: https://app.example.com/login
+            exp_annotations:
+              summary: "https://app.example.com/login has failed its probe for 2 minutes"
+              description: "The readiness route or the login page does not answer as expected (blackbox-login). Check the edge, then GET /api/health/ready for the failing dependency. An expired certificate pages as DukaanAiCertificateExpired and holds this alert back; a certificate that does not verify for another reason (wrong name, incomplete chain, unknown issuer) fails this probe too: curl -vI the address."
+      - eval_time: 41m
+        alertname: DukaanAiCertificateExpired
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: blackbox-tls
+              instance: https://app.example.com/login
+            exp_annotations:
+              summary: "The certificate of https://app.example.com/login has expired"
+              description: "Every browser refuses this address and every client call to it fails (certificate has expired). Renew now: Caddy renews on restart when ports 80/443 and DNS are right (docker compose logs edge); cert-manager: kubectl describe certificate. The failing probe of the same address (DukaanAiEndpointDown) is held back while this fires."
+      - eval_time: 43m
+        alertname: DukaanAiCertificateExpired
+        exp_alerts: []
+      - eval_time: 59m
+        alertname: DukaanAiCertificateExpiring
+        exp_alerts: []
 
   # Abuse (roadmap 9.15): a sustained flood of refused credential attempts
   # warns after ten minutes; a handful of 429s (a mistyped password) does not.

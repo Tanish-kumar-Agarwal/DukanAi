@@ -1,22 +1,38 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ModulesContainer } from '@nestjs/core';
 import { promises as fs } from 'fs';
+import type Redis from 'ioredis';
 import * as path from 'path';
 import { MonitoringConfig } from '../../config/domains/monitoring.config';
+import { StorageConfig } from '../../config/domains/storage.config';
+import { UploadConfig } from '../../config/domains/upload.config';
+import { REDIS_CLIENT } from '../redis/redis.module';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 import { queueInstances } from '../lifecycle/queue-readiness';
 import {
   backupLastSuccessTimestampSeconds,
+  dependencyUp,
   outboxOldestPendingAgeSeconds,
   outboxRows,
   queueJobs,
   reconciliationLastRunTimestampSeconds,
   reconciliationShopsWithDrift,
+  storageVolumeFreeBytes,
+  storageVolumeSizeBytes,
 } from './metrics';
 
 const OUTBOX_STATUSES = ['PENDING', 'CLAIMED', 'PROCESSING', 'DONE', 'FAILED'] as const;
 const QUEUE_STATES = ['waiting', 'active', 'delayed', 'failed'] as const;
+
+/**
+ * Each source must answer within this, or its gauges keep their previous
+ * values for this scrape (roadmap 9.18): Prometheus' scrape timeout is 10 s,
+ * and a scrape that hangs on one dead dependency reads as "API down".
+ */
+export const COLLECTOR_BUDGET_MS = 2_500;
+/** A dependency probe that has not answered within this counts the dependency down (the readiness probe uses the same 2 s). */
+export const DEPENDENCY_PROBE_MS = 2_000;
 
 /** `<kind>.last-success`: the kind is lower-case letters only (dump, binlog, documents, offsite). */
 const STATUS_FILE = /^([a-z]+)\.last-success$/;
@@ -24,9 +40,15 @@ const STATUS_FILE = /^([a-z]+)\.last-success$/;
 /**
  * Gauges that are read, not counted (roadmap 7.6): outbox lag and depth from
  * the database, queue depth from BullMQ, and the backup jobs' last success
- * from the status files (roadmap 9.4). Refreshed on every scrape by
- * `MetricsController`, each source independently, so a Redis outage still
- * leaves the outbox figures current (and vice versa).
+ * from the status files (roadmap 9.4), the reachability of the database and
+ * Redis and the free space of the volumes the API writes to (roadmap 9.18).
+ * Refreshed on every scrape by `MetricsController`. The dependencies are
+ * probed first; a source that needs a dependency that is down is skipped, and
+ * every source is bounded by COLLECTOR_BUDGET_MS, so a Redis or database
+ * outage leaves the other figures current and the scrape itself answering
+ * (the first Redis drill found BullMQ's job counts waiting for Redis forever,
+ * the scrape timing out and DukaanAiApiDown paging for an API that was
+ * selling).
  */
 @Injectable()
 export class ObservabilityCollectorsService {
@@ -37,10 +59,93 @@ export class ObservabilityCollectorsService {
     private readonly tenantContext: TenantContextService,
     private readonly modules: ModulesContainer,
     private readonly monitoring: MonitoringConfig,
+    @Optional() @Inject(REDIS_CLIENT) private readonly redis?: Redis,
+    @Optional() private readonly storageConfig?: StorageConfig,
+    @Optional() private readonly uploadConfig?: UploadConfig,
   ) {}
 
   async refresh(): Promise<void> {
-    await Promise.all([this.refreshOutbox(), this.refreshQueues(), this.refreshBackupStatus(), this.refreshReconciliation()]);
+    const deps = await this.refreshDependencies();
+    await Promise.all([
+      this.bounded('backup status', this.refreshBackupStatus()),
+      this.bounded('storage volumes', this.refreshStorageVolumes()),
+      deps.database ? this.bounded('outbox', this.refreshOutbox()) : Promise.resolve(),
+      deps.database ? this.bounded('reconciliation', this.refreshReconciliation()) : Promise.resolve(),
+      deps.redis ? this.bounded('queues', this.refreshQueues()) : this.skipQueues(),
+    ]);
+  }
+
+  /** Resolves when the work settles or the budget runs out, whichever is first; never rejects. */
+  private async bounded(source: string, work: Promise<void>): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<'late'>((resolve) => {
+      timer = setTimeout(() => resolve('late'), COLLECTOR_BUDGET_MS);
+    });
+    try {
+      const outcome = await Promise.race([work.then(() => 'done' as const), late]);
+      if (outcome === 'late') this.logger.warn(`${source} metrics not refreshed within ${COLLECTOR_BUDGET_MS} ms; the previous values stay`);
+    } catch (error) {
+      this.logger.warn(`${source} metrics not refreshed: ${(error as Error).message}`);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private async probe(check: () => Promise<unknown>): Promise<boolean> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('timed out')), DEPENDENCY_PROBE_MS);
+    });
+    try {
+      await Promise.race([check(), timeout]);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** `dependency_up{dependency}`: SELECT 1 on the database, PING on the shared Redis client. */
+  async refreshDependencies(): Promise<{ database: boolean; redis: boolean }> {
+    const [database, redis] = await Promise.all([
+      this.probe(() => this.prisma.$queryRaw`SELECT 1`),
+      this.redis ? this.probe(() => this.redis!.ping()) : Promise.resolve(true),
+    ]);
+    dependencyUp.set({ dependency: 'database' }, database ? 1 : 0);
+    if (this.redis) dependencyUp.set({ dependency: 'redis' }, redis ? 1 : 0);
+    return { database, redis };
+  }
+
+  /**
+   * Redis is down: BullMQ's counts would wait for it (its connections retry
+   * forever), so the queue series are dropped for this scrape rather than
+   * reported stale; the backlog alerts resume when Redis is back.
+   */
+  private async skipQueues(): Promise<void> {
+    queueJobs.reset();
+  }
+
+  /**
+   * Free and total bytes of the volume under the storage root and under the
+   * upload temp directory (statfs: what an unprivileged writer may use).
+   * A path that does not exist yet is measured at its nearest existing parent.
+   */
+  async refreshStorageVolumes(): Promise<void> {
+    const volumes: Array<[string, string | undefined]> = [
+      ['storage', this.storageConfig ? path.resolve(this.storageConfig.storageRoot || path.join(process.cwd(), 'data', 'storage')) : undefined],
+      ['uploads', this.uploadConfig ? path.resolve(this.uploadConfig.tempDir) : undefined],
+    ];
+    for (const [volume, dir] of volumes) {
+      if (!dir) continue;
+      try {
+        const stats = await fs.statfs(await nearestExisting(dir));
+        storageVolumeFreeBytes.set({ volume }, Number(stats.bavail) * Number(stats.bsize));
+        storageVolumeSizeBytes.set({ volume }, Number(stats.blocks) * Number(stats.bsize));
+      } catch (error) {
+        this.logger.warn(`Storage volume ${volume} not measured: ${(error as Error).message}`);
+      }
+    }
   }
 
   /**
@@ -143,5 +248,20 @@ export class ObservabilityCollectorsService {
         }
       }),
     );
+  }
+}
+
+/** The directory itself, or the closest ancestor that exists (statfs needs an existing path). */
+async function nearestExisting(dir: string): Promise<string> {
+  let current = dir;
+  for (;;) {
+    try {
+      await fs.access(current);
+      return current;
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return current;
+      current = parent;
+    }
   }
 }

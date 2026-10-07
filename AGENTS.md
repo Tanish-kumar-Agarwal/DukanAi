@@ -1535,6 +1535,49 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   report the driver merges. certify runs a 6-minute day with compose as
   the hook runner (`step_business_day`). `docs/BUSINESS_DAY.md` records the
   runs; `js-yaml` is an API devDependency for the plan.
+- 9.18 failure drills (`scripts/drills/`, `docs/DRILLS.md`): `drill.mjs
+  <api-kill|mysql-stop|redis-stop|storage-full|tls-expiry|offsite-restore>`
+  runs users through the public edge (a cashier retrying one sale with the
+  same key, the owner's dashboard, the login page, a Smart Capture photo,
+  the readiness probe), reads Prometheus and Alertmanager every 10 s,
+  injects the fault through `DRILL_HOOK` / `DRILL_HOOK_<NAME>` commands, and
+  fails on a lost or duplicated sale, a user path that never recovers, an
+  expected alert that never fires or a non-CLEAN reconciliation. The
+  browser observer (`apps/web/e2e-drills`, `playwright.drill.config.ts`)
+  records what the POS and dashboard screens said (dashboard status badges
+  too: a failed poll keeps the figures and says "Refresh failed"); its
+  receipts count as sales. `drill-stack.sh up|run|all|down` is the local production-shaped
+  stack (the reference compose + edge + monitoring, `compose.drill.yml`:
+  tmpfs storage/uploads volumes, drill CA certificates swapped by `tls
+  valid|near|expired`, Prometheus with the public probe targets enabled,
+  `local:/offsite`); certify runs `all` after teardown (`step_drills`).
+  What the drills changed, keep it so: a database outage is 503
+  `DATABASE_UNAVAILABLE` + `Retry-After` (`isDatabaseUnavailable`, never
+  tracked as a bug), a full volume 507 `STORAGE_FULL` with nothing partial
+  kept (`writeAllEvidence`, `writeJsonAtomic`; the action log never fails a
+  stored document); the POS and return dialog offer Retry on any 5xx
+  (`isRetryableFailure`), and the POS's own loads (shop, shift, product grid
+  and search) retry in the background after a network or 5xx failure
+  (`backgroundRetryDelayMs`; a POS opened during an API restart, i.e. any
+  deploy with one replica, stayed unscoped until reloaded); the Keyv cache store runs with
+  `disableOfflineQueue` (it queued every command while Redis was away, so
+  each sale hung on its post-commit invalidation); the metrics scrape
+  probes the dependencies first (`dependency_up`), skips what needs a dead
+  one and bounds every source (it used to hang on BullMQ during a Redis
+  outage and page DukaanAiApiDown); `storage_volume_*` gauges feed
+  DukaanAiStorageLow/Full; DukaanAiHigh5xxRate uses a 2 min ratio and leaves
+  `/api/health*` out, and DukaanAiDependencyDown (`keep_firing_for: 2m`, so
+  the probe recovers first) inhibits the readiness probe's
+  DukaanAiEndpointDown. The certificate alerts read job `blackbox-tls`
+  (module `tls_certificate`, the certificate read whether or not it
+  verifies): on the verified probes the series vanished at expiry, the
+  warning resolved and an unexplained EndpointDown paged; now
+  DukaanAiCertificateExpired pages at once and holds back the EndpointDown
+  of the same instance (`keep_firing_for: 2m` too). The reference `docker-compose.yml` passes
+  `API_PUBLIC_URL` to the web (behind the edge it served
+  `http://localhost:3002` to browsers). Docker on this machine: Debian
+  mirrors are blocked, so images build on a sandbox-only base with
+  `--build-arg NODE_VERSION=22.22.2-sandbox` (see DRILLS.md §5).
 
 ## Toolchain
 

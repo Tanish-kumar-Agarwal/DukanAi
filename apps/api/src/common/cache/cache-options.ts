@@ -19,7 +19,8 @@ export const CACHE_NAMESPACE = 'cache';
  * only fit for a single development process.
  *
  * Redis errors never fail a request: the Keyv store swallows them (a miss),
- * they are logged, and the callers already treat the cache as advisory.
+ * they are logged, and the callers already treat the cache as advisory. They
+ * never stall one either: commands are not queued while Redis is unreachable.
  */
 export function buildCacheOptions(redisConfig: RedisConfig, cacheConfig: CacheConfig, logger: Logger = new Logger('CacheModule')): CacheModuleOptions {
   if (!redisConfig.redisUrl) {
@@ -28,7 +29,20 @@ export function buildCacheOptions(redisConfig: RedisConfig, cacheConfig: CacheCo
   }
   // Keyv hands its namespace to the adapter, which prefixes every key once as
   // `cache:<key>`; Keyv's own prefix is switched off so it is not applied twice.
-  const store = new KeyvRedis(redisConfig.redisUrl, { keyPrefixSeparator: ':', useUnlink: true, throwOnErrors: false });
+  // Fail fast while Redis is away (roadmap 9.18): node-redis queues commands
+  // offline by default and resolves them only when Redis returns, so during
+  // the 5-minute Redis drill every checkout (its post-commit invalidation)
+  // and every dashboard read hung until the client gave up. With the offline
+  // queue off a command answers at once with an error, which Keyv turns into
+  // a miss; the client keeps reconnecting in the background.
+  const store = new KeyvRedis(
+    {
+      url: redisConfig.redisUrl,
+      disableOfflineQueue: true,
+      socket: { connectTimeout: redisConfig.connectTimeoutMs, reconnectStrategy: (retries: number) => Math.min(100 * 2 ** retries, 2_000) },
+    },
+    { keyPrefixSeparator: ':', useUnlink: true, throwOnErrors: false, connectionTimeout: redisConfig.connectTimeoutMs },
+  );
   const keyv = new Keyv({ store, ttl: cacheConfig.ttl, namespace: CACHE_NAMESPACE, useKeyPrefix: false });
   // Keyv re-emits the adapter's errors; without a listener they would be unhandled.
   keyv.on('error', (error: unknown) => logger.warn(`Cache store error: ${error instanceof Error ? error.message : String(error)}`));

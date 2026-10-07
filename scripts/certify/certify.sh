@@ -25,6 +25,9 @@
 #   restore-docs  scripts/storage/restore-drill.sh on a copy of the stack's storage volume
 #   restore-offsite  scripts/backup/offsite-drill.sh (encrypted copy, clean fetch, restore)
 #   teardown      container logs into the bundle, then `docker compose down -v` (not with --keep)
+#   drills        the failure drills of roadmap 9.18 (scripts/drills/drill-stack.sh all) on a
+#                 drill stack of the same images, evidence under drills/ (CERTIFY_DRILLS=0 skips,
+#                 CERTIFY_DRILL_TLS_WARN_SECONDS adds the near-expiry certificate stage)
 #
 # Needs: docker (compose v2), node, npm with the workspace installed (`npm ci`,
 # invoice-math built: the suites boot the fixture module from the checkout),
@@ -246,6 +249,29 @@ step_teardown() {
   "${COMPOSE[@]}" --profile ops --profile edge down -v --remove-orphans
 }
 
+# Roadmap 9.18: the failure drills on a drill stack of the same three images
+# (after the main stack is gone, so the ports are free): the API killed during
+# a checkout burst, MySQL stopped 60 s, Redis stopped 5 minutes, the documents
+# volume filled, an expired edge certificate, the database restored from the
+# off-site copy to the second before a chosen sale. Each drill records what
+# users (and a browser) saw, what Prometheus and Alertmanager said, the time to
+# recovery and the reconciliation afterwards, and fails on a lost or
+# duplicated sale, a user path that never recovers, an expected alert that
+# never fires or a reconciliation that is not CLEAN.
+step_drills() {
+  [ "${CERTIFY_DRILLS:-1}" = "1" ] || { echo "CERTIFY_DRILLS=0"; return 0; }
+  docker tag "$API_IMAGE" dukaanai-api && docker tag "$WEB_IMAGE" dukaanai-web && docker tag "$DB_OPS_IMAGE" dukaanai-db-ops || return 1
+  local dir="$OUT/drills-work" rc=0
+  mkdir -p "$dir"
+  DRILL_DIR="$dir" bash scripts/drills/drill-stack.sh up || { DRILL_DIR="$dir" bash scripts/drills/drill-stack.sh down >/dev/null 2>&1; return 1; }
+  DRILL_DIR="$dir" DRILL_TLS_WARN_SECONDS="${CERTIFY_DRILL_TLS_WARN_SECONDS:-0}" bash scripts/drills/drill-stack.sh all || rc=$?
+  mkdir -p "$OUT/drills" && cp -r "$dir/evidence/." "$OUT/drills/" 2>/dev/null
+  DRILL_DIR="$dir" bash scripts/drills/drill-stack.sh compose logs --no-color --tail=400 api web edge > "$OUT/drills/compose-logs.txt" 2>&1 || true
+  DRILL_DIR="$dir" bash scripts/drills/drill-stack.sh down >/dev/null 2>&1 || true
+  rm -rf "$dir"
+  return $rc
+}
+
 # ---- run -------------------------------------------------------------------
 run_step prepare "the checkout can boot the fixture module (prisma client generated, invoice-math built, workspace installed)" step_prepare
 run_step images "digests and metadata of the three images" step_images
@@ -263,6 +289,7 @@ run_step restore-db "database backup and restore drill with point in time (--pit
 run_step restore-docs "documents backup and restore drill on a copy of the stack's storage root and media" step_restore_docs
 run_step restore-offsite "off-site drill: encrypted copy to a local remote, clean-machine fetch, documents and dump restored" step_restore_offsite
 run_step teardown "container logs into the bundle, then docker compose down -v" step_teardown
+run_step drills "failure drills (roadmap 9.18) on a drill stack of the images: API killed in a checkout burst, MySQL 60 s, Redis 5 min, storage volume full, expired certificate, off-site restore to before a chosen sale; users, alerts, recovery, reconciliation" step_drills
 
 # ---- summary -----------------------------------------------------------------
 FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

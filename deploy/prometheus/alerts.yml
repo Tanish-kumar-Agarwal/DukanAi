@@ -19,22 +19,72 @@ groups:
 
       # ---- 5xx rate -------------------------------------------------------
       # More than 1 % of answers are server errors, with enough traffic to
-      # mean something (at least one request every 10 s on average).
+      # mean something (at least one request every 10 s on average), for five
+      # minutes in a row. The ratio is taken over 2 minutes: over 5 minutes,
+      # the 60-second MySQL drill (roadmap 9.18) kept the trailing ratio above
+      # 1 % long enough to page on-call 4.5 minutes AFTER every user had
+      # recovered. Outages shorter than about 3 minutes are the probes' job
+      # (DukaanAiEndpointDown, DukaanAiDependencyDown); this one is for a
+      # sustained error rate. The readiness route is left out: it answers 503
+      # by design while a dependency is away, and the probes polling it made
+      # the 5-minute Redis drill page "5xx" while every sale succeeded.
       - alert: DukaanAiHigh5xxRate
         expr: |
           (
-            sum(rate(http_requests_total{job="dukaanai-api", status=~"5.."}[5m]))
+            sum(rate(http_requests_total{job="dukaanai-api", status=~"5..", route!~"/api/health.*"}[2m]))
               /
-            sum(rate(http_requests_total{job="dukaanai-api"}[5m]))
+            sum(rate(http_requests_total{job="dukaanai-api", route!~"/api/health.*"}[2m]))
           ) > 0.01
           and
-          sum(rate(http_requests_total{job="dukaanai-api"}[5m])) > 0.1
+          sum(rate(http_requests_total{job="dukaanai-api", route!~"/api/health.*"}[2m])) > 0.1
         for: 5m
         labels:
           severity: critical
         annotations:
           summary: "More than 1% of API answers are 5xx"
-          description: "{{ $value | humanizePercentage }} of requests failed server-side over the last 5 minutes. Read the JSON logs for the correlation ids of the 500s and the error tracker for the stack traces."
+          description: "{{ $value | humanizePercentage }} of requests have failed server-side for 5 minutes. Read the JSON logs for the correlation ids of the 500s and the error tracker for the stack traces; 503 DATABASE_UNAVAILABLE and 507 STORAGE_FULL name their cause in the answer."
+
+      # ---- dependencies (roadmap 9.18) -----------------------------------
+      # dependency_up is probed on every scrape (SELECT 1, Redis PING, 2 s
+      # each). While the database is away every request answers 503
+      # DATABASE_UNAVAILABLE; while Redis is away sales continue (stock keys,
+      # cache and rate-limit counters fall back in-process) but queued work
+      # (outbox relays, webhooks, imports) waits. Two minutes, like the probes.
+      # keep_firing_for: the minute-long probes clear up to a minute after the
+      # dependency is back; while this keeps firing their EndpointDown stays
+      # held back, so recovery never sends a late page (the Redis drill saw a
+      # 50-second gap without it).
+      - alert: DukaanAiDependencyDown
+        expr: min by (dependency) (dependency_up{job="dukaanai-api"}) == 0
+        for: 2m
+        keep_firing_for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The API cannot reach {{ $labels.dependency }}"
+          description: "Every API instance has failed to reach {{ $labels.dependency }} for 2 minutes. database: sign-in, sales and every page answer 503 until it is back; check the MySQL host or provider status and the connection limit. redis: sales continue, background jobs wait; check the Redis host. The readiness probe (DukaanAiEndpointDown on /api/health/ready) is held back while this fires."
+
+      # ---- storage volumes (roadmap 9.18) --------------------------------
+      # Free space of the volumes under STORAGE_ROOT (documents) and
+      # UPLOAD_TEMP_DIR (uploads in flight), from statfs on every scrape.
+      # Sales live in MySQL and continue on a full documents volume; bill
+      # photos, invoice PDFs and statements are refused (507 STORAGE_FULL).
+      - alert: DukaanAiStorageLow
+        expr: min by (volume) (storage_volume_free_bytes{job="dukaanai-api"} / storage_volume_size_bytes{job="dukaanai-api"}) < 0.10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The {{ $labels.volume }} volume has less than 10% free"
+          description: "{{ $value | humanizePercentage }} of the {{ $labels.volume }} volume is free. Grow the disk (docs/DEPLOYMENT.md, production topology) or remove what is reproducible (imports/, exports/, tmp/ under the uploads volume) before documents are refused."
+      - alert: DukaanAiStorageFull
+        expr: min by (volume) (storage_volume_free_bytes{job="dukaanai-api"} / storage_volume_size_bytes{job="dukaanai-api"}) < 0.02
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The {{ $labels.volume }} volume is full"
+          description: "Only {{ $value | humanizePercentage }} of the {{ $labels.volume }} volume is free: bill photos, invoice PDFs and statements are refused with 507 STORAGE_FULL (sales continue). Free or grow the volume now; nothing partial is kept, so users repeat the upload once space is back."
 
       # Any unhandled error that reached error tracking: visible even when
       # traffic is too low for the ratio above.
@@ -144,7 +194,9 @@ groups:
       # not scheduled on any instance (CRON_ENABLED, CRON_RECONCILIATION), or
       # it fails before a run row is written.
       - alert: DukaanAiReconciliationStale
-        expr: (time() - max(reconciliation_last_run_timestamp_seconds{job="dukaanai-api"})) > 93600
+        # The gauge is exported as 0 until a run exists (an unlabelled
+        # prom-client gauge always has a sample): 0 is "never", not 1970.
+        expr: (time() - max(reconciliation_last_run_timestamp_seconds{job="dukaanai-api"} > 0)) > 93600
         for: 30m
         labels:
           severity: warning
@@ -197,12 +249,30 @@ groups:
           severity: critical
         annotations:
           summary: "{{ $labels.instance }} has failed its probe for 2 minutes"
-          description: "The readiness route or the login page does not answer as expected ({{ $labels.job }}). Check the edge, then GET /api/health/ready for the failing dependency."
+          description: "The readiness route or the login page does not answer as expected ({{ $labels.job }}). Check the edge, then GET /api/health/ready for the failing dependency. An expired certificate pages as DukaanAiCertificateExpired and holds this alert back; a certificate that does not verify for another reason (wrong name, incomplete chain, unknown issuer) fails this probe too: curl -vI the address."
+      # The certificate alerts read job blackbox-tls, which reads the
+      # certificate whether or not it verifies. On the verified probes the
+      # series disappears the moment the certificate expires: the warning
+      # resolved itself and two minutes later an EndpointDown paged with no
+      # cause (the certificate drill of roadmap 9.18). Now the warning ends
+      # at expiry because the page that names it starts.
       - alert: DukaanAiCertificateExpiring
-        expr: (probe_ssl_earliest_cert_expiry{job=~"blackbox-http|blackbox-login"} - time()) < 14 * 86400
+        expr: 0 < (probe_ssl_earliest_cert_expiry{job="blackbox-tls"} - time()) < 14 * 86400
         for: 1h
         labels:
           severity: warning
         annotations:
           summary: "The certificate of {{ $labels.instance }} expires in under 14 days"
           description: "Automatic renewal has not happened (Caddy: ports 80/443 reachable, DNS; cert-manager: the Certificate resource). Renew before it lapses."
+      # keep_firing_for: the verified probes recover up to a minute after
+      # the renewed certificate is read (another job, another scrape
+      # offset), and their DukaanAiEndpointDown must stay held back until
+      # they have, as for DukaanAiDependencyDown.
+      - alert: DukaanAiCertificateExpired
+        expr: (probe_ssl_earliest_cert_expiry{job="blackbox-tls"} - time()) <= 0
+        keep_firing_for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The certificate of {{ $labels.instance }} has expired"
+          description: "Every browser refuses this address and every client call to it fails (certificate has expired). Renew now: Caddy renews on restart when ports 80/443 and DNS are right (docker compose logs edge); cert-manager: kubectl describe certificate. The failing probe of the same address (DukaanAiEndpointDown) is held back while this fires."

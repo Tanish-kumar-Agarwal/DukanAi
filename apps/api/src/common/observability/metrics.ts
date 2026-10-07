@@ -101,6 +101,33 @@ export const reconciliationLastRunTimestampSeconds = new Gauge({
   registers: [metricsRegistry],
 });
 
+/**
+ * Whether the API reached each dependency during the last scrape (roadmap
+ * 9.18): 1 up, 0 down. Probed with the readiness timeout on every scrape, so
+ * an outage of the database or Redis names its cause instead of surfacing only
+ * as a failed readiness probe.
+ */
+export const dependencyUp = new Gauge({
+  name: 'dependency_up',
+  help: 'Whether the API reached the dependency (database, redis) on the last scrape: 1 up, 0 down.',
+  labelNames: ['dependency'] as const,
+  registers: [metricsRegistry],
+});
+
+/** Free and total bytes of the volumes the API writes to (documents, upload temp), from statfs on every scrape (roadmap 9.18). */
+export const storageVolumeFreeBytes = new Gauge({
+  name: 'storage_volume_free_bytes',
+  help: 'Bytes available to the API on the volume holding the storage root (volume="storage") and the upload temp directory (volume="uploads").',
+  labelNames: ['volume'] as const,
+  registers: [metricsRegistry],
+});
+export const storageVolumeSizeBytes = new Gauge({
+  name: 'storage_volume_size_bytes',
+  help: 'Total bytes of the volume holding the storage root (volume="storage") and the upload temp directory (volume="uploads").',
+  labelNames: ['volume'] as const,
+  registers: [metricsRegistry],
+});
+
 export const retentionRowsPurgedTotal = new Counter({
   name: 'retention_rows_purged_total',
   help: 'Rows removed by the retention sweep, by table.',

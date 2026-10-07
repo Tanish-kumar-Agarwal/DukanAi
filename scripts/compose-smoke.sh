@@ -139,6 +139,16 @@ curl -fsS -o /dev/null -X POST -H 'content-type: application/json' "$AM/api/v2/a
 receivers="$(curl -fsS --get "$AM/api/v2/alerts" --data-urlencode 'filter=alertname="DukaanAiSmokeTest"' | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>{const a=JSON.parse(b);process.stdout.write(a.length?a[0].receivers.map((r)=>r.name).sort().join(','):'')})")"
 [ "$receivers" = "oncall,team" ] || fail "the critical test alert was routed to '$receivers', expected oncall,team"
 printf '  Prometheus -> Alertmanager wired; a critical alert is routed to %s (delivery channels come from ALERT_* in .env)\n' "$receivers"
+# Inhibit rules (roadmap 9.18): the alert that names a cause holds back the
+# probe that only sees its effect; a probe of another address stays active.
+from="$(date -u +%FT%TZ)"; until="$(date -u -d '+3 min' +%FT%TZ)"
+inhibit_alert() { printf '{"labels":{"alertname":"%s","severity":"critical",%s},"startsAt":"%s","endsAt":"%s"}' "$1" "$2" "$from" "$until"; }
+curl -fsS -o /dev/null -X POST -H 'content-type: application/json' "$AM/api/v2/alerts" -d "[$(inhibit_alert DukaanAiCertificateExpired '"job":"blackbox-tls","instance":"https://smoke.example/login"'),$(inhibit_alert DukaanAiEndpointDown '"job":"blackbox-login","instance":"https://smoke.example/login"'),$(inhibit_alert DukaanAiEndpointDown '"job":"blackbox-login","instance":"https://other.example/login"'),$(inhibit_alert DukaanAiDependencyDown '"dependency":"smoke"'),$(inhibit_alert DukaanAiEndpointDown '"job":"blackbox-http","instance":"https://smoke.example/api/health/ready"')]" \
+  || fail "Alertmanager refused the inhibition test alerts"
+held="$(curl -fsS --get "$AM/api/v2/alerts" --data-urlencode 'filter=alertname="DukaanAiEndpointDown"' --data-urlencode 'filter=instance=~".*\.example/.*"' | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>process.stdout.write(JSON.parse(b).map((a)=>a.labels.instance+'='+a.status.state).sort().join(' ')))")"
+[ "$held" = "https://other.example/login=active https://smoke.example/api/health/ready=suppressed https://smoke.example/login=suppressed" ] \
+  || fail "inhibit rules: EndpointDown states '$held', expected the expired certificate's and the dependency's probes suppressed, another address active"
+printf '  inhibit rules: an expired certificate and a dependency outage hold back their probes (%s)\n' "$held"
 # Grafana: both data sources and both dashboards are provisioned.
 dash="$(curl -fsS -u "${GRAFANA_ADMIN_USER:-admin}:${GRAFANA_ADMIN_PASSWORD:-admin}" "$GRAFANA/api/search?type=dash-db" | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>process.stdout.write(JSON.parse(b).map((d)=>d.uid).sort().join(',')))")"
 case "$dash" in *dukaanai-logs*dukaanai-ops*) ;; *) fail "Grafana dashboards provisioned: '$dash', expected dukaanai-logs and dukaanai-ops" ;; esac

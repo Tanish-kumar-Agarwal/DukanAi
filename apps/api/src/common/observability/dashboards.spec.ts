@@ -71,7 +71,7 @@ describe('monitoring assets name only metrics the API exposes', () => {
 
   it('every alert rule expression uses a registered or probe metric', () => {
     const rules = readFileSync(join(DEPLOY, 'prometheus', 'alerts.yml'), 'utf8');
-    const exprs = [...rules.matchAll(/expr:\s*(\|?)\n?([\s\S]*?)(?=\n\s+for:|\n\s+labels:)/g)].map((m) => m[2].replace(/\n/g, ' '));
+    const exprs = [...rules.matchAll(/expr:\s*(\|?)\n?([\s\S]*?)(?=\n\s+for:|\n\s+keep_firing_for:|\n\s+labels:)/g)].map((m) => m[2].replace(/\n/g, ' '));
     expect(exprs.length).toBeGreaterThanOrEqual(15);
     for (const expr of exprs) assertKnown('alerts.yml', expr);
   });

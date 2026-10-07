@@ -6,7 +6,7 @@ import { Modal } from '@/components/ui/Modal';
 import { billingApi } from '@/lib/api-client';
 import { generateUuid, allowsDecimalQuantity } from '@/store/pos';
 import type { InvoiceDetail, TenderType } from '@/types';
-import { extractApiError } from '@/components/pos/api-errors';
+import { extractApiError, isRetryableFailure } from '@/components/pos/api-errors';
 import { calculateReturnPreview } from '@/components/pos/engine';
 import { money, qty } from '@/components/pos/format';
 import { CustomItemBadge } from '@/components/invoices/InvoiceBadges';
@@ -106,7 +106,7 @@ export function ReturnDialog({ isOpen, invoice, onClose, onReturned }: ReturnDia
         setError({ message: 'A cash refund needs an open shift. Open a shift from the POS (or refund by UPI/card/bank) and try again.', retryable: false });
       } else if (info.code === 'RETURN_QTY_EXCEEDS') {
         setError({ message: `${info.message} Reload the invoice to see the latest returned quantities.`, retryable: false });
-      } else if (info.isNetwork) {
+      } else if (isRetryableFailure(info)) {
         setError({ message: `${info.message} Retrying reuses the same request key, so no duplicate return is created.`, retryable: true });
       } else {
         setError({ message: info.message, retryable: false });

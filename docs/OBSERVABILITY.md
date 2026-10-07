@@ -64,7 +64,9 @@ stack on <http://localhost:9090> (the whole monitoring stack:
 | `reconciliation_runs_total` | counter | `status` = `clean` / `drift` / `failed` | financial reconciliation runs (roadmap 9.5): the nightly cron, `POST /reconciliation/run` and the CLI alike. |
 | `reconciliation_drift_total` | counter | `check` = `documents` / `postings` / `tenders` / `dashboard` / `shifts` / `stock` / `ledger` | drifts found by reconciliation runs, by check. |
 | `reconciliation_shops_with_drift` | gauge | | shops whose newest reconciliation run ended in DRIFT or FAILED, read from `ReconciliationRun` on every scrape (a restart or another instance shows the same figure). |
-| `reconciliation_last_run_timestamp_seconds` | gauge | | Unix time the most recent reconciliation run finished, across every shop; no series until one has run. |
+| `reconciliation_last_run_timestamp_seconds` | gauge | | Unix time the most recent reconciliation run finished, across every shop; 0 until one has run (an unlabelled prom-client gauge always has a sample, so the stale alert ignores 0). |
+| `dependency_up` | gauge | `dependency` = `database` / `redis` | whether this instance reached the dependency on the last scrape (`SELECT 1`, Redis `PING`, 2 s each; roadmap 9.18). Probed first on every scrape: a source that needs a dependency that is down is skipped, and every source has a 2.5 s budget, so the scrape answers through a database or Redis outage instead of reading as "API down". |
+| `storage_volume_free_bytes`, `storage_volume_size_bytes` | gauge | `volume` = `storage` / `uploads` | free (what the API may use) and total bytes of the volume under `STORAGE_ROOT` and under `UPLOAD_TEMP_DIR`, from `statfs` on every scrape (roadmap 9.18). |
 - `backup_last_success_timestamp_seconds{kind}`: Unix time of the last successful backup job (`dump`, `binlog`, `documents`, `offsite`), read on every scrape from the `<kind>.last-success` files in `BACKUP_STATUS_DIR` (roadmap 9.4; written by `scripts/db/lib.sh` `record_success`). A kind whose file disappears loses its series.
 | `errors_tracked_total` | counter | `kind` = `unhandled` / `prisma` / `job` / `startup` | errors handed to error tracking, counted whether or not a DSN is set. |
 | `dukaanai_process_*`, `dukaanai_nodejs_*` | | | prom-client's default process and event-loop metrics. |
@@ -111,7 +113,10 @@ the rules; `severity` is `critical` for the two the roadmap requires and
 | Alert | Fires when | First look |
 |---|---|---|
 | `DukaanAiApiDown` | no scrape for 2 min | `GET /api/health/ready` (503 `draining` / `unavailable` with `checks`), container logs for `[Bootstrap FATAL]`. |
-| `DukaanAiHigh5xxRate` | > 1 % of answers are 5xx over 5 min, with traffic | JSON logs: `"statusCode":500` lines carry the correlation id; the error tracker has the stack. A 503 wave means readiness is failing (database / Redis down or an instance draining too long). |
+| `DukaanAiHigh5xxRate` | > 1 % of answers are 5xx (ratio over 2 min, with traffic, the `/api/health*` routes left out) for 5 min in a row | JSON logs: `"statusCode":500` lines carry the correlation id; the error tracker has the stack. 503 `DATABASE_UNAVAILABLE` means the database is away (`DukaanAiDependencyDown` names it), 507 `STORAGE_FULL` a full volume. The ratio window was 5 min until the MySQL drill of roadmap 9.18 showed it paging 4.5 minutes after a 60-second outage had ended, and the readiness route counted until the Redis drill showed its probes' 503s paging "5xx" while every sale succeeded; outages are the probes' and `DukaanAiDependencyDown`'s job. |
+| `DukaanAiDependencyDown` | `dependency_up` is 0 on every instance for 2 min | `database`: sign-in, sales and every page answer 503 `DATABASE_UNAVAILABLE` (retry-safe, the POS offers Retry); check the MySQL host or the provider's status page and the connection limit. `redis`: sales continue (stock keys, cache and rate-limit counters fall back in-process) but queued work waits; check the Redis host. While it fires, `DukaanAiEndpointDown` on `/api/health/ready` is held back (one page that names the cause), and it keeps firing 2 min after the dependency is back (`keep_firing_for`) so the probe recovers first: the Redis drill saw the edge probe page 50 s after this alert had resolved. |
+| `DukaanAiStorageLow` | a volume under 10 % free for 15 min (warning) | `storage_volume_free_bytes` by `volume`; grow the disk or clear what is reproducible (`imports/`, `exports/`, `tmp/` under uploads). |
+| `DukaanAiStorageFull` | a volume under 2 % free for 1 min (critical) | bill photos, invoice PDFs and statements answer 507 `STORAGE_FULL` (nothing partial is kept, so a repeat succeeds once space is back); sales continue. Free or grow the volume now. |
 | `DukaanAiUnhandledErrors` | > 5 tracked errors in 15 min | same as above when the ratio alert is quiet (low traffic). |
 | `DukaanAiLedgerPostingFailures` | any posting threw in 10 min | `Unbalanced ledger posting` in the logs is a code defect (money math changed outside `@dukaanai/invoice-math`); a database error means the sale / return / receipt rolled back and the client saw an error. The ledger stayed consistent: nothing was written. |
 | `DukaanAiCheckoutSlow` | completed-checkout p95 > 500 ms for 10 min | MySQL lock waits (one shop bills serially: shift, number sequence and product rows are locked in order), the MySQL slow query log, Redis latency, CPU of the instance. Re-run the load test after a fix (`apps/api/load`). |
@@ -121,8 +126,11 @@ the rules; `severity` is `critical` for the two the roadmap requires and
 | `DukaanAiQueueFailedJobs` | failed jobs on a queue for 30 min | the failed set in Redis holds the job data and the last error; outbox-backed jobs also marked their row FAILED (above). |
 | `DukaanAiBackupStale` | a backup kind older than its objective: `binlog` 15 min, `dump` / `documents` / `offsite` 26 h, for 5 min | `db-ops status` shows every job's last success; run the late job by hand (`db-ops backup`, `binlog-archive --flush`, `documents-backup`, `offsite push`) and read its error: a full volume, a lost privilege, an unreachable remote, a wrong key. The recovery point grows while it stays red (`docs/DATA_SAFETY.md`). |
 | `DukaanAiBackupNeverRecorded` | no `backup_last_success_timestamp_seconds` series for a kind, for 30 min | the job is not scheduled (cron, `binlog-archiver` service), the API cannot read `BACKUP_STATUS_DIR` (the `db-backups` volume mounted read-only), or the job writes its stamps elsewhere (`BACKUP_STATUS_DIR` on the job side). |
+| `DukaanAiEndpointDown` | a blackbox probe (readiness route or login page, inner or public address) has failed for 2 min | `GET /api/health/ready` names the failing dependency; then the edge (`docker compose logs edge`) and DNS. Held back while `DukaanAiApiDown`, `DukaanAiDependencyDown` (readiness probes) or `DukaanAiCertificateExpired` (same address) fires. A certificate that does not verify for another reason (wrong name, incomplete chain) fails it too: `curl -vI` the address. |
+| `DukaanAiCertificateExpiring` | the certificate of a public address expires in under 14 days, for 1 h (warning) | renewal has not happened: Caddy needs ports 80/443 and the DNS names right (`docker compose logs edge`), cert-manager the `Certificate` resource. It ends when the certificate expires, because the page below starts. |
+| `DukaanAiCertificateExpired` | the certificate of a public address has expired (at once, critical; keeps firing 2 min after a renewal is read, so the address's probes recover while it still holds them back) | every browser refuses the address. Renew now (restart the edge once ports and DNS are right, or `kubectl describe certificate`). Read by job `blackbox-tls`, which reads the certificate whether or not it verifies: on the verified probes an expired certificate made the warning resolve and an unexplained `DukaanAiEndpointDown` page two minutes later (the certificate drill of roadmap 9.18). |
 | `DukaanAiReconciliationDrift` | a shop's newest reconciliation run ended in DRIFT or FAILED (at once) | `GET /reconciliation/latest` as that shop's owner, or `npm run reconcile -- --shop <id> --date <day>` from a checkout: every drift names the check, the document or row and the two figures that disagree (`docs/POS_BILLING_CONTRACT.md` §11). A FAILED run carries the error. Nothing is corrected by the job; find the write that produced the row and fix the data with a recorded adjustment. |
-| `DukaanAiReconciliationStale` | no reconciliation run finished anywhere for 26 h, for 30 min | `CRON_ENABLED` on at least one instance, `CRON_RECONCILIATION`, the `cron:reconciliation` lock (a dead pod's lock expires after 30 min), the `Reconciliation` lines in the logs; run one by hand with `POST /reconciliation/run`. |
+| `DukaanAiReconciliationStale` | no reconciliation run finished anywhere for 26 h, for 30 min (a stack that has never reconciled exports 0 and does not fire) | `CRON_ENABLED` on at least one instance, `CRON_RECONCILIATION`, the `cron:reconciliation` lock (a dead pod's lock expires after 30 min), the `Reconciliation` lines in the logs; run one by hand with `POST /reconciliation/run`. |
 
 ## Alert delivery
 
@@ -133,11 +141,16 @@ the `ALERT_*` variables of `.env`):
 
 | Severity | Who | How | Repeat |
 |---|---|---|---|
-| `critical` (API down, 5xx wave, ledger failure, stale backup, drift, endpoint down) | the on-call AND the team | PagerDuty when `ALERT_PAGERDUTY_ROUTING_KEY` is set (a page), else Slack + email at once | hourly until resolved |
+| `critical` (API down, 5xx wave, dependency down, full volume, expired certificate, ledger failure, stale backup, drift, endpoint down) | the on-call AND the team | PagerDuty when `ALERT_PAGERDUTY_ROUTING_KEY` is set (a page), else Slack + email at once | hourly until resolved |
 | `warning` (everything else) | the team | Slack and/or email | every 4 h; held between 22:00 and 08:00 and on Sunday in `ALERT_TIMEZONE`, delivered when the window ends |
 
 While `DukaanAiApiDown` fires every warning is inhibited (one page, not a
-dozen). Each channel is on when its variable is set (`ALERT_EMAIL_TO` with
+dozen), and while `DukaanAiDependencyDown` fires the readiness probe's
+`DukaanAiEndpointDown` is held back (the Redis drill of roadmap 9.18 paged
+three times for one cause before; the login-page probe is never held back
+for a dependency). While `DukaanAiCertificateExpired` fires for an address,
+the `DukaanAiEndpointDown` of the same address is held back: the page names
+the expired certificate, not a failing probe. Each channel is on when its variable is set (`ALERT_EMAIL_TO` with
 `ALERT_SMTP_*`, `ALERT_SLACK_WEBHOOK_URL`, `ALERT_PAGERDUTY_ROUTING_KEY`);
 with none set the service starts, logs that alerts reach nobody, and the
 compose smoke still proves the routing. Validate a change with
@@ -234,9 +247,13 @@ Two layers:
   (`deploy/prometheus/prometheus.yml`, jobs `blackbox-http` and
   `blackbox-login`). The inner targets watch the containers; add the public
   URLs through the edge (commented there) to watch what customers see.
-  `DukaanAiEndpointDown` pages after two failed minutes;
+  `DukaanAiEndpointDown` pages after two failed minutes. The job
+  `blackbox-tls` (module `tls_certificate`) reads the certificate of each
+  public address whether or not it verifies:
   `DukaanAiCertificateExpiring` warns 14 days before a certificate lapses
-  (both with promtool tests).
+  and `DukaanAiCertificateExpired` pages the moment it has (all with
+  promtool tests). The verified probes lose the certificate when it
+  expires, which is why the certificate alerts do not read them.
 - **Outside**: a checker on another network, because a dead host cannot
   report itself. Set up, with the owner's account (UptimeRobot, Better
   Stack, Pingdom or the cloud provider's own): an HTTP(S) monitor on

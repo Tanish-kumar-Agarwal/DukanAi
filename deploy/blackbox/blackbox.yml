@@ -27,3 +27,20 @@ modules:
       valid_status_codes: [200]
       fail_if_body_not_matches_regexp:
         - "DukaanAI"
+  # The certificate an address serves, read whether or not it verifies (job
+  # blackbox-tls; roadmap 9.18). The probes above stop reporting a
+  # certificate the moment it expires, so an expiry alert built on them
+  # resolves when the certificate lapses and nothing names the cause; the
+  # certificate drill showed it. The answer itself does not matter here: the
+  # alerts read probe_ssl_earliest_cert_expiry, never this module's
+  # probe_success, and nothing is trusted from a connection it makes.
+  tls_certificate:
+    prober: http
+    timeout: 10s
+    http:
+      method: GET
+      preferred_ip_protocol: ip4
+      follow_redirects: false
+      fail_if_not_ssl: true
+      tls_config:
+        insecure_skip_verify: true

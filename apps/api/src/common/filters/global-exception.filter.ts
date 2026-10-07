@@ -11,6 +11,8 @@ import { Prisma } from '@prisma/client';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 import { ErrorContext, ErrorTracking } from '../observability/error-tracking';
 import { routeLabel } from '../observability/metrics';
+import { isDatabaseUnavailable } from '../db/database-unavailable';
+import { isStorageFull } from '../storage-full';
 
 interface ErrorResponseBody {
   statusCode: number;
@@ -96,6 +98,24 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       error = HttpStatus[statusCode] || 'Conflict';
       code = invCode;
       details = (exception as { details?: unknown }).details;
+    } else if (isDatabaseUnavailable(exception)) {
+      // The database went away (roadmap 9.18): a temporary condition the
+      // client should retry, not a bug. Idempotent writes (checkout, returns,
+      // payments) are safe to resubmit with the same key.
+      statusCode = HttpStatus.SERVICE_UNAVAILABLE;
+      message = 'The database is unavailable at the moment. Please retry in a few seconds.';
+      error = 'ServiceUnavailable';
+      code = 'DATABASE_UNAVAILABLE';
+      response.setHeader('Retry-After', '5');
+      this.logger.warn(`Database unavailable [correlationId=${correlationId}]: ${(exception as Error).message.split('\n').filter(Boolean).pop() ?? ''}`);
+    } else if (isStorageFull(exception)) {
+      // A full volume (roadmap 9.18): nothing was kept, the request can be
+      // repeated once space is freed.
+      statusCode = HttpStatus.INSUFFICIENT_STORAGE;
+      message = 'The document store is full. Nothing was saved; try again once space has been freed.';
+      error = 'InsufficientStorage';
+      code = 'STORAGE_FULL';
+      this.logger.error(`Storage full [correlationId=${correlationId}]: ${(exception as Error).message}`);
     } else if (exception instanceof Prisma.PrismaClientKnownRequestError) {
       // Known Prisma errors: expose a safe, deterministic code without internals.
       const mapped = PRISMA_STATUS[exception.code];

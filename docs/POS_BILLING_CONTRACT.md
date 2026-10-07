@@ -13,6 +13,18 @@ Conventions
   `{ statusCode, message, error, code?, details?, correlationId, timestamp }`.
   `code` is a stable machine string (see per-route lists). Clients branch on
   `code`, never on `message`.
+- Outages (roadmap 9.18 failure drills), on every route: `503
+  DATABASE_UNAVAILABLE` with `Retry-After: 5` while the database cannot be
+  reached (it used to be a 500 "Internal server error"), and `507
+  STORAGE_FULL` when a document write meets a full volume (nothing partial is
+  kept). The edge answers `502` with an empty body while the API restarts.
+  A 5xx is retry-safe for every keyed write (sale, return, repayment): the
+  POS and the return dialog offer Retry with the same `idempotencyKey`, which
+  either finds the document a lost answer was about (`200`) or creates it
+  once (`201`). Reads are retried by the POS itself: the shop, the current
+  shift and the product grid and search try again in the background (1 s,
+  2 s, 4 s, 8 s, then every 10 s) after a network failure or a 5xx, so a
+  POS opened while the API restarts recovers without a reload.
 - Business day and financial year are computed in the shop timezone
   (`ShopSettings.timezone`, default `Asia/Kolkata`). Financial year runs
   April to March.
@@ -483,7 +495,12 @@ costing layer.
   several hundred checkouts.
 - Redis stock keys are advisory. The sale path may pre-decrement them, the
   database decides, and every rejected or failed request restores its
-  decrement. Redis being down or wrong never blocks or corrupts a sale.
+  decrement. Redis being down or wrong never blocks or corrupts a sale, and
+  never stalls one: every Redis client on the request path fails fast while
+  Redis is unreachable (the shared client has no offline queue; the cache
+  store's offline queue is off since the 5-minute Redis drill of roadmap
+  9.18 found each sale waiting on its post-commit cache invalidation until
+  Redis returned).
 - Outbox rows are staged inside the business transaction and claimed by the
   relay after the commit (§7); the `system-events` worker is idempotent per
   event id (audit marker inside its own transaction), so a duplicate

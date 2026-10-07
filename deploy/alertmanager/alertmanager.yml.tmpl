@@ -69,6 +69,16 @@ inhibit_rules:
   # An endpoint that is down from outside while the API is down is the same page.
   - source_matchers: ['alertname="DukaanAiApiDown"']
     target_matchers: ['alertname="DukaanAiEndpointDown"']
+  # A dependency the API cannot reach explains its failing readiness probe
+  # (roadmap 9.18: the Redis drill paged three times for one cause). The
+  # login page probe is not held back: the web can fail on its own.
+  - source_matchers: ['alertname="DukaanAiDependencyDown"']
+    target_matchers: ['alertname="DukaanAiEndpointDown"', 'instance=~".*/api/health/ready"']
+  # An expired certificate explains the failing probe of the same address
+  # (roadmap 9.18: the certificate drill paged "endpoint down" with no cause).
+  - source_matchers: ['alertname="DukaanAiCertificateExpired"']
+    target_matchers: ['alertname="DukaanAiEndpointDown"']
+    equal: [instance]
 
 receivers:
   - name: oncall

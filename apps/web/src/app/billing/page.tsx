@@ -23,7 +23,7 @@ import { ReceiptModal } from '@/components/pos/ReceiptModal';
 import { HeldCartsMenu, HoldCartModal } from '@/components/pos/HeldCarts';
 import { CustomItemModal } from '@/components/pos/CustomItemModal';
 import { calculateCart, type PaymentSpec } from '@/components/pos/engine';
-import { detailNumber, detailString, extractApiError } from '@/components/pos/api-errors';
+import { backgroundRetryDelayMs, detailNumber, detailString, extractApiError, isRetryableFailure } from '@/components/pos/api-errors';
 import { isInterStateSupply } from '@/components/pos/indian-states';
 import { money, qty } from '@/components/pos/format';
 
@@ -85,18 +85,30 @@ function BillingContent() {
   useEffect(() => {
     hydratePosStore();
     let cancelled = false;
-    shopApi
-      .me()
-      .then((me) => {
-        if (cancelled) return;
-        setShop(me);
-        scopePosStoreToShop(me.id);
-      })
-      .catch((err) => {
-        if (!cancelled) setShopError(extractApiError(err, 'Loading shop (GET /shops/me)').message);
-      });
+    let retryTimer: number | undefined;
+    // Until the shop loads the store stays unscoped (no barcode scanner) and
+    // GST previews intra-state, so a load that failed retryably (the API
+    // restarting, the database away) tries again on its own (roadmap 9.18).
+    const loadShop = (attempt: number) => {
+      shopApi
+        .me()
+        .then((me) => {
+          if (cancelled) return;
+          setShop(me);
+          setShopError(null);
+          scopePosStoreToShop(me.id);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          const info = extractApiError(err, 'Loading shop (GET /shops/me)');
+          setShopError(info.message);
+          if (isRetryableFailure(info)) retryTimer = window.setTimeout(() => loadShop(attempt + 1), backgroundRetryDelayMs(attempt));
+        });
+    };
+    loadShop(0);
     return () => {
       cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
   }, []);
 
@@ -333,9 +345,9 @@ function BillingContent() {
           break;
         }
         default: {
-          if (info.isNetwork) {
+          if (isRetryableFailure(info)) {
             setSubmitError({
-              code: null,
+              code: info.code,
               message: `${info.message} Your cart and request key are kept, so retrying will not create a duplicate bill.`,
               retryable: true,
             });

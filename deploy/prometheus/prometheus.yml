@@ -67,6 +67,28 @@ scrape_configs:
       - target_label: __address__
         replacement: blackbox:9115
 
+  # The certificate of each public address, read whether or not it verifies
+  # (module tls_certificate): DukaanAiCertificateExpiring and
+  # DukaanAiCertificateExpired read this job, so an expired certificate pages
+  # as itself and holds back the EndpointDown of the same address. Only the
+  # public URLs serve a certificate; uncomment them with the ones above.
+  - job_name: blackbox-tls
+    metrics_path: /probe
+    scrape_interval: 1m
+    params:
+      module: [tls_certificate]
+    static_configs:
+      - targets:
+          # - https://api.example.com/api/health/ready
+          # - https://app.example.com/login
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
   - job_name: alertmanager
     static_configs:
       - targets: ["alertmanager:9093"]
