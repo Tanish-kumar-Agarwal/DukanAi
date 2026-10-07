@@ -198,10 +198,13 @@ or a laptop; page zoom 100 %. The owner: Chrome or Safari on the phone, the
 dashboard added to the home screen. Device clocks on network time.
 
 **Accounts.** The owner registers (or signs in with Google once both sides
-are configured); staff are invited by email from Employees (the mail must
-arrive: SMTP and a sender domain with SPF/DKIM, `EMAIL_FROM`); the
-cashier's role is CASHIER. A sign-in lasts at most 12 hours
-(`SESSION_ABSOLUTE_LIFETIME`), so a longer shop day signs in again once.
+are configured: `GOOGLE_CLIENT_ID` on the API and the web, the secret on
+the web and the redirect URI in Google Cloud, `DEPLOYMENT_CHECKLIST.md`;
+the readiness check's `google-signin` line then passes); staff are invited
+by email from Employees (the mail must arrive: SMTP and a sender domain
+with SPF/DKIM, `EMAIL_FROM`); the cashier's role is CASHIER. A sign-in
+lasts at most 12 hours (`SESSION_ABSOLUTE_LIFETIME`), so a longer shop day
+signs in again once.
 
 **Network.** The shop's mobile network is fine for billing: a sale is one
 small request, and a lost answer is retried with the same key ("retrying
