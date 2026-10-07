@@ -67,7 +67,7 @@ fi
 
 step "ops (roadmap 9.2): a dump before the sale, with its binary-log position (db-ops backup)"
 out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops backup --label pre-sale 2>&1)" || { printf '%s\n' "$out"; fail "db-ops backup"; }
-printf '%s\n' "$out" | grep -q "binary-log position " || { printf '%s\n' "$out"; fail "the dump recorded no binary-log position"; }
+grep -q "binary-log position " <<<"$out" || { printf '%s\n' "$out"; fail "the dump recorded no binary-log position"; }
 dump="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops latest 2>/dev/null | tr -d '\r' | tail -n 1)"
 [ -n "$dump" ] || fail "db-ops latest printed no dump"
 
@@ -79,11 +79,11 @@ invoice="$(printf '%s\n' "$flow" | sed -n 's/.*sale \([^ ]*\) completed.*/\1/p' 
 
 step "ops (roadmap 9.2): archive the binary logs, restore the pre-sale dump alone and rolled forward to now: only the latter holds sale $invoice"
 out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops binlog-archive --flush 2>&1)" || { printf '%s\n' "$out"; fail "db-ops binlog-archive"; }
-printf '%s\n' "$out" | grep -qE "archived [1-9][0-9]* file" || { printf '%s\n' "$out"; fail "no binary log was archived"; }
+grep -qE "archived [1-9][0-9]* file" <<<"$out" || { printf '%s\n' "$out"; fail "no binary log was archived"; }
 out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops restore "$dump" --database dukaanai_dump_only --create --yes 2>&1)" || { printf '%s\n' "$out"; fail "restore of the dump alone"; }
 out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops restore "$dump" --database dukaanai_pitr_check --create --yes --to "$(date -u -d '+1 minute' '+%Y-%m-%d %H:%M:%S')" 2>&1)" || { printf '%s\n' "$out"; fail "point-in-time restore"; }
-printf '%s\n' "$out" | grep -q "then replay " || { printf '%s\n' "$out"; fail "the restore plan had no replay step"; }
-printf '%s\n' "$out" | grep -q "^==> Replayed to " || { printf '%s\n' "$out"; fail "the replay did not run"; }
+grep -q "then replay " <<<"$out" || { printf '%s\n' "$out"; fail "the restore plan had no replay step"; }
+grep -q "^==> Replayed to " <<<"$out" || { printf '%s\n' "$out"; fail "the replay did not run"; }
 # A statement as root inside the mysql container (the password stays in its environment).
 sql() { "${COMPOSE[@]}" exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -N -B -e "$0"' "$1" | tr -d '\r'; }
 dump_only="$(sql "SELECT COUNT(*) FROM dukaanai_dump_only.Invoice")"
@@ -94,17 +94,17 @@ printf '  the pre-sale dump holds no invoice; rolled forward to now it holds %s,
 
 step "ops (roadmap 9.3): the documents backup of the storage and media volumes (db-ops documents-backup)"
 out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops documents-backup --label smoke 2>&1)" || { printf '%s\n' "$out"; fail "db-ops documents-backup"; }
-printf '%s\n' "$out" | grep -q "Documents backup written" || { printf '%s\n' "$out"; fail "no documents archive was written"; }
+grep -q "Documents backup written" <<<"$out" || { printf '%s\n' "$out"; fail "no documents archive was written"; }
 
 step "ops (roadmap 9.4): the encrypted off-site copy to a local remote, verified by cryptcheck (db-ops offsite push)"
 out="$("${COMPOSE[@]}" --profile ops run --rm -T -e OFFSITE_REMOTE=local:/tmp/offsite-smoke -e OFFSITE_CRYPT_PASSWORD=smoke-only-password-of-at-least-32-chars db-ops offsite push 2>&1)" || { printf '%s\n' "$out"; fail "db-ops offsite push"; }
-printf '%s\n' "$out" | grep -q "Off-site copy complete" || { printf '%s\n' "$out"; fail "the off-site copy did not complete"; }
+grep -q "Off-site copy complete" <<<"$out" || { printf '%s\n' "$out"; fail "the off-site copy did not complete"; }
 
 step "ops (roadmap 9.4): the API reads the backup status stamps into backup_last_success_timestamp_seconds"
 metrics="$(curl -fsS "$API/metrics" 2>/dev/null || true)"
 for kind in dump binlog documents offsite; do
   # The registry adds its default label (service="dukaanai-api") after kind.
-  printf '%s\n' "$metrics" | grep -Eq "^backup_last_success_timestamp_seconds\{kind=\"$kind\"[,}]" || { printf '%s\n' "$metrics" | grep backup_last || true; fail "no backup_last_success_timestamp_seconds series for kind $kind"; }
+  grep -Eq "^backup_last_success_timestamp_seconds\{kind=\"$kind\"[,}]" <<<"$metrics" || { grep backup_last <<<"$metrics" || true; fail "no backup_last_success_timestamp_seconds series for kind $kind"; }
 done
 "${COMPOSE[@]}" --profile ops run --rm -T db-ops status 2>&1 | grep -E "^(dump|binlog|documents|offsite) " || fail "db-ops status lists no job"
 
@@ -174,8 +174,9 @@ fi
 step "graceful stop: SIGTERM -> readiness 503 -> exit 0 (never SIGKILL)"
 "${COMPOSE[@]}" stop -t 40 api
 [ "$("${COMPOSE[@]}" ps -a --format '{{.ExitCode}}' api)" = "0" ] || fail "api did not exit 0 on SIGTERM (exit $("${COMPOSE[@]}" ps -a --format '{{.ExitCode}}' api))"
-"${COMPOSE[@]}" logs --no-color api | grep -q "Shutdown requested by SIGTERM" || fail "api log has no shutdown line"
-"${COMPOSE[@]}" logs --no-color api | grep -q "Database connection closed" || fail "api log has no Prisma close line"
+api_log="$("${COMPOSE[@]}" logs --no-color api)" || fail "could not read the api log"
+grep -q "Shutdown requested by SIGTERM" <<<"$api_log" || fail "api log has no shutdown line"
+grep -q "Database connection closed" <<<"$api_log" || fail "api log has no Prisma close line"
 "${COMPOSE[@]}" start api >/dev/null
 for _ in $(seq 1 60); do sleep 2; curl -fsS -o /dev/null "$API/health/ready" && break; done
 curl -fsS -o /dev/null "$API/health/ready" || fail "api not ready after restart"

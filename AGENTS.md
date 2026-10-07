@@ -1590,6 +1590,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   deliberately un-awaited promise is written `void fn()` only when the callee
   catches its own errors (`no-floating-promises` is on; `no-unsafe-argument`
   stays off until the `any` request bodies become DTOs).
+- Shell scripts run `set -o pipefail`, so never feed `grep -q` through a
+  pipe (`printf '%s' "$var" | grep -q`, `docker compose logs | grep -q`):
+  grep exits on its first match, the writer's next write gets EPIPE and the
+  check fails although the line is there (the prod smoke's metrics check
+  failed 13 runs in 400 on a real 54 KB scrape). Grep a here-string or a
+  captured variable: `grep -q X <<<"$var"`.
 
 ## Dashboard (EXEC-005)
 

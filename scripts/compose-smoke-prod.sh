@@ -132,14 +132,14 @@ case "$redirect" in
   *) fail "expected a redirect to https://${WEB_HOST}/..., got '$redirect'" ;;
 esac
 headers="$("${CURL[@]}" -D - -o /dev/null "${API}/health")"
-printf '%s' "$headers" | grep -qi '^strict-transport-security:' || { printf '%s\n' "$headers"; fail "no HSTS header on the API over HTTPS"; }
-printf '%s' "$headers" | grep -qi '^server:' && { printf '%s\n' "$headers"; fail "the Server header is exposed"; }
+grep -qi '^strict-transport-security:' <<<"$headers" || { printf '%s\n' "$headers"; fail "no HSTS header on the API over HTTPS"; }
+grep -qi '^server:' <<<"$headers" && { printf '%s\n' "$headers"; fail "the Server header is exposed"; }
 "${CURL[@]}" -o /dev/null -f "${WEB_ORIGIN}/api/health" || fail "the web liveness route is not served over HTTPS"
 
 step "registration, API and web sign-in, stock, shift, sale, dashboard, reconciliation over HTTPS through the edge (scripts/smoke-flow.mjs)"
 flow="$(NODE_EXTRA_CA_CERTS="$WORK/caddy-root.crt" SMOKE_API_URL="$API" SMOKE_WEB_URL="$WEB_ORIGIN" node scripts/smoke-flow.mjs 2>&1)" || { printf '%s\n' "$flow"; fail "smoke flow over HTTPS"; }
 printf '%s\n' "$flow"
-printf '%s\n' "$flow" | grep -q "completed" || fail "the smoke flow printed no completed sale"
+grep -q "completed" <<<"$flow" || fail "the smoke flow printed no completed sale"
 
 step "/api/metrics does not exist through the edge and is served inside the network"
 code="$("${CURL[@]}" -o /dev/null -w '%{http_code}' "${API}/metrics")"
@@ -147,8 +147,8 @@ code="$("${CURL[@]}" -o /dev/null -w '%{http_code}' "${API}/metrics")"
 NET="${PROJECT}_default"
 inside() { docker run --rm --network "$NET" -v "$WORK/caddy-root.crt:/ca/root.crt:ro" "$CURL_IMAGE" "$@"; }
 metrics="$(inside -fsS http://api:3002/api/metrics)" || fail "GET http://api:3002/api/metrics from inside the network failed"
-printf '%s\n' "$metrics" | grep -q '^http_requests_total' || fail "the internal scrape carries no http_requests_total"
-printf '  404 from the internet, %s series inside\n' "$(printf '%s\n' "$metrics" | grep -c '^[a-z]')"
+grep -q '^http_requests_total' <<<"$metrics" || fail "the internal scrape carries no http_requests_total"
+printf '  404 from the internet, %s series inside\n' "$(grep -c '^[a-z]' <<<"$metrics")"
 
 step "the API sees the client address (TRUST_PROXY=1 behind the edge): the login limit is per client, X-Forwarded-For from a client is ignored"
 # Client A: 6 failed logins with distinct unknown accounts inside the short
@@ -185,23 +185,24 @@ docker rm -f smoke-client-a >/dev/null 2>&1 || true
 step "the backup agent dumps the external database and archives the documents (backup-agent: backup-loop)"
 for _ in $(seq 1 60); do
   logs="$("${COMPOSE[@]}" logs --no-color backup-agent 2>/dev/null || true)"
-  printf '%s' "$logs" | grep -q "Documents backup written" && break
+  grep -q "Documents backup written" <<<"$logs" && break
   sleep 2
 done
-printf '%s' "$logs" | grep -q "Backup written: " || { printf '%s\n' "$logs"; fail "the backup agent wrote no dump within 120 s"; }
-printf '%s' "$logs" | grep -q "binary-log position " || { printf '%s\n' "$logs"; fail "the dump recorded no binary-log position"; }
-printf '%s' "$logs" | grep -q "Documents backup written" || { printf '%s\n' "$logs"; fail "the backup agent wrote no documents archive within 120 s"; }
-printf '%s' "$logs" | grep -q "OFFSITE_REMOTE is not set" || { printf '%s\n' "$logs"; fail "the agent did not report the missing off-site remote"; }
+grep -q "Backup written: " <<<"$logs" || { printf '%s\n' "$logs"; fail "the backup agent wrote no dump within 120 s"; }
+grep -q "binary-log position " <<<"$logs" || { printf '%s\n' "$logs"; fail "the dump recorded no binary-log position"; }
+grep -q "Documents backup written" <<<"$logs" || { printf '%s\n' "$logs"; fail "the backup agent wrote no documents archive within 120 s"; }
+grep -q "OFFSITE_REMOTE is not set" <<<"$logs" || { printf '%s\n' "$logs"; fail "the agent did not report the missing off-site remote"; }
 metrics="$(inside -fsS http://api:3002/api/metrics)" || fail "second internal scrape failed"
 for kind in dump documents; do
-  printf '%s\n' "$metrics" | grep -Eq "^backup_last_success_timestamp_seconds\{kind=\"$kind\"[,}]" || { printf '%s\n' "$metrics" | grep backup_last || true; fail "no backup_last_success_timestamp_seconds series for kind $kind"; }
+  grep -Eq "^backup_last_success_timestamp_seconds\{kind=\"$kind\"[,}]" <<<"$metrics" || { grep backup_last <<<"$metrics" || true; fail "no backup_last_success_timestamp_seconds series for kind $kind"; }
 done
 printf '  dump with binary-log position and documents archive written; both stamps exposed by the API\n'
 
 step "graceful stop: SIGTERM -> readiness 503 -> exit 0 (never SIGKILL)"
 "${COMPOSE[@]}" stop -t 40 api
 [ "$("${COMPOSE[@]}" ps -a --format '{{.ExitCode}}' api)" = "0" ] || fail "api did not exit 0 on SIGTERM"
-"${COMPOSE[@]}" logs --no-color api | grep -q "Shutdown requested by SIGTERM" || fail "api log has no shutdown line"
-"${COMPOSE[@]}" logs --no-color api | grep -q "Database connection closed" || fail "api log has no Prisma close line"
+api_log="$("${COMPOSE[@]}" logs --no-color api)" || fail "could not read the api log"
+grep -q "Shutdown requested by SIGTERM" <<<"$api_log" || fail "api log has no shutdown line"
+grep -q "Database connection closed" <<<"$api_log" || fail "api log has no Prisma close line"
 
 printf '\nPROD SMOKE PASSED: the production variant ran against an external TLS-only MySQL with the certificate verified, HTTPS through the edge with HTTP redirected, sign-in and a sale over HTTPS, the scrape endpoint hidden, the rate limit counted per client address with a spoofed X-Forwarded-For ignored, the backup agent dumped the database and the documents, graceful stop verified.\n'

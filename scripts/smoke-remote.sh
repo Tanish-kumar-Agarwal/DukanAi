@@ -53,11 +53,11 @@ step "HTTPS: readiness, liveness, HSTS, no Server header, scrape endpoint hidden
 ready="$("${CURL[@]}" -w '\n%{http_code}' "$API/api/health/ready")" || fail "GET $API/api/health/ready failed"
 code="${ready##*$'\n'}"; body="${ready%$'\n'*}"
 [ "$code" = "200" ] || fail "API readiness answered $code: $body"
-printf '%s' "$body" | grep -q '"status":"ok"\|"status": "ok"\|"up"' || { printf '%s\n' "$body"; fail "readiness body does not report ok"; }
+grep -q '"status":"ok"\|"status": "ok"\|"up"' <<<"$body" || { printf '%s\n' "$body"; fail "readiness body does not report ok"; }
 "${CURL[@]}" -o /dev/null -f "$WEB/api/health" || fail "the web liveness route failed"
 headers="$("${CURL[@]}" -D - -o /dev/null "$API/api/health")"
-printf '%s' "$headers" | grep -qi '^strict-transport-security:' || fail "no HSTS header on the API"
-printf '%s' "$headers" | grep -qi '^server:' && fail "the Server header is exposed on the API"
+grep -qi '^strict-transport-security:' <<<"$headers" || fail "no HSTS header on the API"
+grep -qi '^server:' <<<"$headers" && fail "the Server header is exposed on the API"
 metrics_code="$("${CURL[@]}" -o /dev/null -w '%{http_code}' "$API/api/metrics")"
 [ "$metrics_code" = "404" ] || fail "GET $API/api/metrics answered $metrics_code from outside, expected 404"
 printf '  ready 200, web live, HSTS present, Server hidden, /api/metrics 404\n'
@@ -70,5 +70,5 @@ fi
 step "the business flow over HTTPS (scripts/smoke-flow.mjs): registration, API and web sign-in, stock, shift, sale, dashboard, reconciliation"
 flow="$(env ${CACERT:+NODE_EXTRA_CA_CERTS="$CACERT"} SMOKE_API_URL="$API/api" SMOKE_WEB_URL="$WEB" node scripts/smoke-flow.mjs 2>&1)" || { printf '%s\n' "$flow"; fail "smoke flow"; }
 printf '%s\n' "$flow"
-printf '%s\n' "$flow" | grep -q "completed" || fail "the smoke flow printed no completed sale"
+grep -q "completed" <<<"$flow" || fail "the smoke flow printed no completed sale"
 printf '\nREMOTE SMOKE PASSED: sign-in and a sale through the edge at %s / %s.\n' "$WEB" "$API"
