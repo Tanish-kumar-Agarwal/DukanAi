@@ -1103,8 +1103,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   key). This is the one place a nullable column in a unique key is the
   point: MySQL ignores NULLs there, which makes the key partial. The
   `ShiftsService.open` transaction runs READ COMMITTED (a locking read that
-  finds nothing takes no gap lock, so two concurrent opens race to the key
-  instead of deadlocking) and maps the P2002 on
+  finds nothing takes no gap lock, so two concurrent opens race to the key)
+  inside `withSerializationRetry` (MySQL 8 can still run the locking read as
+  an index merge and deadlock it with a losing insert: 7 of 800 concurrent
+  opens did; the rerun answers 409) and maps the P2002 on
   `Shift_shopId_openedById_openToken_key` to 409 `SHIFT_ALREADY_OPEN`;
   `close` sets the token to NULL. Any writer that opens or closes a shift
   must keep the token in step. `test/integration/shifts.integration-spec.ts`

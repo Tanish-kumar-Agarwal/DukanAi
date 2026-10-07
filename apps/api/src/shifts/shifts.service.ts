@@ -7,6 +7,7 @@ import { Clock } from '../common/time/clock';
 import { CloseShiftDto, ListShiftsDto, OpenShiftDto } from './dto/shift.dto';
 import { pageArgs } from '../common/pagination';
 import { rethrowUniqueViolation } from '../common/db/unique-violation';
+import { withSerializationRetry } from '../common/db/serialization-retry';
 
 /** `Shift.openToken` while a shift is open; NULL once closed (roadmap 8.3). */
 export const OPEN_TOKEN = 'OPEN';
@@ -50,11 +51,16 @@ export class ShiftsService {
    * unique key `(shopId, openedById, openToken)` is the guard (roadmap 8.3): two
    * concurrent opens both pass the check, and the second insert fails on the
    * key, which maps to the same 409. READ COMMITTED keeps the locking read
-   * from taking gap locks, which would turn that race into a deadlock instead.
+   * from taking gap locks. It can still deadlock on MySQL 8: the locking read
+   * may run as an index merge (`Shift_shopId_status_idx` with the unique key),
+   * so two readers lock the same rows in different index orders while a losing
+   * insert holds its `status` entry and waits on the key (CI, eight concurrent
+   * opens). The victim is rolled back whole and runs again, and the rerun finds
+   * the winner's row: 409, never a raw deadlock error.
    */
   async open(dto: OpenShiftDto, actor: BillingActor): Promise<ShiftView> {
-    const shift = await this.prisma
-      .$transaction(
+    const shift = await withSerializationRetry(() =>
+      this.prisma.$transaction(
         async (tx) => {
           const open = await tx.$queryRaw<Array<{ id: string }>>`
             SELECT id FROM Shift WHERE shopId = ${actor.shopId} AND openedById = ${actor.userId} AND status = 'OPEN' AND isDeleted = false FOR UPDATE
@@ -89,10 +95,10 @@ export class ShiftsService {
           return created;
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
-      )
-      .catch((error: unknown) =>
-        rethrowUniqueViolation(error, [{ index: 'Shift_shopId_openedById_openToken_key', code: 'SHIFT_ALREADY_OPEN', message: SHIFT_ALREADY_OPEN_MESSAGE }]),
-      );
+      ),
+    ).catch((error: unknown) =>
+      rethrowUniqueViolation(error, [{ index: 'Shift_shopId_openedById_openToken_key', code: 'SHIFT_ALREADY_OPEN', message: SHIFT_ALREADY_OPEN_MESSAGE }]),
+    );
     return this.view(shift);
   }
 
