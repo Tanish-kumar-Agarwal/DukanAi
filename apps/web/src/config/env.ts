@@ -6,6 +6,9 @@ const apiUrlSchema = z.string().url();
 /** The `<meta>` the root layout renders so the browser learns the API URL at request time. */
 export const API_URL_META_NAME = 'dukaanai-api-url';
 
+/** The `<meta>` the root layout renders so the browser learns whether this server offers Google sign-in. */
+export const GOOGLE_SIGNIN_META_NAME = 'dukaanai-google-signin';
+
 let resolvedApiUrl: string | undefined;
 
 /**
@@ -41,6 +44,31 @@ export function publicApiUrl(): string {
 
 /** Values the committed templates and generators leave behind. */
 const PLACEHOLDER = /replace_me|your_|change_?me|placeholder|todo|xxx/i;
+
+/** Template leftovers in OAuth credentials; a provider registered with them only produces confusing OAuth errors. */
+const OAUTH_PLACEHOLDER = /replace_me|your_|change_?me|placeholder/i;
+
+export function hasGoogleCredentials<T extends { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string }>(
+  config: T,
+): config is T & { GOOGLE_CLIENT_ID: string; GOOGLE_CLIENT_SECRET: string } {
+  const { GOOGLE_CLIENT_ID: id, GOOGLE_CLIENT_SECRET: secret } = config;
+  return Boolean(id && secret && !OAUTH_PLACEHOLDER.test(id) && !OAUTH_PLACEHOLDER.test(secret));
+}
+
+/**
+ * Whether "Continue with Google" is offered, decided at RUN time like the API
+ * URL (roadmap 9.19): the server registers the NextAuth Google provider only
+ * with real GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET, and the button follows
+ * the same rule, in the browser through `<meta name="dukaanai-google-signin">`.
+ * The former build-time NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED was set by no
+ * image, so no deployment could offer Google sign-in.
+ */
+export function googleSignInEnabled(): boolean {
+  if (typeof window === 'undefined') {
+    return hasGoogleCredentials({ GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET });
+  }
+  return document.querySelector<HTMLMetaElement>(`meta[name="${GOOGLE_SIGNIN_META_NAME}"]`)?.content === 'on';
+}
 
 /**
  * A production server must run with a real NEXTAUTH_SECRET: set, at least 32

@@ -15,25 +15,25 @@ export class InventoryFeatureConfig {
   @Min(1)
   @IntegerFromEnv()
   @EnvVariable('INVENTORY_RECENT_ADJUSTMENTS_LIMIT')
-  recentAdjustmentsLimit: number = 20;
+  recentAdjustmentsLimit: number = 100;
 
   @IsInt()
   @Min(1)
   @IntegerFromEnv()
   @EnvVariable('INVENTORY_RECENT_MOVEMENTS_LIMIT')
-  recentMovementsLimit: number = 20;
+  recentMovementsLimit: number = 100;
 
   @IsInt()
   @Min(1)
   @IntegerFromEnv()
   @EnvVariable('INVENTORY_UNRESOLVED_ALERTS_LIMIT')
-  unresolvedAlertsLimit: number = 10;
+  unresolvedAlertsLimit: number = 50;
 
   @IsInt()
   @Min(1)
   @IntegerFromEnv()
   @EnvVariable('INVENTORY_LIST_LIMIT')
-  inventoryListLimit: number = 100;
+  inventoryListLimit: number = 50;
 
   @IsInt()
   @Min(1)
@@ -45,7 +45,7 @@ export class InventoryFeatureConfig {
   @Min(1000)
   @IntegerFromEnv()
   @EnvVariable('INVENTORY_RECON_LOCK_TTL_MS')
-  reconLockTtlMs: number = 600000;
+  reconLockTtlMs: number = 300000;
 
   @IsInt()
   @Min(1)
@@ -57,5 +57,5 @@ export class InventoryFeatureConfig {
   @Min(0)
   @IntegerFromEnv()
   @EnvVariable('INVENTORY_RECON_LOOKBACK_MS')
-  reconLookbackMs: number = 900000;
+  reconLookbackMs: number = 86400000;
 }

@@ -29,10 +29,11 @@ async function summary(request: APIRequestContext) {
 }
 
 test.describe('forgot / reset password pages (6.7)', () => {
-  test('the forgot page posts the address and shows the neutral confirmation', async ({ page }) => {
-    await page.goto('/login');
-    await page.getByRole('link', { name: 'Forgot?' }).click();
-    await page.waitForURL('**/forgot-password');
+  test('the forgot page posts the address and shows the neutral confirmation', async ({ page, request }) => {
+    // The login page links to it. Under the auth bypass the login page leaves for the dashboard as soon as
+    // it hydrates, which raced a click on the link, so the link is read from the served markup.
+    expect(await (await request.get('/login')).text()).toMatch(/<a[^>]*href="\/forgot-password"[^>]*>\s*Forgot\?/);
+    await page.goto('/forgot-password');
     await page.getByLabel('Email Address').fill(`nobody-${Date.now().toString(36)}@example.com`);
     const post = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/auth/forgot-password'));
     await page.getByRole('button', { name: 'Send reset link' }).click();

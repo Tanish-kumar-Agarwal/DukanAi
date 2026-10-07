@@ -69,6 +69,8 @@ services:
       SMTP_URL: ${SMTP_URL:-}
       EMAIL_FROM: ${EMAIL_FROM:-DukaanAI <no-reply@dukaanai.local>}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Google sign-in: the API verifies id tokens against the web's client id.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       LOG_LEVEL: ${LOG_LEVEL:-log}
       METRICS_TOKEN: ${METRICS_TOKEN:-}
       SENTRY_DSN: ${SENTRY_DSN:-}

@@ -62,18 +62,31 @@ export class PasswordResetService {
 
     const origin = this.appConfig.frontendUrl.split(',')[0].trim();
     const link = `${origin}/reset-password?token=${rawToken}`;
-    await this.email.send({
-      to: email,
-      subject: 'Reset your DukaanAI password',
-      text: [
-        `Hi ${user.name},`,
-        '',
-        'Someone asked to reset the password of your DukaanAI account. If that was you, open this link within the next hour:',
-        link,
-        '',
-        `If you did not ask for this, ignore this email; your password stays as it is.`,
-      ].join('\n'),
-    });
+    try {
+      await this.email.send({
+        purpose: 'password_reset',
+        to: email,
+        subject: 'Reset your DukaanAI password',
+        text: [
+          `Hi ${user.name},`,
+          '',
+          'Someone asked to reset the password of your DukaanAI account. If that was you, open this link within the next hour:',
+          link,
+          '',
+          `If you did not ask for this, ignore this email; your password stays as it is.`,
+        ].join('\n'),
+      });
+    } catch {
+      // The answer stays the neutral one: a 500 here would say "this address
+      // has an account" (unknown addresses never reach the relay). The link
+      // that was not delivered is voided, and the failure is logged and
+      // counted by EmailService (email_messages_total{outcome="failed"}).
+      await this.prisma.passwordResetToken
+        .updateMany({ where: { userId: user.id, tokenHash: hashToken(rawToken), usedAt: null }, data: { usedAt: new Date() } })
+        .catch((err: unknown) => this.logger.error(`Undelivered reset token of user ${user.id} could not be voided: ${err instanceof Error ? err.message : String(err)}`));
+      this.logger.error(`Password reset link for user ${user.id} was not delivered; the user was given the neutral answer`);
+      return { message: FORGOT_PASSWORD_MESSAGE };
+    }
     this.logger.log(`Password reset link sent to user ${user.id}`);
     return { message: FORGOT_PASSWORD_MESSAGE };
   }
@@ -154,6 +167,7 @@ export class PasswordResetService {
   private async notifyPasswordChanged(email: string, how: string): Promise<void> {
     try {
       await this.email.send({
+        purpose: 'password_changed',
         to: email,
         subject: 'Your DukaanAI password was changed',
         text: [

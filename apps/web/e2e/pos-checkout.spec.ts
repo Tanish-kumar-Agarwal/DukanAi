@@ -184,7 +184,7 @@ test.describe('POS checkout', () => {
     expect(result.receiptTotalText).toBe(money(Number(invoice.totalAmount)));
     expect(result.receiptChangeText).toBe(money(Number(invoice.changeAmount)));
     expect(Number(invoice.changeAmount)).toBeGreaterThan(0);
-    expect(page.getByTestId('receipt-invoice-number')).toHaveText(invoice.invoiceNumber);
+    await expect(page.getByTestId('receipt-invoice-number')).toHaveText(invoice.invoiceNumber);
 
     // Custom line: isCustom, no product, CUSTOM sku, priced as typed.
     const customLine = invoice.items.find((item) => item.productName === customName);

@@ -6,7 +6,7 @@ import { hydrateFromEnv } from './hydrate-from-env';
 import { AppConfig } from './domains/app.config';
 import { DatabaseConfig } from './domains/database.config';
 import { JwtConfig } from './domains/jwt.config';
-import { AuthConfig, assertAuthBypassPermitted, parseAuthDisabled } from './domains/auth.config';
+import { AuthConfig, assertAuthBypassPermitted, parseAuthDisabled, parseGoogleClientId } from './domains/auth.config';
 import { RedisConfig } from './domains/redis.config';
 import { StorageConfig } from './domains/storage.config';
 import { AiConfig } from './domains/ai.config';
@@ -80,6 +80,7 @@ function validateConfig<T extends object>(configClass: T): T {
         // fails the @IsBoolean validation below and refuses to boot.
         Object.assign(config, {
           authDisabled: parseAuthDisabled(process.env.AUTH_DISABLED),
+          googleClientId: parseGoogleClientId(process.env.GOOGLE_CLIENT_ID),
         });
         validateConfig(config);
         // The bypass is refused outright outside development/test (P1-6).

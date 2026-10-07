@@ -7,6 +7,8 @@ interface AppStore {
 }
 
 export const useAppStore = create<AppStore>((set) => ({
-  sidebarOpen: true,
+  // The phone menu (below md; the sidebar is always shown from md up) starts
+  // closed: open, its overlay covered the POS on every page load (roadmap 9.19).
+  sidebarOpen: false,
   toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
 }));

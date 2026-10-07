@@ -15,13 +15,13 @@ export class EventsFeatureConfig {
   @Min(1)
   @IntegerFromEnv()
   @EnvVariable('EVENTS_RECENT_LIMIT')
-  recentEventsLimit: number = 100;
+  recentEventsLimit: number = 50;
 
   @IsInt()
   @Min(1)
   @IntegerFromEnv()
   @EnvVariable('EVENTS_WEBHOOK_DELIVERY_LIMIT')
-  webhookDeliveryLimit: number = 50;
+  webhookDeliveryLimit: number = 5;
 
   @IsInt()
   @Min(1)

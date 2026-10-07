@@ -142,6 +142,20 @@ export const errorsTrackedTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+/**
+ * Outbound email by purpose (invitation, password_reset, password_changed)
+ * and outcome: `sent` (the relay accepted it), `failed` (the relay refused
+ * or was unreachable), `logged` (no SMTP_URL, written to the log instead).
+ * A failed reset link is invisible to the user by design (the answer never
+ * says whether an account exists), so this is how anyone learns of it.
+ */
+export const emailMessagesTotal = new Counter({
+  name: 'email_messages_total',
+  help: 'Outbound email messages by purpose and outcome (sent, failed, logged).',
+  labelNames: ['purpose', 'outcome'] as const,
+  registers: [metricsRegistry],
+});
+
 /** Status label as the code, e.g. "503"; everything a route answers is counted. */
 export function statusLabel(statusCode: number): string {
   return String(Number.isFinite(statusCode) ? statusCode : 0);

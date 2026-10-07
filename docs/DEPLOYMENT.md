@@ -217,7 +217,12 @@ same through `docker compose stop`.
 ## Environment
 
 API (`apps/api/.env.example` documents every key; the class defaults cover
-the tuning values, so a container needs only these):
+the tuning values, so a container needs only these). No env file is in the
+image, so a container runs the class default of every variable it is not
+given: those defaults equal `apps/api/.env.production`, and
+`src/config/production-defaults.spec.ts` fails the build when the two part
+(roadmap 9.19 found production running 30-day sessions and a 0.4 OCR match
+threshold that the template said were 12 h and 0.85):
 
 | Variable | Required | Notes |
 |---|---|---|
@@ -228,8 +233,9 @@ the tuning values, so a container needs only these):
 | `FRONTEND_URL` | yes | browser origin(s), comma-separated: CORS and sockets |
 | `TRUST_PROXY` | recommended | hop count of proxies in front; the web server is one hop on sign-in |
 | `STORAGE_ROOT`, `UPLOAD_TEMP_DIR` | `STORAGE_ROOT` required in production | an absolute path on a persistent volume (billing evidence; a relative or placeholder root refuses to boot) and a writable temp dir |
-| `SMTP_URL`, `EMAIL_FROM` | for invitations / password reset | production refuses to issue an invitation without SMTP |
-| `GEMINI_API_KEY`, `OCR_MODEL` | for the AI scanner | 503 `OCR_NOT_CONFIGURED` otherwise |
+| `SMTP_URL`, `EMAIL_FROM` | for invitations / password reset | production answers 503 to an invitation or a reset request without SMTP; a message the relay refuses is 502 `INVITATION_EMAIL_FAILED` (nothing is kept) or, for a reset link, the same neutral answer with the link voided, and counts in `email_messages_total{outcome="failed"}` (alert `DukaanAiEmailDeliveryFailing`) |
+| `GEMINI_API_KEY`, `OCR_MODEL` | for the AI scanner | 503 `OCR_NOT_CONFIGURED` otherwise; `OCR_TOTAL_TIMEOUT_MS` (50 s) bounds every attempt of one scan below the edge's 60 s |
+| `GOOGLE_CLIENT_ID` | for Google sign-in | the web's OAuth client id; the API accepts only id tokens issued for it, and answers 503 `GOOGLE_SIGNIN_NOT_CONFIGURED` without it |
 | `SHUTDOWN_*`, `HTTP_KEEP_ALIVE_TIMEOUT_MS`, `QUEUE_READY_TIMEOUT_MS` | optional | above |
 | `LOG_LEVEL` | optional | most verbose level printed (default `log` in production, which refuses `debug`/`verbose`); JSON lines with the correlation id |
 | `METRICS_ENABLED`, `METRICS_TOKEN` | optional | `GET /api/metrics` (Prometheus); the token (16+ characters) makes the scrape require a bearer token. See `docs/OBSERVABILITY.md` |
@@ -245,7 +251,7 @@ Web:
 | `NEXT_PUBLIC_API_URL` | build (inlined) and runtime (CSP `connect-src`) | the API as the browser reaches it |
 | `API_INTERNAL_URL` | runtime, optional | the API as the web server reaches it (sign-in, refresh); defaults to the public URL |
 | `NEXTAUTH_SECRET`, `NEXTAUTH_URL` | runtime | 32+ character secret; the web's public origin |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED` | runtime, optional (the flag is inlined at build) | Google sign-in is registered only with real values; the button shows only when the flag is `true` at build time |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | runtime, optional | Google sign-in is registered only with real values, and the "Continue with Google" button follows the same rule at run time (`<meta name="dukaanai-google-signin">`, roadmap 9.19); give the API the same `GOOGLE_CLIENT_ID` |
 
 `NEXT_PUBLIC_AUTH_DISABLED` and `AUTH_DISABLED` are never set in a container:
 both builds and the API refuse them under `NODE_ENV=production`. Every

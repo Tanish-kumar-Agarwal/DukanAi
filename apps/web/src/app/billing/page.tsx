@@ -38,7 +38,7 @@ function BillingContent() {
   const discount = usePosStore((s) => s.discount);
   const notes = usePosStore((s) => s.notes);
   const heldCarts = usePosStore((s) => s.heldCarts);
-  // Scanning waits until the cart is persisted under this shop (roadmap 6.5): a scan into the anonymous scope could land in another shop's session.
+  // A scan reaches the cart only once the cart is persisted under this shop (roadmap 6.5): a scan into the anonymous scope could land in another shop's session.
   const scopedShopId = usePosScope((s) => s.shopId);
   const addProduct = usePosStore((s) => s.addProduct);
   const addCustomItem = usePosStore((s) => s.addCustomItem);
@@ -178,8 +178,26 @@ function BillingContent() {
     [addProduct, toast, focusSearch],
   );
 
+  // Scans that arrive before the POS is scoped to the shop (GET /shops/me is
+  // slow on a weak network) wait here and are added once it is (roadmap 9.19).
+  const pendingScansRef = useRef<string[]>([]);
+
+  // The scanner is always listening; what a scan means depends on what is open.
   const handleScan = useCallback(
     async (code: string) => {
+      if (scopedShopId === null) {
+        pendingScansRef.current.push(code);
+        toast(`Scanned ${code}: it is added as soon as the shop has loaded`, 'info');
+        return;
+      }
+      if (paymentOpen || holdOpen || customOpen) {
+        // The hook swallowed the scanner's Enter, which would have confirmed this dialog.
+        const panel = paymentOpen ? 'payment' : holdOpen ? 'hold' : 'custom item';
+        toast(`Scanned ${code} while the ${panel} panel is open: close it, then scan again to add the item`, 'warning');
+        return;
+      }
+      // A scan on the last sale's receipt is the next customer's first item.
+      if (receipt) setReceipt(null);
       setQuery('');
       try {
         const product = await searchApi.barcode(code);
@@ -196,10 +214,18 @@ function BillingContent() {
         }
       }
     },
-    [handleAdd, toast],
+    [handleAdd, toast, paymentOpen, holdOpen, customOpen, receipt, scopedShopId],
   );
 
-  useBarcodeScanner(handleScan, { enabled: scopedShopId !== null && !receipt && !paymentOpen && !holdOpen && !customOpen });
+  useBarcodeScanner(handleScan);
+
+  useEffect(() => {
+    if (scopedShopId === null || pendingScansRef.current.length === 0) return;
+    const queued = pendingScansRef.current.splice(0);
+    void (async () => {
+      for (const code of queued) await handleScan(code);
+    })();
+  }, [scopedShopId, handleScan]);
 
   const handleAddCustom = useCallback(
     (input: CustomItemInput): string | null => {

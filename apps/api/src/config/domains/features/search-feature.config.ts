@@ -21,13 +21,13 @@ export class SearchFeatureConfig {
   @Min(1)
   @IntegerFromEnv()
   @EnvVariable('SEARCH_RESULT_LIMIT')
-  searchResultLimit: number = 5;
+  searchResultLimit: number = 50;
 
   @IsInt()
   @Min(1)
   @IntegerFromEnv()
   @EnvVariable('SEARCH_ANALYTICS_LIMIT')
-  analyticsLimit: number = 10;
+  analyticsLimit: number = 1000;
 
   /** SearchHistory rows one shop may write per minute (roadmap 5.3); searches beyond it are served but not recorded. */
   @IsInt()

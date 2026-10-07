@@ -2,8 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { createTransport, Transporter } from 'nodemailer';
 import { EmailConfig } from '../../config/domains/email.config';
 import { isProductionEnv } from '../../config/validation/env-rules';
+import { emailMessagesTotal } from '../observability/metrics';
+
+/** What a message is for: the `purpose` label of `email_messages_total`. */
+export type EmailPurpose = 'invitation' | 'password_reset' | 'password_changed';
 
 export interface OutboundEmail {
+  purpose: EmailPurpose;
   to: string;
   subject: string;
   text: string;
@@ -18,7 +23,9 @@ export type EmailTransport = Pick<Transporter, 'sendMail'>;
  * developer can pick up the token or link from the console. `isConfigured`
  * tells callers whether a message will actually leave the process, so that
  * flows which must not fall back to logging (invitations in production) can
- * refuse instead.
+ * refuse instead. A relay failure is logged, counted
+ * (`email_messages_total{outcome="failed"}`) and rethrown: the caller decides
+ * what the user is told and undoes what the message was for.
  */
 @Injectable()
 export class EmailService {
@@ -46,10 +53,25 @@ export class EmailService {
 
   async send(message: OutboundEmail): Promise<void> {
     if (!this.transport) {
+      emailMessagesTotal.inc({ purpose: message.purpose, outcome: 'logged' });
       this.logger.warn(`[email not sent, SMTP_URL unset] to=${message.to} subject=${JSON.stringify(message.subject)}\n${message.text}`);
       return;
     }
-    await this.transport.sendMail({ from: this.config.from, to: message.to, subject: message.subject, text: message.text });
+    try {
+      await this.transport.sendMail({ from: this.config.from, to: message.to, subject: message.subject, text: message.text });
+    } catch (err) {
+      emailMessagesTotal.inc({ purpose: message.purpose, outcome: 'failed' });
+      this.logger.error(`Email (${message.purpose}) to ${message.to} was not accepted by the relay: ${describeSmtpError(err)}`);
+      throw err;
+    }
+    emailMessagesTotal.inc({ purpose: message.purpose, outcome: 'sent' });
     this.logger.log(`Email sent to ${message.to}: ${message.subject}`);
   }
+}
+
+/** The relay's own words (nodemailer puts the SMTP reply in `response`), without the message body. */
+function describeSmtpError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const { code, responseCode, response } = err as Error & { code?: string; responseCode?: number; response?: string };
+  return [code, responseCode, response ?? err.message].filter((part) => part !== undefined && part !== '').join(' ');
 }

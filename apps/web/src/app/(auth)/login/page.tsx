@@ -9,12 +9,14 @@ import { ShoppingBag, Lock, Mail, ArrowRight, AlertCircle } from 'lucide-react';
 import { useToast } from '@/components/ui/Toast';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
 import { sanitizeCallbackUrl } from '@/lib/safe-callback-url';
+import { googleSignInEnabled } from '@/config/env';
 
 // Never statically generated — searchParams driven error display and real-time auth state.
 export const dynamic = 'force-dynamic';
-const googleOAuthEnabled = process.env.NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED === 'true';
 
 function LoginPageContent() {
+  // Decided by the server at run time (roadmap 9.19): the provider exists only with real credentials.
+  const googleOAuthEnabled = googleSignInEnabled();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -45,6 +47,8 @@ function LoginPageContent() {
         OAuthCallback: 'Google sign-in failed. Please try again.',
         OAuthAccountNotLinked: 'This Google account is not linked. Sign in with email instead.',
         AccessDenied: 'Google sign-in was refused. If you registered with a password, sign in with it instead.',
+        GoogleNotConfigured: 'Google sign-in is not set up on the server yet (GOOGLE_CLIENT_ID). Sign in with your email and password.',
+        GoogleApiUnreachable: 'Google confirmed your account, but the DukaanAI server could not be reached. Try again in a moment.',
         Callback: 'Authentication failed. Please try again.',
         default: 'An unexpected error occurred.',
       };

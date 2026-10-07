@@ -1596,7 +1596,18 @@ function mapReceiptGstRow(raw: Raw): ReceiptGstRow {
 export function mapReceiptPayload(raw: Raw): ReceiptPayload {
   const shop = asRaw(raw.shop);
   const totals = asRaw(raw.totals);
-  const invoice = mapInvoiceDetail(asRaw(raw.invoice));
+  const rawInvoice = asRaw(raw.invoice);
+  // The receipt's invoice is a header: its tax split travels in `totals` and the
+  // sale a return reverses as `original` (GET /billing/invoices/:id/receipt).
+  // Read without them, every printed receipt showed CGST/SGST/IGST as ₹0.00 and
+  // no return named its invoice (roadmap 9.19).
+  const invoice = mapInvoiceDetail({
+    ...rawInvoice,
+    cgstAmount: rawInvoice.cgstAmount ?? totals.cgst,
+    sgstAmount: rawInvoice.sgstAmount ?? totals.sgst,
+    igstAmount: rawInvoice.igstAmount ?? totals.igst,
+    originalInvoice: rawInvoice.originalInvoice ?? rawInvoice.original,
+  });
   const items = Array.isArray(raw.items) ? asArray(raw.items).map(mapInvoiceItem) : invoice.items;
   const payments = Array.isArray(raw.payments) ? asArray(raw.payments).map(mapInvoicePayment) : invoice.payments;
   return {

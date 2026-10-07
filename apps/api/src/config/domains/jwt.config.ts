@@ -48,5 +48,5 @@ export class JwtConfig {
   @Matches(DURATION_PATTERN, DURATION_MESSAGE)
   @StringFromEnv()
   @EnvVariable('SESSION_ABSOLUTE_LIFETIME')
-  readonly sessionAbsoluteLifetime: string = '30d';
+  readonly sessionAbsoluteLifetime: string = '12h';
 }

@@ -24,9 +24,9 @@ production and staging location; locally the untracked `.env` / `.env.local`.
 | `DB_OPS_DATABASE_URL` | the backup user (RELOAD, REPLICATION CLIENT, SELECT...) | `backup-agent` / `db-ops` (`scripts/db/lib.sh`) | store → host `.env` / `dukaanai-secrets` | platform owner | the next backup run uses it; no user impact | same as above, for the backup user |
 | `MYSQL_ROOT_PASSWORD`, `MYSQL_PASSWORD` | the bundled MySQL of the reference stack only (never production: the production database is managed) | compose `mysql`, `db-ops` on the reference stack | local `.env` | developer | local only | recreate the volume or `ALTER USER` |
 | `REDIS_URL` | the Redis password (and TLS with `rediss://`) | API (`RedisModule`, BullMQ, cache, throttler) | store → API `.env` / `dukaanai-secrets` | platform owner | queues, cache, locks and counters reconnect; nothing persistent is lost (Redis is disposable, `docs/DATA_SAFETY.md`) | [Redis password](#redis_url) |
-| `SMTP_URL` | the mail relay credentials (invitations, password reset) | API (`EmailService`) | store → API `.env` / `dukaanai-secrets` | platform owner | the next mail uses it; an invalid value makes invitations 503 | [SMTP](#smtp_url) |
+| `SMTP_URL` | the mail relay credentials (invitations, password reset) | API (`EmailService`) | store → API `.env` / `dukaanai-secrets` | platform owner | the next mail uses it; without a value production answers invitations and reset requests 503, and a value the relay refuses makes an invitation 502 `INVITATION_EMAIL_FAILED` (nothing kept) and a reset link silently undelivered (counted, alert `DukaanAiEmailDeliveryFailing`) | [SMTP](#smtp_url) |
 | `ALERT_SMTP_PASSWORD` | the relay credentials Alertmanager mails with | `alertmanager` (`deploy/alertmanager/render.sh`) | store → host `.env` | platform owner | the next notification uses it | same relay as above; restart `alertmanager` |
-| `GOOGLE_CLIENT_SECRET` (with `GOOGLE_CLIENT_ID`) | Google sign-in | web (NextAuth Google provider); the API verifies the id token with the client id only | store → web `.env` / `dukaanai-secrets` | platform owner | Google sign-in fails until the web restarts with the new value; password sessions untouched | [Google](#google_client_secret) |
+| `GOOGLE_CLIENT_SECRET` (with `GOOGLE_CLIENT_ID`) | Google sign-in | web (NextAuth Google provider; the button shows only with real values); the API verifies the id token against `GOOGLE_CLIENT_ID` alone (`AuthConfig`) | store → web `.env` / `dukaanai-secrets`; the client id also to the API | platform owner | Google sign-in fails until the web restarts with the new value; password sessions untouched | [Google](#google_client_secret) |
 | `GEMINI_API_KEY` | the OCR model account (`POST /ocr/scan-bill`) | API (`OcrService`) | store → API `.env` / `dukaanai-secrets` | platform owner | OCR answers 503 `OCR_NOT_CONFIGURED` on a blank value, 502 on an invalid one | [Gemini](#gemini_api_key) |
 | `SENTRY_DSN` | where tracked errors go (a write-only endpoint) | API (`ErrorTracking`) | store → API `.env` / `dukaanai-secrets` | platform owner | errors go to the new project key after a restart | [Sentry](#sentry_dsn) |
 | `METRICS_TOKEN` | `GET /api/metrics` (bearer) | API (`MetricsController`), Prometheus (`credentials_file`) | store → API `.env` and the Prometheus credentials file | platform owner | scrapes 401 until Prometheus carries the new token | [Metrics token](#metrics_token) |
@@ -120,8 +120,10 @@ behind the button; keep the TLS CA path (`DB_CA_FILE`) as it was.
 1. New credentials at the relay (keep the old ones valid until step 3).
 2. New `SMTP_URL` (and `ALERT_SMTP_PASSWORD`) in the store and the `.env`s;
    restart the API and `alertmanager`.
-3. Check: an invitation mail arrives (`POST /invitations/generate`), a test
-   alert mail arrives; then revoke the old credentials.
+3. Check: an invitation mail arrives (`POST /invitations/generate` answers
+   201, not 502 `INVITATION_EMAIL_FAILED`), a test alert mail arrives, and
+   `email_messages_total{outcome="failed"}` stays flat; then revoke the old
+   credentials.
 
 ### `GOOGLE_CLIENT_SECRET`
 
@@ -136,7 +138,7 @@ behind the button; keep the TLS CA path (`DB_CA_FILE`) as it was.
 
 1. Create a new key in Google AI Studio; new value in the store and the API
    `.env`; restart the API.
-2. Check: `POST /ocr/scan-bill` with a sample bill answers 200 (not 503 /
+2. Check: `POST /ocr/scan-bill` with a sample bill answers 201 (not 503 /
    502); then delete the old key.
 
 ### `SENTRY_DSN`

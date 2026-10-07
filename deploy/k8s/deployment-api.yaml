@@ -73,6 +73,9 @@ spec:
               valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: SMTP_URL } }
             - name: GEMINI_API_KEY
               valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: GEMINI_API_KEY } }
+            # The web's Google client id: the API accepts only id tokens issued for it.
+            - name: GOOGLE_CLIENT_ID
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: GOOGLE_CLIENT_ID } }
             - name: METRICS_TOKEN
               valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: METRICS_TOKEN } }
             - name: SENTRY_DSN

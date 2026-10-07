@@ -314,13 +314,20 @@ Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
 - `GET /search?q&limit` returns lean results `{ id, name, sku, barcode,
   sellingPrice, mrp, gstRate, cessRate, unit, currentStock, type, isActive,
   imageUrl, categoryName }` ranked by relevance (exact barcode/SKU first,
-  then name). `q` (here, on `/search/suggestions` and on `/products`) is
+  then name). Products whose name, SKU or alias holds the whole query are
+  ranked before any product that shares only a word with it, so a product
+  typed in full is found however many others share its words (roadmap
+  9.19). `q` (here, on `/search/suggestions` and on `/products`) is
   normalised and cut to 100 characters, never rejected for length; a
   repeated `q` reads as its first value. Search history is recorded up to
   `SEARCH_HISTORY_MAX_PER_MINUTE` searches per shop and minute; a search past
   that budget is answered but not recorded.
-- `GET /search/barcode/:code` returns exactly one product or
-  `404 BARCODE_NOT_FOUND`; `409 BARCODE_AMBIGUOUS` with `details.candidates`.
+- `GET /search/barcode/:code` returns exactly one product (the lean shape
+  above, plus `variantId` for a variant's barcode) or
+  `404 BARCODE_NOT_FOUND`; `409 BARCODE_AMBIGUOUS` with `details.candidates`,
+  one lean product per match (price and stock included, so the POS picker
+  can sell the chosen one). Ambiguity comes from an alternate barcode
+  (`ProductBarcode`) or a variant carrying another product's code.
 - Barcodes are unique per shop: `409 BARCODE_IN_USE` on create/update.
 - `POST /products` / `PATCH /products/:id` accept `cessRate` (percent, 0-100).
 - Price changes on `PATCH /products/:id` (selling/cost/MRP/wholesale price,

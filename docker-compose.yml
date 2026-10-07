@@ -93,6 +93,9 @@ services:
       SMTP_URL: ${SMTP_URL:-}
       EMAIL_FROM: ${EMAIL_FROM:-DukaanAI <no-reply@dukaanai.local>}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # The same client id as the web's: the API accepts only id tokens issued
+      # for it (blank = Google sign-in off, POST /auth/google answers 503).
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       # Observability (roadmap 7.6): JSON logs at this level, GET /api/metrics
       # (bearer token when METRICS_TOKEN is set), error tracking once SENTRY_DSN is set.
       LOG_LEVEL: ${LOG_LEVEL:-log}

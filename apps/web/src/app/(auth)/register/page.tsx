@@ -8,12 +8,11 @@ import { motion } from 'framer-motion';
 import { Lock, Mail, User, Store, ArrowRight, AlertCircle, KeyRound } from 'lucide-react';
 import { useToast } from '@/components/ui/Toast';
 
-import { clientConfig } from '@/config/env';
+import { clientConfig, googleSignInEnabled } from '@/config/env';
 
 const API_URL = clientConfig.NEXT_PUBLIC_API_URL;
 
 export const dynamic = 'force-dynamic';
-const googleOAuthEnabled = process.env.NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED === 'true';
 
 /** An invitation code is 64 hex characters (the API refuses anything else). */
 const INVITE_TOKEN = /^[0-9a-f]{64}$/;
@@ -27,6 +26,8 @@ export default function RegisterPage() {
 }
 
 function RegisterForm() {
+  // Decided by the server at run time (roadmap 9.19): the provider exists only with real credentials.
+  const googleOAuthEnabled = googleSignInEnabled();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');

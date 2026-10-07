@@ -220,4 +220,18 @@ test.describe('real sign-in (6.9)', () => {
     await page.waitForURL('**/dashboard');
     await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
   });
+
+  test('Google sign-in is offered only by a server with real credentials, and a failure says why (9.19)', async ({ page }) => {
+    // This web server runs with the template placeholders: decided at run time, the pages offer no Google button.
+    await page.goto('/login');
+    await expect(page.locator('meta[name="dukaanai-google-signin"]')).toHaveAttribute('content', 'off');
+    await expect(page.getByRole('button', { name: /google/i })).toHaveCount(0);
+    await page.goto('/register');
+    await expect(page.getByRole('button', { name: /google/i })).toHaveCount(0);
+
+    // A deployment whose API lacks GOOGLE_CLIENT_ID answers 503; the page says that, not "use your password".
+    await page.goto('/login?error=GoogleNotConfigured');
+    await expect(page.getByText('Google sign-in is not set up on the server yet', { exact: false })).toBeVisible();
+    await expect(page.getByText('If you registered with a password', { exact: false })).toHaveCount(0);
+  });
 });

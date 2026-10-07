@@ -194,17 +194,13 @@ export class SearchEngineService {
       throw new NotFoundException({ message: 'Barcode not found', code: 'BARCODE_NOT_FOUND' });
     }
     if (candidates.size > 1) {
+      // Each candidate is the same lean product a single match returns: the
+      // POS picker shows its price and stock and sells the one the cashier
+      // picks (roadmap 9.19; ids and names alone sold nothing).
       throw new ConflictException({
         message: 'Barcode is assigned to multiple products',
         code: 'BARCODE_AMBIGUOUS',
-        details: {
-          candidates: [...candidates.values()].map((p) => ({
-            id: p.id,
-            name: p.name,
-            sku: p.sku,
-            ...(p.variantId ? { variantId: p.variantId } : {}),
-          })),
-        },
+        details: { candidates: [...candidates.values()] },
       });
     }
     return [...candidates.values()][0];
@@ -317,11 +313,33 @@ export class SearchEngineService {
       );
     }
 
-    return this.prisma.product.findMany({
-      where: { shopId, isDeleted: false, isActive: true, OR: or },
-      select: CANDIDATE_SELECT,
-      take: this.searchFeatureConfig.fuzzyCandidateLimit,
-    });
+    // Both lists are capped, so their order decides who is ranked at all.
+    // Rows whose name, SKU or alias holds the whole query come first; the
+    // broad list (any one word, through the fulltext index) is ordered by its
+    // relevance. Unordered, a shop where more products than the cap share a
+    // word with the query (every "Tata ..." or "... 1kg") lost the exact
+    // product before ranking: typing a product's full name did not find it
+    // (roadmap 9.19 pre-flight).
+    const take = this.searchFeatureConfig.fuzzyCandidateLimit;
+    const live = { shopId, isDeleted: false, isActive: true };
+    const [phrase, broad] = await Promise.all([
+      this.prisma.product.findMany({
+        where: { ...live, OR: containsTerms.flatMap((term) => [{ name: { contains: term } }, { sku: { contains: term } }, { aliases: { contains: term } }]) },
+        select: CANDIDATE_SELECT,
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
+        take,
+      }),
+      this.prisma.product.findMany({
+        where: { ...live, OR: or },
+        select: CANDIDATE_SELECT,
+        orderBy: fulltextTerm
+          ? [{ _relevance: { fields: ['name', 'aliases', 'searchKeywords'], search: fulltextTerm, sort: 'desc' } }, { id: 'asc' }]
+          : [{ name: 'asc' }, { id: 'asc' }],
+        take,
+      }),
+    ]);
+    const seen = new Set(phrase.map((row) => row.id));
+    return [...phrase, ...broad.filter((row) => !seen.has(row.id))];
   }
 
   /** Scores candidates with fuzzysort against the raw query; unmatched rows keep DB order at the tail. */

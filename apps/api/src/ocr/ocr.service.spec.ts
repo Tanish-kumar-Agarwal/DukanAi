@@ -112,6 +112,30 @@ describe('OcrService (roadmap 4.4)', () => {
       await expect(service.processDocument('shop-1', PNG, 'BILL')).rejects.toMatchObject({ response: { code: 'OCR_TIMEOUT' } });
     });
 
+    it('the whole call ends within OCR_TOTAL_TIMEOUT_MS: the budget cuts an attempt, and no retry starts that cannot fit (roadmap 9.19)', async () => {
+      // A model that never answers: the per-attempt timeout (30 s) is longer than the whole budget.
+      config.timeoutMs = 30_000;
+      config.totalTimeoutMs = 300;
+      fetchMock.mockImplementation(
+        (_url: string, init: { signal: AbortSignal }) =>
+          new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))),
+      );
+      const started = Date.now();
+      await expect(service.processDocument('shop-1', PNG, 'BILL')).rejects.toMatchObject({ constructor: BadGatewayException, response: { code: 'OCR_TIMEOUT' } });
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // A busy model (503) with a backoff that would outlast the budget: answered at once, not after the wait.
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValue(geminiAnswer('overloaded', 503));
+      config.backoffMs = 10_000;
+      config.totalTimeoutMs = 5_000;
+      const busy = Date.now();
+      await expect(service.processDocument('shop-1', PNG, 'BILL')).rejects.toMatchObject({ response: { code: 'OCR_MODEL_ERROR', details: { status: 503 } } });
+      expect(Date.now() - busy).toBeLessThan(2_000);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
     it('an unreadable answer is a 502, never a successful empty scan', async () => {
       for (const text of ['not json at all', '{"foo": 1}', '']) {
         fetchMock.mockResolvedValue(geminiAnswer(text));

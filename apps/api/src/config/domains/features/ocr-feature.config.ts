@@ -39,7 +39,7 @@ export class OcrFeatureConfig {
   @Max(1)
   @NumberFromEnv()
   @EnvVariable('OCR_FUZZY_MATCH_THRESHOLD')
-  fuzzyMatchThreshold: number = 0.4;
+  fuzzyMatchThreshold: number = 0.85;
 
   @IsInt()
   @Min(1000)
@@ -51,5 +51,18 @@ export class OcrFeatureConfig {
   @Min(0)
   @IntegerFromEnv()
   @EnvVariable('OCR_BACKOFF_MS')
-  backoffMs: number = 2000;
+  backoffMs: number = 1000;
+
+  /**
+   * The whole model call, every attempt and backoff included, ends within this
+   * budget, below the edge's 60 s upstream timeout (Caddy
+   * `EDGE_UPSTREAM_TIMEOUT`, ingress `proxy-read-timeout`): three 30 s attempts
+   * used to run 93 s, so the user got the edge's 504 while the API kept
+   * calling the model (roadmap 9.19).
+   */
+  @IsInt()
+  @Min(1000)
+  @IntegerFromEnv()
+  @EnvVariable('OCR_TOTAL_TIMEOUT_MS')
+  totalTimeoutMs: number = 50000;
 }

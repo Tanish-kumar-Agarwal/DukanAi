@@ -384,6 +384,32 @@ tests:
         alertname: DukaanAiCertificateExpiring
         exp_alerts: []
 
+  # Email (roadmap 9.19): one refused reset link warns at once and clears
+  # half an hour later; messages the relay accepted never count.
+  - interval: 1m
+    input_series:
+      # one failed reset link at t=10m
+      - series: 'email_messages_total{job="dukaanai-api", instance="api:3002", purpose="password_reset", outcome="failed"}'
+        values: '0x10 1+0x50'
+      - series: 'email_messages_total{job="dukaanai-api", instance="api:3002", purpose="invitation", outcome="sent"}'
+        values: '0+3x60'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DukaanAiEmailDeliveryFailing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: DukaanAiEmailDeliveryFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              purpose: password_reset
+            exp_annotations:
+              summary: "Email delivery is failing (password_reset)"
+              description: "1 password_reset message(s) were not accepted by the mail relay in the last 30 minutes. Check SMTP_URL (credentials, quota) and the sender EMAIL_FROM against the provider, then the API log lines 'was not accepted by the relay' for the relay's own reply."
+      - eval_time: 45m
+        alertname: DukaanAiEmailDeliveryFailing
+        exp_alerts: []
+
   # Abuse (roadmap 9.15): a sustained flood of refused credential attempts
   # warns after ten minutes; a handful of 429s (a mistyped password) does not.
   - interval: 1m

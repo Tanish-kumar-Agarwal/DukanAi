@@ -355,7 +355,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `mode: 'insensitive'` is PostgreSQL-only and answered 500 here), five
   candidates, four lookups in flight, and the Dice similarity against
   `OCR_FUZZY_MATCH_THRESHOLD` is the reported `confidence`. Items are capped
-  at `OCR_MAX_ITEMS`. The web caller is the AI scanner page (roadmap 6.1).
+  at `OCR_MAX_ITEMS`. The model call (3 attempts with backoff) ends within
+  `OCR_TOTAL_TIMEOUT_MS` (50 s, under the edge's 60 s), and a retry that
+  cannot fit the budget is not made. The web caller is the AI scanner page (roadmap 6.1).
   `src/ocr/ocr.service.spec.ts` and
   `test/integration/ocr.integration-spec.ts` (stubbed `fetch`) cover it.
 - 4.5 / 4.6: the enterprise-invoice (`/invoices/generate`), returns-domain
@@ -697,8 +699,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   every page, applies the 80 mm receipt rules only while the receipt portal
   is mounted (`body:has(.receipt-print-root)`), and each printable page
   mounts its own `@page` through `PrintPageStyle`
-  (`src/components/print`; receipt 80 mm, invoice detail A4 under
-  `.print-document`). A customer edit sends '' for a blanked optional field
+  (`src/components/print`; invoice detail A4 under `.print-document`; the
+  receipt sets only the margin, its length is the thermal printer's roll
+  paper, 9.19; every print is in the light theme, `beforeprint`/`afterprint`). A customer edit sends '' for a blanked optional field
   (the API stores null; `UpdateCustomerDto.email` skips `IsEmail` for '')
   and the form lengths match the DTO (name 100, city 100, address 500, notes
   1000). Expenses tiles read `GET /expenses/summary` (this month in the
@@ -779,8 +782,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   needs the actor's open shift (409 `SHIFT_REQUIRED`; `GET /shifts/current`
   answers an empty body when there is none), `DELETE /customers/:id` is 204,
   the cancel and shift-close routes answer 200, `POST /billing/returns`
-  wraps the document in `{ invoice }`, and `POST /customers/:id/payments`
-  needs an `idempotencyKey`.
+  wraps the document in `{ invoice }`, `POST /customers/:id/payments`
+  needs an `idempotencyKey`, and under the bypass `/login` leaves for the
+  dashboard as soon as it hydrates, so a bypass test never clicks through
+  it (read its served markup, then go to the target page).
 
 ## Dependencies (roadmap phase 7)
 
@@ -1067,9 +1072,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `PRISMA_SLOW_QUERY_THRESHOLD`, `SALES_DEFAULT_PAGINATION_LIMIT` and
   `SALES_CREDIT_HOLD_THRESHOLD` had no reader and are gone from every
   template. `apps/api/.env.example` documents all 132 remaining variables with
-  their defaults; `apps/web/.env.example` adds `API_INTERNAL_URL`,
-  `NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED` (the Google button is hidden until it is
-  `true`) and `NEXT_STANDALONE`.
+  their defaults; `apps/web/.env.example` adds `API_INTERNAL_URL` and
+  `NEXT_STANDALONE`.
 - Phase 8 exit gate: `prisma migrate diff` is zero on MySQL 8 and MariaDB
   after every migration (CI runs it on MySQL 8), and the schema lint is
   `schema-conventions.spec.ts` in `npm test`: every `shopId` has a Shop
@@ -1471,7 +1475,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   on a refused role check; the access log line carries `userId`;
   `NoStoreMiddleware` (registered with the correlation middleware, so the
   integration fixture has it too) puts `Cache-Control: no-store` on every
-  answer; `.env.production` sets `SESSION_ABSOLUTE_LIFETIME=12h` (ASVS 3.3.2);
+  answer; `SESSION_ABSOLUTE_LIFETIME` is 12h (ASVS 3.3.2; the default since
+  9.19, the dev/test templates say 30d);
   alert `DukaanAiCredentialFlood` (sustained 429s on `/api/auth/*`, promtool
   test). The web register / reset forms only changed their copy and
   `minLength` to 12 (no layout change). Specs: `password-policy.spec.ts`,
@@ -1580,6 +1585,41 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `http://localhost:3002` to browsers). Docker on this machine: Debian
   mirrors are blocked, so images build on a sandbox-only base with
   `--build-arg NODE_VERSION=22.22.2-sandbox` (see DRILLS.md §5).
+
+- 9.19 pilot (`docs/PILOT.md`: plan, hardware setup, per-feature checklist,
+  defect log, sign-off; the shop-run rows and the sign-off are the owner's).
+  `apps/web/e2e/pilot-preflight.spec.ts` emulates the shop: a USB scanner is
+  a CDP `Input.dispatchKeyEvent` burst with explicit `timestamp`s 8 ms apart,
+  all queued at once (`keyboard.type` waits for the page between keys, no
+  scanner does), CPU throttling stands in for a slow tablet, receipts are
+  checked in print media and dark mode, photos are canvas JPEGs of 12 and 50
+  MP. `openPos` waits for the client-loaded product grid: the heading and
+  search box are server-rendered, and keys sent before hydration never reach
+  the hook. `useBarcodeScanner` times keys by `event.timeStamp` (handler time
+  dropped scans whenever rendering a keystroke took 50 ms: the production
+  build from 10x CPU throttling), puts the focused field's pre-burst value
+  back and swallows the Enter; the POS decides what a scan means (queued
+  until the cart is scoped to the shop, refused with a warning while the
+  payment / hold / custom panel is open, the next sale's first item on the
+  receipt). Phone photos are scaled before upload (`src/lib/photo.ts`: OCR
+  2048 px, Smart Capture 3072 px). `mapReceiptPayload` reads the tax split
+  from `totals` and the reversed sale from `original` (every reprint showed
+  CGST/SGST ₹0.00). `GET /search/barcode` 409 candidates are whole lean
+  products. POS search candidates are two ordered, capped lists
+  (`SearchEngineService.fetchCandidates`: rows whose name, SKU or alias
+  holds the whole query, by name; then the broad fulltext set by
+  `_relevance`); the single unordered `take` of `SEARCH_FUZZY_CANDIDATE_LIMIT`
+  lost the product typed in full once more products shared one of its
+  words. The image has no env file, so a container runs class defaults:
+  `src/config/production-defaults.spec.ts` requires every default to equal
+  `.env.production` unless the variable is deployment-set (then
+  `docker-compose.prod.yml` and `deploy/k8s` set it), image-set or listed as
+  not deployed, each with its reason. `scripts/pilot/readiness.mjs --web
+  --api` (owner checks with `PILOT_OWNER_EMAIL`/`PILOT_OWNER_PASSWORD`) is
+  the read-only day-0 check of a deployment: HTTPS, probes, the browser's
+  API URL, Google on both sides, SMTP (forgot-password 503), metrics hidden,
+  shop profile, OCR key (a non-image upload: 503 vs 400, no model call),
+  session lifetime.
 
 ## Toolchain
 
@@ -1693,17 +1733,32 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   token. A MANAGER revokes only their own invitations; ADMIN roles any.
 - `EmailService` (`src/common/email`, global) sends through nodemailer from
   `SMTP_URL`; unset, it logs each message (`isConfigured` false). Production
-  refuses to issue an invitation without SMTP (503). Integration specs
-  override the provider (`bootApp(b => b.overrideProvider(EmailService)...)`)
-  and read the token from the recorded message. The email links to
+  refuses to issue an invitation or a reset link without SMTP (503). Every
+  message names its `purpose` (`email_messages_total{purpose,outcome}`); a
+  relay refusal is logged with the relay's reply and rethrown: the invitation
+  row is deleted and the answer is 502 `INVITATION_EMAIL_FAILED` (a kept row
+  blocked the address for 48 h), a reset token is voided and the answer stays
+  the neutral one (a 500 there told an attacker the address has an account).
+  Integration specs override the provider
+  (`bootApp(b => b.overrideProvider(EmailService)...)`) and read the token
+  from the recorded message, or deliver through the real transport to
+  `test/integration/smtp-sink.ts` (`pilot-email.integration-spec.ts`). The email links to
   `<FRONTEND_URL>/register?invite=<token>`, which the web register page reads
   into its join mode (roadmap 6.1; the code can also be pasted).
 - Google sign-in: the web sends only `{ idToken: account.id_token }` to
   `POST /auth/google`, and registers the provider only with real credentials
-  (`hasGoogleCredentials`, placeholder-aware). The API never links a Google
-  identity to an existing account that was not created through Google (409,
-  surfaced as `AccessDenied` on the login page): anyone can register a
-  password account under someone else's address.
+  (`hasGoogleCredentials` in `src/config/env.ts`, placeholder-aware); the
+  login and register pages show the button by the same rule at run time
+  (`googleSignInEnabled()`, `<meta name="dukaanai-google-signin">`; the build
+  flag `NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED` is gone, no image ever set it). The
+  API reads `GOOGLE_CLIENT_ID` through `AuthConfig.googleClientId`
+  (compose, prod compose and Kubernetes pass it; unset or a placeholder is
+  503 `GOOGLE_SIGNIN_NOT_CONFIGURED`). The API never links a Google identity
+  to an existing account that was not created through Google (409, surfaced
+  as `AccessDenied` on the login page): anyone can register a password
+  account under someone else's address. Any other refusal redirects to its
+  own message (`GoogleNotConfigured`, `GoogleApiUnreachable`,
+  `OAuthCallback`), never the "use your password" one.
 
 ## WebSockets and correlation (roadmap 2.13, 2.14)
 
@@ -1748,7 +1803,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (`rotatedAt`, conditional `updateMany`) and writes a successor in one
   transaction; a consumed token presented again is reuse and revokes the
   family AND bumps `tokenVersion` (all sessions end); `absoluteExpiresAt`
-  (`SESSION_ABSOLUTE_LIFETIME`, 30d) caps a family, `JWT_REFRESH_EXPIRES_IN`
+  (`SESSION_ABSOLUTE_LIFETIME`, 12h) caps a family, `JWT_REFRESH_EXPIRES_IN`
   (7d) is one token's idle life. Access tokens live 15 min (`JWT_EXPIRES_IN`)
   and carry `sid` = familyId; `JwtStrategy`/the socket adapter reject a token
   whose family has no live row, so `POST /auth/logout`, `DELETE

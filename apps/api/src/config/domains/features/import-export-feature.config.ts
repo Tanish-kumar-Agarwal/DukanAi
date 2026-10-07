@@ -15,5 +15,5 @@ export class ImportExportFeatureConfig {
   @Min(1)
   @IntegerFromEnv()
   @EnvVariable('IMPORT_EXPORT_LIST_LIMIT')
-  exportListLimit: number = 100;
+  exportListLimit: number = 50;
 }
