@@ -81,8 +81,9 @@ staging with its rehearsed rollback, the pilot in a shop, the external penetrati
   `build_info{release}`, and the OCI labels carry the version and the commit. The compose files no longer set
   `APP_RELEASE` (an entry, even a blank one, replaced the image's own value). (9.21)
 - Rolling back to an earlier release follows `RELEASE.md` ("Rollback"): this release's last migration,
-  `20261008090000_onboarding_imports`, is additive, but an earlier build cannot read the ledger rows of an imported
-  opening balance, so once one exists the way back is the next fix or the pre-release backup, not the old image. (9.20, 9.21)
+  `20261008090000_onboarding_imports`, is additive, but an earlier build cannot read the ledger rows of an opening
+  balance (a product created with stock, an opening stock or udhar import), so once one exists the way back is the
+  next fix, not the old image. Rehearsed: rollback and roll forward in 25 s each. (9.20, 9.21)
 
 ### Phase 9: Data safety and production certification (9.1 to 9.22)
 

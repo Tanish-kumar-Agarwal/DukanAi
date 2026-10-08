@@ -87,22 +87,33 @@ jobs:
         run: printf '%s' "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
       # A version tag names one set of bits for good: staging and production run
       # what certify certified. A re-run of certify alone ("Re-run failed jobs")
-      # does not come here; a fix is the next version (RELEASE.md).
+      # does not come here; a fix is the next version (RELEASE.md). The registry
+      # is asked directly and its HTTP status decides: 404 is "not published",
+      # 200 "published", anything else stops the release. (`docker manifest
+      # inspect` reports an authorization failure as "no such manifest", which
+      # would read as "not published".)
       - name: A published version is never rebuilt
         if: startsWith(github.ref, 'refs/tags/')
         env:
           REG: ${{ steps.meta.outputs.registry }}
           VERSION: ${{ steps.meta.outputs.extra }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          repo="${REG#ghcr.io/}"
           for image in dukaanai-api dukaanai-web dukaanai-db-ops; do
-            if answer="$(docker manifest inspect "$REG/$image:$VERSION" 2>&1)"; then
-              echo "::error::$REG/$image:$VERSION is already published; a version is never rebuilt or re-pushed (cut the next version, RELEASE.md)"
-              exit 1
-            fi
-            grep -qiE 'manifest unknown|no such manifest|not found|name unknown' <<<"$answer" \
-              || { echo "::error::cannot tell whether $REG/$image:$VERSION exists: $answer"; exit 1; }
+            bearer="$(curl -fsS -u "$ACTOR:$TOKEN" "https://ghcr.io/token?service=ghcr.io&scope=repository:$repo/$image:pull" \
+              | node -e 'let b="";process.stdin.on("data",(d)=>b+=d).on("end",()=>process.stdout.write(JSON.parse(b).token||""))')" || bearer=""
+            [ -n "$bearer" ] || { echo "::error::no registry token for $repo/$image: cannot tell whether $VERSION exists"; exit 1; }
+            code="$(curl -sS -o /dev/null -w '%{http_code}' --head -H "Authorization: Bearer $bearer" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+              "https://ghcr.io/v2/$repo/$image/manifests/$VERSION")" || code="000"
+            case "$code" in
+              404) echo "$REG/$image:$VERSION: not published yet" ;;
+              200) echo "::error::$REG/$image:$VERSION is already published; a version is never rebuilt or re-pushed (cut the next version, RELEASE.md)"; exit 1 ;;
+              *) echo "::error::cannot tell whether $REG/$image:$VERSION exists: the registry answered $code"; exit 1 ;;
+            esac
           done
-          echo "$VERSION is not in the registry yet"
       - name: Build the three images from the repository root
         env:
           REG: ${{ steps.meta.outputs.registry }}

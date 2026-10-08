@@ -172,7 +172,8 @@ function main(argv) {
     console.error(`${tag} cannot be released:\n${problems.map((p) => `  - ${p}`).join('\n')}`);
     return 1;
   }
-  console.log(`${tag}: semantic version, package.json ${packageVersion}, CHANGELOG section dated ${changelogSection(changelog, tag).date}, above ${existingTags.length} existing tag(s)${onMain === undefined ? ' (main not known locally: not checked)' : ', on main'}`);
+  const earlier = existingTags.filter((t) => t !== tag && parseTag(t)).length;
+  console.log(`${tag}: semantic version, package.json ${packageVersion}, CHANGELOG section dated ${changelogSection(changelog, tag).date}, above ${earlier} earlier release tag(s)${onMain === undefined ? ' (main not known locally: not checked)' : ', on main'}`);
   return 0;
 }
 

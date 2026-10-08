@@ -83,7 +83,7 @@ git push origin vX.Y.Z
 ```
 
 `check` must end with `vX.Y.Z: semantic version, package.json X.Y.Z, CHANGELOG
-section dated ..., above N existing tag(s), on main`. It lists every problem
+section dated ..., above N earlier release tag(s), on main`. It lists every problem
 otherwise.
 
 Pushing the tag starts `.github/workflows/release.yml`. Its `images` job:
@@ -254,25 +254,77 @@ fix (the next version), not a restore.
 
 Its only migration after the 9.19 commit is
 `20261008090000_onboarding_imports`. It is additive (columns on the import
-tables and the `OPENING_BALANCE_EQUITY` ledger account), so the previous image
-works on it. That holds until an opening udhar or opening stock import is
-applied: then ledger rows carry `OPENING_BALANCE_EQUITY` and the previous build
-fails on the shop's ledger, balances and reconciliation. Check before rolling
-back:
+tables and the `OPENING_BALANCE_EQUITY` ledger account), so the previous
+image runs on it.
+
+That holds until rc3 writes the new account. It does so the first time a shop
+records opening stock or opening udhar, and that happens on a shop's first
+day:
+- a product created with stock on the Products page;
+- `POST /inventory-domain/:id/adjust` with `OPENING_BALANCE`;
+- an opening stock or customer import.
+
+Each posts against `OPENING_BALANCE_EQUITY`. From then on the previous build
+fails on that shop's ledger:
+- `POST /reconciliation/run` answers 500 and records a FAILED run, which also
+  pages `DukaanAiReconciliationDrift`;
+- the logs read `Value 'OPENING_BALANCE_EQUITY' not found in enum
+  'LedgerAccount'`;
+- sales, invoices and the dashboard keep working.
+
+Check before rolling back:
 
 ```sql
 SELECT COUNT(*) FROM LedgerTransaction WHERE account = 'OPENING_BALANCE_EQUITY';
 ```
 
 - At 0, roll back by image.
-- Above 0, fix forward: a database restore would lose the imports and every
-  sale made since.
+- Above 0, fix forward: deploy rc3 again or the next candidate. A database
+  restore would lose the openings and every sale since.
 
-Both findings come from the rehearsal recorded below: the previous `migrate`
-is a no-op, and the previous client cannot read the new value.
+No production database predates rc3, so this binds staging only. Later
+releases ship a new enum value one release before the code that writes it
+(`apps/api/prisma/MIGRATIONS.md`), which keeps the previous release readable.
 
 ## Rehearsal record
 
-| Release | Where | Steps | Result |
-|---|---|---|---|
-| v1.0.0-rc3 | pending | pending | pending |
+v1.0.0-rc3 was rehearsed on 2026-10-08, from the backup to the rollback and
+back. Staging does not exist yet, so the stand-in was the production-shaped
+drill stack of `docs/DRILLS.md` on the development machine: MySQL 8.0.46,
+Redis 7, the TLS edge, Prometheus, Alertmanager and the blackbox exporter.
+
+**Images.** They were built as `.github/workflows/release.yml` builds them,
+on the sandbox Node base (`docs/DRILLS.md` §5):
+- the candidate, from a clone whose `main` is the release commit `a1adc11`,
+  tagged `v1.0.0-rc3` there only (never pushed);
+- the previous release `sha-905425a`, the 9.19 commit.
+
+**Release check.** `release.mjs check v1.0.0-rc3` refused the branch before
+it is merged ("not on main"). It passed once `main` held the commit.
+
+**Image selection.** An overlay selected the images by `IMAGE_TAG`, the way
+`docker-compose.prod.yml` does.
+
+| Step | What ran | Result |
+|---|---|---|
+| Production before the release | `IMAGE_TAG=sha-905425a`: stack up, first backups of every kind, `smoke-remote.sh` | REMOTE SMOKE PASSED; reconciliation CLEAN |
+| 4. Backups | `db-ops backup --label pre-v1.0.0-rc3`, `documents-backup` | dump with its binary-log position (`binlog.000004:44051`); documents archive written |
+| 4. Deploy | `IMAGE_TAG=v1.0.0-rc3`, `run --rm migrate`, `up -d --wait` | applied `20261008090000_onboarding_imports`; API and web healthy |
+| 5. Smoke | `smoke-remote.sh … --http-port 8080`; `/api/health` on both hosts; readiness; Prometheus `build_info` | PASSED; `release` = `v1.0.0-rc3` on the API, the web and `build_info`; database and Redis up |
+| 3. Certify (subset) | `certify.sh --release v1.0.0-rc3` from the tagged clone: images, boot matrix, migrations on MySQL 8 and MariaDB 10.11, `release` | 4 / 4 PASS; the same run with `--release v1.0.0-rc4` FAILS the `release` step (5 mismatches) |
+| 6. Rollback | `IMAGE_TAG=sha-905425a`, `up -d --wait` | up in 25 s; its `migrate` answered "No pending migrations to apply" (exit 0); smoke PASSED |
+| The enum caveat | on the previous release, the shop whose opening stock the rc3 smoke had recorded | `POST /reconciliation/run` 500 and a FAILED run; dashboard and invoices 200 |
+| Roll forward | `IMAGE_TAG=v1.0.0-rc3`, `up -d --wait` | up in 25 s; smoke PASSED; that shop's reconciliation CLEAN |
+
+**Remaining owner-side gate.** The same steps on the real staging environment
+with the pushed tag, then the owner's approval.
+
+**Found by the rehearsal.**
+- `docker manifest inspect` reports a manifest it cannot read as "no such
+  manifest". The never-rebuilt guard now asks the registry for the HTTP status
+  instead; tested with a stub registry for 404, 200, 401, unreachable and a
+  refused token.
+- `smoke-remote.sh` gained `--http-port` for an edge whose plain HTTP is not
+  on port 80.
+- The rollback window of rc3 is a shop's first opening stock, not only an
+  import (above).

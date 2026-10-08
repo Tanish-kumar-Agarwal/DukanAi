@@ -16,16 +16,20 @@
 #   --probes-only     no registration, no sale
 #   --cacert FILE     trust this CA (an edge with `tls internal`)
 #   --timeout SEC     per request (default 20)
+#   --http-port PORT  the edge's plain HTTP port when it is not 80 (the
+#                     redirect check otherwise speaks HTTP to the origin's
+#                     port, which is the HTTPS one on a non-default edge)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-WEB=""; API=""; PROBES_ONLY=0; CACERT=""; TIMEOUT=20
+WEB=""; API=""; PROBES_ONLY=0; CACERT=""; TIMEOUT=20; HTTP_PORT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --probes-only) PROBES_ONLY=1; shift ;;
     --cacert) CACERT="$2"; shift 2 ;;
     --timeout) TIMEOUT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    --http-port) HTTP_PORT="$2"; shift 2 ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     -*) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
     *) if [ -z "$WEB" ]; then WEB="${1%/}"; elif [ -z "$API" ]; then API="${1%/}"; else printf 'unexpected argument: %s\n' "$1" >&2; exit 2; fi; shift ;;
   esac
@@ -45,6 +49,7 @@ for h in "$WEB_HOST" "$API_HOST"; do getent hosts "$h" >/dev/null 2>&1 || fail "
 step "HTTP is redirected to HTTPS on both hosts"
 for origin in "$WEB" "$API"; do
   http="http://${origin#https://}"
+  [ -n "$HTTP_PORT" ] && http="http://$(host_of "$origin"):$HTTP_PORT"
   out="$(curl -sS --max-time "$TIMEOUT" -o /dev/null -w '%{http_code} %{redirect_url}' "$http/" || true)"
   case "$out" in 30[18]\ https://*) printf '  %s -> %s\n' "$http" "${out#* }" ;; *) fail "$http answered '$out', expected a redirect to https" ;; esac
 done

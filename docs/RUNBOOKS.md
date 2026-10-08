@@ -422,7 +422,7 @@ peak, `docs/LOAD_TEST_BASELINE.md`). Cashiers wait on the Charge button.
    are locked in order), so a shop with many terminals and one product in
    every bill queues on that product.
 3. The database instance: CPU, IOPS, slow query log; Redis latency.
-4. The API: CPU and event-loop lag (`nodejs_eventloop_lag_seconds`).
+4. The API: CPU and event-loop lag (`dukaanai_nodejs_eventloop_lag_seconds`).
 
 **Fix**
 
@@ -449,19 +449,38 @@ purchase events.
 
 **First checks**
 
-1. The relays run on a schedule under Redis locks. `CRON_ENABLED` must be
-   true on at least one instance (`dc exec api printenv CRON_ENABLED`).
-2. A lock held by a dead instance: in Redis, `TTL cron:outbox-reaper` (and
-   the other `cron:*` keys); a dead pod's lock expires after its TTL.
-3. The workers: Grafana `queue_jobs{state="active"}` per queue; worker
-   errors in the logs (`SystemEventsProcessor`, `ProductOutboxWorker`).
+1. Is anything relaying? The three relays (`EventsOutboxRelayService` every
+   5 s, `PurchaseOutboxRelayCron` and `OutboxProcessorWorker` for product events
+   every second) run on every instance with `CRON_ENABLED=true`. They take no Redis
+   lock (`SKIP LOCKED` keeps instances apart), so there is no lock to wait
+   for: `dc exec api printenv CRON_ENABLED`, and the boot log line
+   `schedule not registered: CRON_ENABLED=false`.
+2. What waits, and in which state:
+
+   ```sql
+   SELECT type, status, createdAt, claimedAt, retryCount, nextAttemptAt, LEFT(error, 120) AS error
+   FROM OutboxEvent WHERE status IN ('PENDING', 'CLAIMED', 'PROCESSING') ORDER BY createdAt LIMIT 10;
+   ```
+
+   - PENDING with `nextAttemptAt` in the past: nothing relays them (check 1).
+   - PENDING with `nextAttemptAt` in the future and an `error`: the worker
+     failed them and they back off; the error says why.
+   - CLAIMED: handed to a queue nobody drains (check 3).
+3. The queue behind the family (`system-events`, `purchase-events`,
+   `webhook-delivery`): Grafana `queue_jobs{state="waiting"}` growing while
+   `state="active"` stays 0 means no worker takes jobs. A paused queue says
+   so in Redis: `HGET bull:<queue>:meta paused` is `1`. Worker errors are in
+   the logs (`SystemEventsProcessor`, `EventsProcessorService` for purchase
+   events, `WebhookDeliveryWorker`).
 4. Redis reachable (`DukaanAiDependencyDown` would say so).
 
 **Fix**
 
 - *Schedules off*: set `CRON_ENABLED=true` on one instance, `dc up -d api`.
-- *Lock of a dead instance*: wait for its TTL, or delete the key once you
-  are sure no instance holds it (`DEL cron:<name>`).
+  The waiting rows go out within seconds.
+- *Paused queue*: resume it. A restart does not resume a queue: the pause
+  is stored in Redis.
+  `dc exec api node -e "const {Queue}=require('bullmq');const q=new Queue('<queue>',{connection:{url:process.env.REDIS_URL}});q.resume().then(()=>q.close())"`.
 - *Worker failing every job*: its error in the logs; a code defect is
   rolled back; a webhook target that refuses is **DukaanAiOutboxFailedRows**.
 
@@ -470,7 +489,7 @@ alert resolved.
 
 **Tell the shops.** Nothing unless a shop's integration depends on webhooks.
 
-**Walked:** not yet; planned: a relay lock held as by a dead instance on the drill stack (section 7).
+**Walked:** not yet; planned: `CRON_ENABLED=false` on the only instance of the drill stack (section 7).
 
 ### DukaanAiOutboxFailedRows
 
