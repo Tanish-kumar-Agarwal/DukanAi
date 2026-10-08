@@ -2,8 +2,10 @@
 # with `rule_files` (see prometheus.yml next to this file) and route the
 # `severity` label in Alertmanager. Thresholds come from the recorded load
 # baseline (docs/LOAD_TEST_BASELINE.md: checkout p95 < 500 ms, zero 5xx) and
-# the outbox / retention settings; docs/OBSERVABILITY.md has the runbook for
-# each alert. Validate after an edit: `promtool check rules deploy/prometheus/alerts.yml`.
+# the outbox / retention settings. Every alert's runbook_url is its page in
+# docs/RUNBOOKS.md (roadmap 9.22; runbooks.spec.ts keeps the two in step and
+# docs/OBSERVABILITY.md has the one-line summary). Validate after an edit:
+# `promtool check rules deploy/prometheus/alerts.yml`.
 groups:
   - name: dukaanai-api
     rules:
@@ -14,6 +16,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaiapidown"
           summary: "API instance {{ $labels.instance }} is not scrapeable"
           description: "Prometheus could not scrape /api/metrics for 2 minutes. Check the readiness probe (/api/health/ready) and the container logs."
 
@@ -41,6 +44,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaihigh5xxrate"
           summary: "More than 1% of API answers are 5xx"
           description: "{{ $value | humanizePercentage }} of requests have failed server-side for 5 minutes. Read the JSON logs for the correlation ids of the 500s and the error tracker for the stack traces; 503 DATABASE_UNAVAILABLE and 507 STORAGE_FULL name their cause in the answer."
 
@@ -61,6 +65,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaidependencydown"
           summary: "The API cannot reach {{ $labels.dependency }}"
           description: "Every API instance has failed to reach {{ $labels.dependency }} for 2 minutes. database: sign-in, sales and every page answer 503 until it is back; check the MySQL host or provider status and the connection limit. redis: sales continue, background jobs wait; check the Redis host. The readiness probe (DukaanAiEndpointDown on /api/health/ready) is held back while this fires."
 
@@ -75,6 +80,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaistoragelow"
           summary: "The {{ $labels.volume }} volume has less than 10% free"
           description: "{{ $value | humanizePercentage }} of the {{ $labels.volume }} volume is free. Grow the disk (docs/DEPLOYMENT.md, production topology) or remove what is reproducible (imports/, exports/, tmp/ under the uploads volume) before documents are refused."
       - alert: DukaanAiStorageFull
@@ -83,6 +89,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaistoragefull"
           summary: "The {{ $labels.volume }} volume is full"
           description: "Only {{ $value | humanizePercentage }} of the {{ $labels.volume }} volume is free: bill photos, invoice PDFs and statements are refused with 507 STORAGE_FULL (sales continue). Free or grow the volume now; nothing partial is kept, so users repeat the upload once space is back."
 
@@ -94,6 +101,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaiunhandlederrors"
           summary: "Unhandled API errors in the last 15 minutes"
           description: "{{ $value }} server-side errors were handed to error tracking (kind={{ $labels.kind }}). Each carries its correlation id as a tag."
 
@@ -106,6 +114,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanailedgerpostingfailures"
           summary: "Ledger posting failed (source {{ $labels.source }})"
           description: "{{ $value }} ledger posting(s) threw in the last 10 minutes. Find the 'Unbalanced ledger posting' or database error in the JSON logs; the business transaction was rolled back, so the client saw an error."
 
@@ -117,6 +126,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaicheckoutslow"
           summary: "Checkout p95 above 500 ms"
           description: "The 95th percentile of completed checkouts is {{ $value | humanizeDuration }} over 10 minutes (baseline: under 500 ms at 3x peak). Check MySQL lock waits (one shop bills serially by design), the MySQL slow query log and Redis latency."
 
@@ -130,6 +140,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaioutboxlag"
           summary: "Outbox rows have been waiting for more than 5 minutes"
           description: "The oldest PENDING/CLAIMED outbox row is {{ $value | humanizeDuration }} old. Check that the relay crons run (one pod holds cron:outbox-reaper etc.), the system-events / purchase-events / webhook workers are connected (queue_jobs), and Redis."
 
@@ -139,6 +150,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaioutboxfailedrows"
           summary: "Outbox rows exhausted their retries"
           description: "{{ $value }} outbox row(s) are FAILED. They carry their last error; list them with GET /sales/events?status=FAILED and re-queue with POST /sales/events/retry once the cause is fixed."
 
@@ -159,6 +171,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaibackupstale"
           summary: "Backup job {{ $labels.kind }} has not succeeded in time"
           description: "The last successful {{ $labels.kind }} backup was {{ $value | humanizeDuration }} ago (limits: binlog 15 min, dump / documents / offsite 26 h). The recovery point is growing: run `db-ops status`, then the job by hand (db-ops backup, binlog-archive --flush, documents-backup, offsite push) and read its error."
 
@@ -172,6 +185,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaibackupneverrecorded"
           summary: "Backup job {{ $labels.kind }} has never recorded a success"
           description: "No backup_last_success_timestamp_seconds series for kind {{ $labels.kind }}. Either the job is not scheduled, or the API cannot read BACKUP_STATUS_DIR (the db-backups volume mounted read-only), or the job writes its stamp elsewhere."
 
@@ -187,6 +201,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaireconciliationdrift"
           summary: "Financial reconciliation found drift"
           description: "{{ $value }} shop(s) have a latest reconciliation run that ended in DRIFT or FAILED. Read it as the shop owner (GET /reconciliation/latest, or `npm run reconcile -- --shop <id> --date <day>` from a checkout): every drift names the check, the document or row and the two figures that disagree. The books are never corrected automatically."
 
@@ -201,6 +216,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaireconciliationstale"
           summary: "No financial reconciliation run in 26 hours"
           description: "The most recent reconciliation run finished {{ $value | humanizeDuration }} ago. Check CRON_ENABLED on at least one instance, CRON_RECONCILIATION, the cron:reconciliation lock and the 'Reconciliation' lines in the API logs; run one by hand with POST /reconciliation/run."
 
@@ -211,6 +227,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaiqueuebacklog"
           summary: "BullMQ queue {{ $labels.queue }} has a backlog"
           description: "{{ $value }} jobs are waiting on {{ $labels.queue }} for 15 minutes: the worker is not keeping up or not running. Check the worker's errors in the logs and add an API instance."
 
@@ -220,6 +237,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaiqueuefailedjobs"
           summary: "BullMQ queue {{ $labels.queue }} holds failed jobs"
           description: "{{ $value }} job(s) on {{ $labels.queue }} failed every attempt. The job data and the last error are in Redis (the queue's failed set); a job that names an outbox row also marked that row FAILED."
 
@@ -235,6 +253,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaicredentialflood"
           summary: "Credential routes are rate-limiting a sustained flood"
           description: "{{ printf \"%.2f\" $value }} login/register/refresh attempts per second have been refused with 429 for 10 minutes. The limits hold (docs/PRODUCTION_LIMITS.md); read the access log for the source addresses and accounts (event=http, status=429, route=/api/auth/...) and block the source at the edge if it persists."
 
@@ -251,6 +270,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaiemaildeliveryfailing"
           summary: "Email delivery is failing ({{ $labels.purpose }})"
           description: "{{ printf \"%.0f\" $value }} {{ $labels.purpose }} message(s) were not accepted by the mail relay in the last 30 minutes. Check SMTP_URL (credentials, quota) and the sender EMAIL_FROM against the provider, then the API log lines 'was not accepted by the relay' for the relay's own reply."
 
@@ -264,6 +284,7 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaiendpointdown"
           summary: "{{ $labels.instance }} has failed its probe for 2 minutes"
           description: "The readiness route or the login page does not answer as expected ({{ $labels.job }}). Check the edge, then GET /api/health/ready for the failing dependency. An expired certificate pages as DukaanAiCertificateExpired and holds this alert back; a certificate that does not verify for another reason (wrong name, incomplete chain, unknown issuer) fails this probe too: curl -vI the address."
       # The certificate alerts read job blackbox-tls, which reads the
@@ -278,6 +299,7 @@ groups:
         labels:
           severity: warning
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaicertificateexpiring"
           summary: "The certificate of {{ $labels.instance }} expires in under 14 days"
           description: "Automatic renewal has not happened (Caddy: ports 80/443 reachable, DNS; cert-manager: the Certificate resource). Renew before it lapses."
       # keep_firing_for: the verified probes recover up to a minute after
@@ -290,5 +312,6 @@ groups:
         labels:
           severity: critical
         annotations:
+          runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaicertificateexpired"
           summary: "The certificate of {{ $labels.instance }} has expired"
           description: "Every browser refuses this address and every client call to it fails (certificate has expired). Renew now: Caddy renews on restart when ports 80/443 and DNS are right (docker compose logs edge); cert-manager: kubectl describe certificate. The failing probe of the same address (DukaanAiEndpointDown) is held back while this fires."

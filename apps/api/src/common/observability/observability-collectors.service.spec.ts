@@ -5,7 +5,7 @@ import { Logger } from '@nestjs/common';
 import { MonitoringConfig } from '../../config/domains/monitoring.config';
 import { StorageConfig } from '../../config/domains/storage.config';
 import { UploadConfig } from '../../config/domains/upload.config';
-import { backupLastSuccessTimestampSeconds, dependencyUp, queueJobs, storageVolumeFreeBytes, storageVolumeSizeBytes } from './metrics';
+import { backupLastSuccessTimestampSeconds, buildInfo, dependencyUp, queueJobs, storageVolumeFreeBytes, storageVolumeSizeBytes } from './metrics';
 import { COLLECTOR_BUDGET_MS, ObservabilityCollectorsService } from './observability-collectors.service';
 
 /** The backup-status gauge (roadmap 9.4): one series per `<kind>.last-success` file, valued with its first line. */
@@ -139,5 +139,17 @@ describe('ObservabilityCollectorsService.refresh under outages', () => {
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/** The release the process runs (roadmap 9.21): one series, labelled with APP_RELEASE. */
+describe('build_info', () => {
+  const build = (appRelease?: string) => new ObservabilityCollectorsService({} as never, {} as never, {} as never, Object.assign(new MonitoringConfig(), { appRelease }));
+
+  it('is 1 for the release the process runs, and "unknown" without one', async () => {
+    build('v1.0.0-rc3');
+    expect((await buildInfo.get()).values).toEqual([{ labels: { release: 'v1.0.0-rc3' }, value: 1 }]);
+    build(undefined);
+    expect((await buildInfo.get()).values).toEqual([{ labels: { release: 'unknown' }, value: 1 }]);
   });
 });

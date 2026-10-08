@@ -75,7 +75,8 @@ services:
       METRICS_TOKEN: ${METRICS_TOKEN:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
-      APP_RELEASE: ${APP_RELEASE:-}
+      # No APP_RELEASE here: the image says which release it is (roadmap 9.21),
+      # and any entry, even a blank one, would replace that.
       BACKUP_STATUS_DIR: /var/lib/dukaanai/backups/status
     volumes:
       # STORAGE_PATH / UPLOADS_PATH / BACKUPS_PATH: an absolute path mounts the

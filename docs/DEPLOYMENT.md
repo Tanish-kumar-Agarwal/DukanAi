@@ -87,6 +87,17 @@ Kubernetes manifests take the same tag in `kustomization.yaml`. A private
 package needs `docker login ghcr.io` on the host with a token that has
 `read:packages` (or make the packages public).
 
+Releases (roadmap 9.21, `RELEASE.md`): a `v*` tag is built only when it is a
+release (`scripts/release/release.mjs check`: semantic version equal to
+`package.json`, a dated `CHANGELOG.md` section, above every earlier tag, on
+`main`) and only once (a version the registry already holds is never
+rebuilt). Every image carries its release (`APP_RELEASE`: the tag, else
+`sha-<7>`) and commit (`APP_REVISION`) as OCI labels and in its environment:
+`GET /api/health` on the API and the web answers `release`, and the API
+exports `build_info{release}`. Neither compose file sets `APP_RELEASE` (an
+entry, even a blank one, would replace the image's value); set it only for an
+image built without it.
+
 ## Certification of a release candidate
 
 Roadmap 9.12: before a tag is promoted, the checklist the repository runs on
@@ -240,7 +251,7 @@ threshold that the template said were 12 h and 0.85):
 | `LOG_LEVEL` | optional | most verbose level printed (default `log` in production, which refuses `debug`/`verbose`); JSON lines with the correlation id |
 | `METRICS_ENABLED`, `METRICS_TOKEN` | optional | `GET /api/metrics` (Prometheus); the token (16+ characters) makes the scrape require a bearer token. See `docs/OBSERVABILITY.md` |
 | `BACKUP_STATUS_DIR` | production | the backup jobs' `<kind>.last-success` stamps, read on every scrape into `backup_last_success_timestamp_seconds{kind}` for the stale-backup alert; compose mounts the `db-backups` volume read-only and points it at `status/` (roadmap 9.4) |
-| `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`, `APP_RELEASE` | optional | error tracking is off until the DSN is set; set `APP_RELEASE` to the image tag or commit at deploy time |
+| `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`, `APP_RELEASE` | optional | error tracking is off until the DSN is set; `APP_RELEASE` is baked into release images (the version tag or `sha-<7>`), set it only for an image built without it |
 | `CRON_RETENTION_SWEEP`, `RETENTION_*` | optional | the nightly purge of expired tokens, DONE outbox rows and old history (roadmap 7.8; windows in `apps/api/.env.example`) |
 | `CRON_RECONCILIATION` | optional | the nightly financial reconciliation of every shop's previous business day (roadmap 9.5; default 01:30 server time, after every shop's midnight); drift raises `DukaanAiReconciliationDrift` |
 

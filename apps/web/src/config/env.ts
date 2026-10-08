@@ -93,6 +93,8 @@ const serverSchema = z
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    /** The release this server runs (the version tag or sha-<commit>), baked into release images (roadmap 9.21). */
+    APP_RELEASE: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (!enforceProductionSecret) return;
@@ -118,5 +120,6 @@ export const serverConfig = typeof window === 'undefined'
       GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
       GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
       NODE_ENV: process.env.NODE_ENV,
+      APP_RELEASE: process.env.APP_RELEASE || undefined,
     }) 
   : ({} as z.infer<typeof serverSchema>);

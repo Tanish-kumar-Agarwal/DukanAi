@@ -76,7 +76,13 @@ identifiers, who holds the secrets, the DNS record owner, the date.
    (no shop is registered on production). Record the tag, the date and the
    staging evidence in the release note.
 5. Rollback is the previous tag: `IMAGE_TAG=<previous>`, `up -d --wait`
-   (`apps/api/prisma/MIGRATIONS.md` for the database side).
+   (`apps/api/prisma/MIGRATIONS.md` for the database side). A release
+   candidate with a migration rehearses that rollback on staging before it
+   goes to production.
+
+A release (a `v*` tag, roadmap 9.21) follows `RELEASE.md` end to end: the
+release commit, the tag, certification, these steps with `IMAGE_TAG=v<version>`,
+the rollback rehearsal, production and the checks after it.
 
 An image that was never on staging never goes to production; a change to
 `.env` on production is made on staging first.

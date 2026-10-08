@@ -35,7 +35,14 @@ RUN npm run build -w @dukaanai/invoice-math \
 
 # ---- runtime: the traced standalone server plus static assets, non-root ----
 FROM base AS runtime
-ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0
+# The release the image is (roadmap 9.21), reported by GET /api/health.
+ARG APP_RELEASE=
+ARG APP_REVISION=
+LABEL org.opencontainers.image.title="dukaanai-web" \
+      org.opencontainers.image.source="https://github.com/shoryabansalgithub/DukanAi-real" \
+      org.opencontainers.image.version="${APP_RELEASE}" \
+      org.opencontainers.image.revision="${APP_REVISION}"
+ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0 APP_RELEASE=${APP_RELEASE}
 COPY --from=build --chown=node:node /app/apps/web/.next/standalone ./
 COPY --from=build --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
 USER node

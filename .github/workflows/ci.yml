@@ -62,6 +62,10 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
       # Roadmap 7.4: runtime artifacts (uploads, storage documents, turbo daemon logs) are never tracked.
       - run: bash scripts/check-tracked-artifacts.sh
+      # Roadmap 9.21: the release checker's own tests, and CHANGELOG.md in the
+      # shape a release needs (dated sections, newest first = package.json).
+      - run: node --test scripts/release/release.test.mjs
+      - run: node scripts/release/release.mjs lint
 
   unit:
     name: Unit tests

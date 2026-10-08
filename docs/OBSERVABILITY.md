@@ -70,6 +70,7 @@ stack on <http://localhost:9090> (the whole monitoring stack:
 | `storage_volume_free_bytes`, `storage_volume_size_bytes` | gauge | `volume` = `storage` / `uploads` | free (what the API may use) and total bytes of the volume under `STORAGE_ROOT` and under `UPLOAD_TEMP_DIR`, from `statfs` on every scrape (roadmap 9.18). |
 - `backup_last_success_timestamp_seconds{kind}`: Unix time of the last successful backup job (`dump`, `binlog`, `documents`, `offsite`), read on every scrape from the `<kind>.last-success` files in `BACKUP_STATUS_DIR` (roadmap 9.4; written by `scripts/db/lib.sh` `record_success`). A kind whose file disappears loses its series.
 | `errors_tracked_total` | counter | `kind` = `unhandled` / `prisma` / `job` / `startup` | errors handed to error tracking, counted whether or not a DSN is set. |
+| `build_info` | gauge | `release` | always 1, labelled with the release the process runs (`APP_RELEASE`, baked into release images; `unknown` when unset; roadmap 9.21): which version answers, per instance, during and after a deploy. |
 | `dukaanai_process_*`, `dukaanai_nodejs_*` | | | prom-client's default process and event-loop metrics. |
 
 Every series carries `service="dukaanai-api"`. Counters and histograms are
@@ -100,16 +101,21 @@ draining 503) are not errors and are not sent; they are visible in
 `route`, `method`, `statusCode` and `kind`, and the user id when a request
 had one, so an issue joins the JSON log line that carries the same id.
 Request bodies, headers, cookies and query strings are never sent
-(`dataCollection` is switched off). `APP_RELEASE` (set it to the commit SHA
-or image tag at deploy time) and `SENTRY_ENVIRONMENT` (defaults to
-`NODE_ENV`) label every event; `SENTRY_TRACES_SAMPLE_RATE` stays 0 unless
+(`dataCollection` is switched off). `APP_RELEASE` (baked into release
+images: the version tag or `sha-<7>`, roadmap 9.21; the same value is
+`build_info{release}` and the `release` of `GET /api/health`) and
+`SENTRY_ENVIRONMENT` (defaults to `NODE_ENV`) label every event; `SENTRY_TRACES_SAMPLE_RATE` stays 0 unless
 performance tracing is wanted (0..1).
 
 ## Alerts
 
 `deploy/prometheus/alerts.yml` (validated with `promtool check rules`) holds
-the rules; `severity` is `critical` for the two the roadmap requires and
-`warning` for the rest. Runbook:
+the rules; `severity` is `critical` for what needs a person now and
+`warning` for the rest. Every alert carries a `runbook_url` to its page in
+`docs/RUNBOOKS.md` (roadmap 9.22: what it means, the first checks, the fix,
+the verification, what to tell the shops), which also holds the incident
+roles, the shop-owner message templates and the post-incident review. The
+table below is the one-line summary:
 
 | Alert | Fires when | First look |
 |---|---|---|
@@ -130,6 +136,7 @@ the rules; `severity` is `critical` for the two the roadmap requires and
 | `DukaanAiEndpointDown` | a blackbox probe (readiness route or login page, inner or public address) has failed for 2 min | `GET /api/health/ready` names the failing dependency; then the edge (`docker compose logs edge`) and DNS. Held back while `DukaanAiApiDown`, `DukaanAiDependencyDown` (readiness probes) or `DukaanAiCertificateExpired` (same address) fires. A certificate that does not verify for another reason (wrong name, incomplete chain) fails it too: `curl -vI` the address. |
 | `DukaanAiCertificateExpiring` | the certificate of a public address expires in under 14 days, for 1 h (warning) | renewal has not happened: Caddy needs ports 80/443 and the DNS names right (`docker compose logs edge`), cert-manager the `Certificate` resource. It ends when the certificate expires, because the page below starts. |
 | `DukaanAiCertificateExpired` | the certificate of a public address has expired (at once, critical; keeps firing 2 min after a renewal is read, so the address's probes recover while it still holds them back) | every browser refuses the address. Renew now (restart the edge once ports and DNS are right, or `kubectl describe certificate`). Read by job `blackbox-tls`, which reads the certificate whether or not it verifies: on the verified probes an expired certificate made the warning resolve and an unexplained `DukaanAiEndpointDown` page two minutes later (the certificate drill of roadmap 9.18). |
+| `DukaanAiCredentialFlood` | the credential routes (`/api/auth/*`) answered more than one 429 every 10 s for 10 min (warning) | the limits are holding (`docs/PRODUCTION_LIMITS.md`); the access log (`event=http`, `status=429`, `route=/api/auth/...`) names the source addresses; block a persistent source at the edge, and check the targeted account's owner is not locked out. |
 | `DukaanAiEmailDeliveryFailing` | a mail of a purpose was not accepted by the relay in the last 30 min (at once, warning) | the API log line `was not accepted by the relay` carries the relay's reply (`535` credentials, `550`/`553` sender or recipient refused, `ECONNECTION` relay down). An invitation answered the owner 502 `INVITATION_EMAIL_FAILED` and kept nothing, so the owner can repeat it once the relay works; a reset link was voided while the user was told it was sent, so ask them to request it again. Check `SMTP_URL`, the provider's quota and the domain of `EMAIL_FROM` (SPF/DKIM), then send an invitation to yourself. |
 | `DukaanAiReconciliationDrift` | a shop's newest reconciliation run ended in DRIFT or FAILED (at once) | `GET /reconciliation/latest` as that shop's owner, or `npm run reconcile -- --shop <id> --date <day>` from a checkout: every drift names the check, the document or row and the two figures that disagree (`docs/POS_BILLING_CONTRACT.md` §11). A FAILED run carries the error. Nothing is corrected by the job; find the write that produced the row and fix the data with a recorded adjustment. |
 | `DukaanAiReconciliationStale` | no reconciliation run finished anywhere for 26 h, for 30 min (a stack that has never reconciled exports 0 and does not fire) | `CRON_ENABLED` on at least one instance, `CRON_RECONCILIATION`, the `cron:reconciliation` lock (a dead pod's lock expires after 30 min), the `Reconciliation` lines in the logs; run one by hand with `POST /reconciliation/run`. |
@@ -171,8 +178,9 @@ when Slack + email are the page):
 | (filled in by the owner) | | | |
 
 Expectations: a critical page is acknowledged within 15 minutes, day and
-night; a warning is looked at the next working morning. The runbook column
-of the alert table below says where to look first.
+night; a warning is looked at the next working morning. The page of every
+alert is in `docs/RUNBOOKS.md` (linked from the notification), with the
+incident roles and the messages to the shops.
 
 ### Test the delivery (gate of row 9.10)
 

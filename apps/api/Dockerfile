@@ -54,7 +54,16 @@ RUN cd apps/api && npx prisma generate
 # ---- runtime: compiled output, production node_modules, Prisma schema and
 # migrations (for `prisma migrate deploy`), no sources, non-root ----
 FROM base AS runtime
-ENV NODE_ENV=production PORT=3002
+# The release the image is (roadmap 9.21): the version tag or sha-<commit>,
+# passed by .github/workflows/release.yml; GET /api/health and the build_info
+# metric report it, and the OCI labels let `docker inspect` say what it is.
+ARG APP_RELEASE=
+ARG APP_REVISION=
+LABEL org.opencontainers.image.title="dukaanai-api" \
+      org.opencontainers.image.source="https://github.com/shoryabansalgithub/DukanAi-real" \
+      org.opencontainers.image.version="${APP_RELEASE}" \
+      org.opencontainers.image.revision="${APP_REVISION}"
+ENV NODE_ENV=production PORT=3002 APP_RELEASE=${APP_RELEASE}
 # The storage root and the multipart temp directory are volumes in compose;
 # both default paths exist and belong to the runtime user.
 RUN mkdir -p /var/lib/dukaanai/storage /app/apps/api/uploads/tmp \

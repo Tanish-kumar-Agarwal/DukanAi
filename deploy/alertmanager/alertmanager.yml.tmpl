@@ -87,12 +87,16 @@ receivers:
     #@pagerduty     severity: critical
     #@pagerduty     send_resolved: true
     #@pagerduty     description: '{{ .CommonLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+    #@pagerduty     links:
+    #@pagerduty       - href: '{{ .CommonAnnotations.runbook_url }}'
+    #@pagerduty         text: 'Runbook (docs/RUNBOOKS.md)'
     #@slack slack_configs:
     #@slack   - api_url_file: __SECRETS_DIR__/slack-webhook
     #@slack     channel: '__ALERT_SLACK_CHANNEL__'
     #@slack     send_resolved: true
     #@slack     title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }} ({{ .CommonLabels.severity }})'
-    #@slack     text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}{{ end }}'
+    #@slack     title_link: '{{ .CommonAnnotations.runbook_url }}'
+    #@slack     text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}Runbook: {{ .Annotations.runbook_url }}{{ "\n" }}{{ end }}'
     #@email email_configs:
     #@email   - to: '__ALERT_EMAIL_TO__'
     #@email     send_resolved: true
@@ -102,7 +106,8 @@ receivers:
     #@slack     channel: '__ALERT_SLACK_CHANNEL__'
     #@slack     send_resolved: true
     #@slack     title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }} ({{ .CommonLabels.severity }})'
-    #@slack     text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}{{ end }}'
+    #@slack     title_link: '{{ .CommonAnnotations.runbook_url }}'
+    #@slack     text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}Runbook: {{ .Annotations.runbook_url }}{{ "\n" }}{{ end }}'
     #@email email_configs:
     #@email   - to: '__ALERT_EMAIL_TO__'
     #@email     send_resolved: true

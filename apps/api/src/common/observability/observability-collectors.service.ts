@@ -12,6 +12,7 @@ import { TenantContextService } from '../../iam/tenant-context/tenant-context.se
 import { queueInstances } from '../lifecycle/queue-readiness';
 import {
   backupLastSuccessTimestampSeconds,
+  buildInfo,
   dependencyUp,
   outboxOldestPendingAgeSeconds,
   outboxRows,
@@ -62,7 +63,11 @@ export class ObservabilityCollectorsService {
     @Optional() @Inject(REDIS_CLIENT) private readonly redis?: Redis,
     @Optional() private readonly storageConfig?: StorageConfig,
     @Optional() private readonly uploadConfig?: UploadConfig,
-  ) {}
+  ) {
+    // The release never changes in a running process: one series, set once.
+    buildInfo.reset();
+    buildInfo.labels({ release: monitoring.appRelease || 'unknown' }).set(1);
+  }
 
   async refresh(): Promise<void> {
     const deps = await this.refreshDependencies();

@@ -4,7 +4,7 @@ describe('HealthService (roadmap 7.3)', () => {
   const prisma = { $queryRaw: jest.fn() };
   const redis = { ping: jest.fn() };
   const shutdown = { isDraining: false };
-  const service = () => new HealthService(prisma as never, redis as never, shutdown as never);
+  const service = () => new HealthService(prisma as never, redis as never, shutdown as never, { appRelease: 'v1.0.0-rc3' } as never);
 
   beforeEach(() => {
     jest.useRealTimers();
@@ -17,6 +17,8 @@ describe('HealthService (roadmap 7.3)', () => {
     const report = service().liveness();
     expect(report.status).toBe('ok');
     expect(report.uptimeSeconds).toBeGreaterThanOrEqual(0);
+    // The release the instance runs (roadmap 9.21): what a deploy is verified against.
+    expect(report.release).toBe('v1.0.0-rc3');
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
     expect(redis.ping).not.toHaveBeenCalled();
   });

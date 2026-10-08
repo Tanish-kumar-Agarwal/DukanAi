@@ -3,7 +3,7 @@
 # repository already runs on the source tree, re-run against the IMAGES that
 # would be deployed, with every report kept in one evidence bundle.
 #
-#   scripts/certify/certify.sh --api IMAGE --web IMAGE --db-ops IMAGE [--out DIR] [--label TAG] [--skip step,step] [--keep]
+#   scripts/certify/certify.sh --api IMAGE --web IMAGE --db-ops IMAGE [--out DIR] [--label TAG] [--release R] [--skip step,step] [--keep]
 #
 # Steps (each one is recorded PASS / FAIL / SKIPPED with its log; a failure
 # never stops the run, so the bundle always holds every report, and the exit
@@ -15,6 +15,10 @@
 #                 web and the API, a CLEAN reconciliation, point-in-time restore, documents
 #                 backup, off-site copy, backup metric, monitoring stack, graceful stop
 #                 (scripts/compose-smoke.sh with SMOKE_PREBUILT=1; the stack stays up)
+#   release       what the images say they are (OCI version and revision labels) and what the
+#                 running API and web answer on /api/health; with --release R (the release
+#                 workflow passes the version tag, else sha-<7>) every one must say R and the
+#                 revision must be this checkout's commit (roadmap 9.21)
 #   route-walk    every registered route over HTTP against the running API image, four
 #                 identities (test/integration/route-walker.integration-spec.ts under CERTIFY_API_URL)
 #   security      the security regression suite with every request sent to the image
@@ -44,7 +48,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 REPO="$PWD"
 
-API_IMAGE=""; WEB_IMAGE=""; DB_OPS_IMAGE=""; OUT=""; LABEL=""; SKIP=""; KEEP_STACK=0
+API_IMAGE=""; WEB_IMAGE=""; DB_OPS_IMAGE=""; OUT=""; LABEL=""; RELEASE=""; SKIP=""; KEEP_STACK=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --api) API_IMAGE="$2"; shift 2 ;;
@@ -52,13 +56,14 @@ while [ $# -gt 0 ]; do
     --db-ops) DB_OPS_IMAGE="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --label) LABEL="$2"; shift 2 ;;
+    --release) RELEASE="$2"; shift 2 ;;
     --skip) SKIP="$2"; shift 2 ;;
     --keep) KEEP_STACK=1; shift ;;
-    -h|--help) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$API_IMAGE" ] && [ -n "$WEB_IMAGE" ] && [ -n "$DB_OPS_IMAGE" ] || { echo "usage: certify.sh --api IMAGE --web IMAGE --db-ops IMAGE [--out DIR] [--label TAG] [--skip a,b] [--keep]" >&2; exit 2; }
+[ -n "$API_IMAGE" ] && [ -n "$WEB_IMAGE" ] && [ -n "$DB_OPS_IMAGE" ] || { echo "usage: certify.sh --api IMAGE --web IMAGE --db-ops IMAGE [--out DIR] [--label TAG] [--release R] [--skip a,b] [--keep]" >&2; exit 2; }
 for tool in docker node npm curl; do command -v "$tool" >/dev/null 2>&1 || { echo "$tool is required" >&2; exit 2; }; done
 [ -n "$LABEL" ] || LABEL="$(git describe --tags --exact-match 2>/dev/null || git rev-parse --short=7 HEAD 2>/dev/null || date -u +%Y%m%dT%H%M%SZ)"
 [ -n "$OUT" ] || OUT="$(mktemp -d)/certification-$LABEL"
@@ -140,6 +145,27 @@ step_smoke() {
   # The monitoring stack and the archiver proved themselves; free the host for the suites and the load.
   "${COMPOSE[@]}" --profile ops stop prometheus alertmanager blackbox loki alloy grafana binlog-archiver >/dev/null 2>&1 || true
   return $rc
+}
+step_release() {
+  local failed=0 image version revision
+  for image in "$API_IMAGE" "$WEB_IMAGE" "$DB_OPS_IMAGE"; do
+    version="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image")" || return 1
+    revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")" || return 1
+    printf '%s\n  version label   %s\n  revision label  %s\n' "$image" "${version:-(none)}" "${revision:-(none)}"
+    if [ -n "$RELEASE" ]; then
+      [ "$version" = "$RELEASE" ] || { echo "  -> expected version $RELEASE"; failed=1; }
+      [ "$revision" = "$COMMIT" ] || { echo "  -> expected revision $COMMIT (this checkout)"; failed=1; }
+    fi
+  done
+  require_stack || return 1
+  local base answer
+  for base in "$API" "$WEB"; do
+    answer="$(curl -fsS --max-time 10 "$base/api/health" | node -e 'let b="";process.stdin.on("data",(d)=>b+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(b).release ?? ""))}catch{process.exit(1)}})')" || { echo "GET $base/api/health did not answer JSON"; failed=1; continue; }
+    printf 'GET %s/api/health  release %s\n' "$base" "${answer:-(none)}"
+    if [ -n "$RELEASE" ] && [ "$answer" != "$RELEASE" ]; then echo "  -> expected $RELEASE"; failed=1; fi
+  done
+  [ -n "$RELEASE" ] || echo "(no --release given: reported, not checked)"
+  return $failed
 }
 suite() { # suite NAME PATTERN: one jest run of the integration config with every HTTP call sent to the image
   local name="$1" pattern="$2"
@@ -278,6 +304,7 @@ run_step images "digests and metadata of the three images" step_images
 run_step boot-matrix "every refusal case of the boot matrix on the API image" step_boot_matrix
 run_step migrate-diff "the image's migrations on MySQL 8 and MariaDB: deploy, diff --exit-code, status, redeploy" step_migrate_diff
 run_step smoke "compose stack from the images: migrations, business flow, reconciliation, point-in-time restore, documents and off-site backups, monitoring, graceful stop" step_smoke
+run_step release "the release the images carry (OCI labels) and the running API and web report on /api/health${RELEASE:+, all $RELEASE}" step_release
 run_step route-walk "every registered route over HTTP against the API image, four identities" step_route_walk
 run_step security "the security regression suite with every request sent to the API image" step_security
 run_step exploits "every audit exploit replayed over HTTP against the running images, each refused with its documented code" step_exploits

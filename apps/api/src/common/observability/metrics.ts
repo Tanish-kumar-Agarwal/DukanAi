@@ -156,6 +156,19 @@ export const emailMessagesTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+/**
+ * Always 1, labelled with the release this process runs (`APP_RELEASE`: the
+ * version tag a release image is built for, or `sha-<commit>`; roadmap 9.21),
+ * so a graph or an incident can say which build answered. One series per
+ * running release.
+ */
+export const buildInfo = new Gauge({
+  name: 'build_info',
+  help: 'Always 1, labelled with the release the API runs (APP_RELEASE, "unknown" when unset).',
+  labelNames: ['release'] as const,
+  registers: [metricsRegistry],
+});
+
 /** Status label as the code, e.g. "503"; everything a route answers is counted. */
 export function statusLabel(statusCode: number): string {
   return String(Number.isFinite(statusCode) ? statusCode : 0);

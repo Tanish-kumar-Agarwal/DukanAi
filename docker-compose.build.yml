@@ -8,16 +8,24 @@
 # The web image is built WITHOUT a public API URL on purpose: the running
 # container supplies API_PUBLIC_URL, which is what proves one image serves
 # every environment (roadmap 9.9).
+#
+# A locally built image reports IMAGE_TAG as its release (GET /api/health)
+# unless APP_RELEASE says otherwise.
 services:
   migrate:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+      args: &release-args
+        APP_RELEASE: ${APP_RELEASE:-${IMAGE_TAG:-}}
+        APP_REVISION: ${APP_REVISION:-}
   web:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      args: *release-args
   backup-agent:
     build:
       context: .
       dockerfile: deploy/db-ops/Dockerfile
+      args: *release-args

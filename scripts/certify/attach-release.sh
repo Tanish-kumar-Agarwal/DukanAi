@@ -6,7 +6,12 @@
 # is replaced (a re-run of the job). Plain REST calls with the workflow's own
 # token (contents: write); no third-party action.
 #
-#   GITHUB_TOKEN=... GITHUB_REPOSITORY=owner/repo \
+# RELEASE_NOTES_FILE (roadmap 9.21): the notes a new draft starts with (the
+# tag's CHANGELOG.md section, `scripts/release/release.mjs notes`); a release
+# that already exists keeps the text the owner gave it. A tag with a
+# pre-release part (v1.0.0-rc3) is created as a pre-release.
+#
+#   GITHUB_TOKEN=... GITHUB_REPOSITORY=owner/repo [RELEASE_NOTES_FILE=notes.md] \
 #     scripts/certify/attach-release.sh v1.2.3 certification-v1.2.3.tar.gz sbom-api.cdx.json ...
 set -euo pipefail
 TAG="${1:?usage: attach-release.sh TAG FILE [FILE...]}"
@@ -34,7 +39,17 @@ content_type() {
 release="$(gh_api "$API/repos/$GITHUB_REPOSITORY/releases/tags/$TAG" 2>/dev/null || true)"
 if [ -z "$release" ]; then
   echo "no release for $TAG yet: creating a draft"
-  body="$(node -e 'process.stdout.write(JSON.stringify({tag_name:process.argv[1],name:process.argv[1],draft:true,body:"Release candidate evidence (roadmap 9.12 / 9.14): the certification bundle (see its SUMMARY.md) and the CycloneDX SBOMs of the images are attached. Publish once the evidence has been read."}))' "$TAG")"
+  notes=""
+  if [ -n "${RELEASE_NOTES_FILE:-}" ]; then
+    [ -f "$RELEASE_NOTES_FILE" ] || { echo "RELEASE_NOTES_FILE $RELEASE_NOTES_FILE does not exist" >&2; exit 2; }
+    notes="$RELEASE_NOTES_FILE"
+  fi
+  body="$(node -e '
+    const [tag, notesFile] = process.argv.slice(1);
+    const notes = notesFile ? require("fs").readFileSync(notesFile, "utf8").trim() : "";
+    const evidence = "Release evidence (roadmap 9.12 / 9.14): the certification bundle (see its SUMMARY.md) and the CycloneDX SBOMs of the images are attached. Publish once the evidence has been read (RELEASE.md).";
+    process.stdout.write(JSON.stringify({ tag_name: tag, name: tag, draft: true, prerelease: tag.includes("-"), body: notes ? `${notes}\n\n---\n\n${evidence}` : evidence }));
+  ' "$TAG" "$notes")"
   release="$(gh_api -X POST "$API/repos/$GITHUB_REPOSITORY/releases" -d "$body")"
 fi
 id="$(printf '%s' "$release" | json_field id)"

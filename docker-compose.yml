@@ -63,6 +63,12 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+      args: &release-args
+        # The release the image reports (GET /api/health, build_info, error
+        # tracking) and its commit: release images carry their version tag
+        # (roadmap 9.21); here the root .env's values, blank = none.
+        APP_RELEASE: ${APP_RELEASE:-}
+        APP_REVISION: ${APP_REVISION:-}
     image: dukaanai-api
     command: ["npx", "prisma", "migrate", "deploy"]
     environment:
@@ -102,7 +108,8 @@ services:
       METRICS_TOKEN: ${METRICS_TOKEN:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
-      APP_RELEASE: ${APP_RELEASE:-}
+      # APP_RELEASE is the image's own (a build argument above): an entry here,
+      # even a blank one, would replace what a release image says it is.
       # Backup monitoring (roadmap 9.4): the backup jobs' status stamps, read
       # on every metrics scrape (backup_last_success_timestamp_seconds{kind}).
       BACKUP_STATUS_DIR: /var/lib/dukaanai/backups/status
@@ -135,6 +142,8 @@ services:
       args:
         # Inlined into the browser bundle: the API URL as the browser sees it.
         NEXT_PUBLIC_API_URL: ${API_PUBLIC_URL:-http://localhost:3002/api}
+        APP_RELEASE: ${APP_RELEASE:-}
+        APP_REVISION: ${APP_REVISION:-}
     image: dukaanai-web
     environment:
       NODE_ENV: production
@@ -188,6 +197,7 @@ services:
     build:
       context: .
       dockerfile: deploy/db-ops/Dockerfile
+      args: *release-args
     image: dukaanai-db-ops
     profiles: ["ops"]
     environment:
@@ -224,6 +234,7 @@ services:
     build:
       context: .
       dockerfile: deploy/db-ops/Dockerfile
+      args: *release-args
     image: dukaanai-db-ops
     profiles: ["ops"]
     command: ["archive-loop"]

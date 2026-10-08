@@ -36,6 +36,7 @@ tests:
               instance: api:3002
               kind: binlog
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaibackupstale"
               summary: "Backup job binlog has not succeeded in time"
               description: "The last successful binlog backup was 25m 0s ago (limits: binlog 15 min, dump / documents / offsite 26 h). The recovery point is growing: run `db-ops status`, then the job by hand (db-ops backup, binlog-archive --flush, documents-backup, offsite push) and read its error."
       - eval_time: 45m
@@ -57,6 +58,7 @@ tests:
               job: dukaanai-api
               kind: binlog
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaibackupneverrecorded"
               summary: "Backup job binlog has never recorded a success"
               description: "No backup_last_success_timestamp_seconds series for kind binlog. Either the job is not scheduled, or the API cannot read BACKUP_STATUS_DIR (the db-backups volume mounted read-only), or the job writes its stamp elsewhere."
           - exp_labels:
@@ -64,6 +66,7 @@ tests:
               job: dukaanai-api
               kind: documents
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaibackupneverrecorded"
               summary: "Backup job documents has never recorded a success"
               description: "No backup_last_success_timestamp_seconds series for kind documents. Either the job is not scheduled, or the API cannot read BACKUP_STATUS_DIR (the db-backups volume mounted read-only), or the job writes its stamp elsewhere."
           - exp_labels:
@@ -71,6 +74,7 @@ tests:
               job: dukaanai-api
               kind: offsite
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaibackupneverrecorded"
               summary: "Backup job offsite has never recorded a success"
               description: "No backup_last_success_timestamp_seconds series for kind offsite. Either the job is not scheduled, or the API cannot read BACKUP_STATUS_DIR (the db-backups volume mounted read-only), or the job writes its stamp elsewhere."
 
@@ -98,6 +102,7 @@ tests:
               instance: api:3002
               kind: dump
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaibackupstale"
               summary: "Backup job dump has not succeeded in time"
               description: "The last successful dump backup was 1d 3h 0m 0s ago (limits: binlog 15 min, dump / documents / offsite 26 h). The recovery point is growing: run `db-ops status`, then the job by hand (db-ops backup, binlog-archive --flush, documents-backup, offsite push) and read its error."
 
@@ -121,6 +126,7 @@ tests:
           - exp_labels:
               severity: critical
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaireconciliationdrift"
               summary: "Financial reconciliation found drift"
               description: "1 shop(s) have a latest reconciliation run that ended in DRIFT or FAILED. Read it as the shop owner (GET /reconciliation/latest, or `npm run reconcile -- --shop <id> --date <day>` from a checkout): every drift names the check, the document or row and the two figures that disagree. The books are never corrected automatically."
       - eval_time: 25h
@@ -132,6 +138,7 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaireconciliationstale"
               summary: "No financial reconciliation run in 26 hours"
               description: "The most recent reconciliation run finished 1d 2h 59m 0s ago. Check CRON_ENABLED on at least one instance, CRON_RECONCILIATION, the cron:reconciliation lock and the 'Reconciliation' lines in the API logs; run one by hand with POST /reconciliation/run."
 
@@ -183,6 +190,7 @@ tests:
           - exp_labels:
               severity: critical
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaihigh5xxrate"
               summary: "More than 1% of API answers are 5xx"
               description: "9.091% of requests have failed server-side for 5 minutes. Read the JSON logs for the correlation ids of the 500s and the error tracker for the stack traces; 503 DATABASE_UNAVAILABLE and 507 STORAGE_FULL name their cause in the answer."
 
@@ -223,6 +231,7 @@ tests:
               severity: critical
               dependency: database
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaidependencydown"
               summary: "The API cannot reach database"
               description: "Every API instance has failed to reach database for 2 minutes. database: sign-in, sales and every page answer 503 until it is back; check the MySQL host or provider status and the connection limit. redis: sales continue, background jobs wait; check the Redis host. The readiness probe (DukaanAiEndpointDown on /api/health/ready) is held back while this fires."
 
@@ -241,6 +250,7 @@ tests:
               severity: critical
               dependency: redis
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaidependencydown"
               summary: "The API cannot reach redis"
               description: "Every API instance has failed to reach redis for 2 minutes. database: sign-in, sales and every page answer 503 until it is back; check the MySQL host or provider status and the connection limit. redis: sales continue, background jobs wait; check the Redis host. The readiness probe (DukaanAiEndpointDown on /api/health/ready) is held back while this fires."
       - eval_time: 8m30s
@@ -266,6 +276,7 @@ tests:
               severity: warning
               volume: storage
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaistoragelow"
               summary: "The storage volume has less than 10% free"
               description: "8% of the storage volume is free. Grow the disk (docs/DEPLOYMENT.md, production topology) or remove what is reproducible (imports/, exports/, tmp/ under the uploads volume) before documents are refused."
       - eval_time: 25m
@@ -278,6 +289,7 @@ tests:
               severity: critical
               volume: storage
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaistoragefull"
               summary: "The storage volume is full"
               description: "Only 0% of the storage volume is free: bill photos, invoice PDFs and statements are refused with 507 STORAGE_FULL (sales continue). Free or grow the volume now; nothing partial is kept, so users repeat the upload once space is back."
 
@@ -304,6 +316,7 @@ tests:
               job: blackbox-http
               instance: http://api:3002/api/health/ready
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaiendpointdown"
               summary: "http://api:3002/api/health/ready has failed its probe for 2 minutes"
               description: "The readiness route or the login page does not answer as expected (blackbox-http). Check the edge, then GET /api/health/ready for the failing dependency. An expired certificate pages as DukaanAiCertificateExpired and holds this alert back; a certificate that does not verify for another reason (wrong name, incomplete chain, unknown issuer) fails this probe too: curl -vI the address."
       - eval_time: 30m
@@ -317,6 +330,7 @@ tests:
               job: blackbox-tls
               instance: https://api.example.com/api/health/ready
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaicertificateexpiring"
               summary: "The certificate of https://api.example.com/api/health/ready expires in under 14 days"
               description: "Automatic renewal has not happened (Caddy: ports 80/443 reachable, DNS; cert-manager: the Certificate resource). Renew before it lapses."
 
@@ -352,6 +366,7 @@ tests:
               job: blackbox-tls
               instance: https://app.example.com/login
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaicertificateexpired"
               summary: "The certificate of https://app.example.com/login has expired"
               description: "Every browser refuses this address and every client call to it fails (certificate has expired). Renew now: Caddy renews on restart when ports 80/443 and DNS are right (docker compose logs edge); cert-manager: kubectl describe certificate. The failing probe of the same address (DukaanAiEndpointDown) is held back while this fires."
       - eval_time: 30m
@@ -365,6 +380,7 @@ tests:
               job: blackbox-login
               instance: https://app.example.com/login
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaiendpointdown"
               summary: "https://app.example.com/login has failed its probe for 2 minutes"
               description: "The readiness route or the login page does not answer as expected (blackbox-login). Check the edge, then GET /api/health/ready for the failing dependency. An expired certificate pages as DukaanAiCertificateExpired and holds this alert back; a certificate that does not verify for another reason (wrong name, incomplete chain, unknown issuer) fails this probe too: curl -vI the address."
       - eval_time: 41m
@@ -375,6 +391,7 @@ tests:
               job: blackbox-tls
               instance: https://app.example.com/login
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaicertificateexpired"
               summary: "The certificate of https://app.example.com/login has expired"
               description: "Every browser refuses this address and every client call to it fails (certificate has expired). Renew now: Caddy renews on restart when ports 80/443 and DNS are right (docker compose logs edge); cert-manager: kubectl describe certificate. The failing probe of the same address (DukaanAiEndpointDown) is held back while this fires."
       - eval_time: 43m
@@ -404,6 +421,7 @@ tests:
               severity: warning
               purpose: password_reset
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaiemaildeliveryfailing"
               summary: "Email delivery is failing (password_reset)"
               description: "1 password_reset message(s) were not accepted by the mail relay in the last 30 minutes. Check SMTP_URL (credentials, quota) and the sender EMAIL_FROM against the provider, then the API log lines 'was not accepted by the relay' for the relay's own reply."
       - eval_time: 45m
@@ -433,5 +451,6 @@ tests:
           - exp_labels:
               severity: warning
             exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaicredentialflood"
               summary: "Credential routes are rate-limiting a sustained flood"
               description: "0.22 login/register/refresh attempts per second have been refused with 429 for 10 minutes. The limits hold (docs/PRODUCTION_LIMITS.md); read the access log for the source addresses and accounts (event=http, status=429, route=/api/auth/...) and block the source at the edge if it persists."
