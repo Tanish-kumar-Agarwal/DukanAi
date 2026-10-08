@@ -2,9 +2,19 @@
  * Roadmap 3.3 / 3.10 / 3.12: the phase 3 migrations on a populated database.
  * A scratch database is built up to the migration before phase 3, seeded
  * with the rows the audit worried about (returns made before
- * `returnedQuantity` existed, live duplicates, soft-deleted rows), migrated,
- * and checked. The convergence migration is then re-applied to prove it is
- * a no-op on a database that already has the structure.
+ * `returnedQuantity` existed, live duplicates, soft-deleted rows), migrated
+ * to phase 3, and checked. The convergence migration is then re-applied
+ * where it stands in the history, to prove it is a no-op on a database that
+ * already has the structure, and every later migration runs on the
+ * populated database, in order, as an upgrade would: the result is
+ * schema.prisma.
+ *
+ * Only migrations older than phase 3 go into the seeded history. The later
+ * ones used to be applied before phase 3 as well, an order no deployment
+ * has; once a later migration extended an enum the convergence migration
+ * also declares (OPENING_BALANCE_EQUITY on the ledger accounts, roadmap
+ * 9.20), that order narrowed the enum again and the database no longer
+ * matched the schema.
  */
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
@@ -24,6 +34,13 @@ describe('phase 3 migrations on a populated database', () => {
   let db: mysql.Connection;
   let tmp: string;
 
+  const migrationsDir = path.join(apiRoot, 'prisma', 'migrations');
+  /** Every migration directory, in the order Prisma applies them (by name). */
+  const migrations = () => fs.readdirSync(migrationsDir).filter((d) => d !== 'migration_lock.toml').sort();
+  const copyMigration = (dir: string) => {
+    fs.mkdirSync(path.join(tmp, 'migrations', dir));
+    fs.copyFileSync(path.join(migrationsDir, dir, 'migration.sql'), path.join(tmp, 'migrations', dir, 'migration.sql'));
+  };
   const deploy = (schemaPath: string) =>
     execFileSync('npx', ['prisma', 'migrate', 'deploy', '--schema', schemaPath], { cwd: apiRoot, env: { ...process.env, DATABASE_URL: scratchUrl.toString() }, stdio: 'pipe' }).toString();
 
@@ -37,16 +54,12 @@ describe('phase 3 migrations on a populated database', () => {
     await admin.query(`DROP DATABASE IF EXISTS \`${scratchDb}\``);
     await admin.query(`CREATE DATABASE \`${scratchDb}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
 
-    // The migration history without phase 3, in a scratch prisma folder.
+    // The migration history before phase 3, in a scratch prisma folder.
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dukaanai-mig-'));
     fs.mkdirSync(path.join(tmp, 'migrations'));
     fs.copyFileSync(path.join(apiRoot, 'prisma', 'schema.prisma'), path.join(tmp, 'schema.prisma'));
-    fs.copyFileSync(path.join(apiRoot, 'prisma', 'migrations', 'migration_lock.toml'), path.join(tmp, 'migrations', 'migration_lock.toml'));
-    for (const dir of fs.readdirSync(path.join(apiRoot, 'prisma', 'migrations'))) {
-      if (dir === 'migration_lock.toml' || PHASE3.includes(dir)) continue;
-      fs.mkdirSync(path.join(tmp, 'migrations', dir));
-      fs.copyFileSync(path.join(apiRoot, 'prisma', 'migrations', dir, 'migration.sql'), path.join(tmp, 'migrations', dir, 'migration.sql'));
-    }
+    fs.copyFileSync(path.join(migrationsDir, 'migration_lock.toml'), path.join(tmp, 'migrations', 'migration_lock.toml'));
+    for (const dir of migrations().filter((d) => d < PHASE3[0])) copyMigration(dir);
     deploy(path.join(tmp, 'schema.prisma'));
 
     db = await mysql.createConnection({ host: baseUrl.hostname, port: Number(baseUrl.port || 3306), user: decodeURIComponent(baseUrl.username), password: decodeURIComponent(baseUrl.password), database: scratchDb, multipleStatements: true });
@@ -98,7 +111,8 @@ describe('phase 3 migrations on a populated database', () => {
   }
 
   it('applies the three phase 3 migrations on top of the seeded history', () => {
-    const output = deploy(path.join(apiRoot, 'prisma', 'schema.prisma'));
+    for (const dir of PHASE3) copyMigration(dir);
+    const output = deploy(path.join(tmp, 'schema.prisma'));
     for (const name of PHASE3) expect(output).toContain(name);
   }, 300_000);
 
@@ -157,9 +171,13 @@ describe('phase 3 migrations on a populated database', () => {
     await expect(db.query("DELETE FROM LedgerTransaction WHERE id = 'lt1'")).rejects.toMatchObject({ sqlState: '45000' });
   });
 
-  it('3.12 the convergence migration is idempotent and the database matches schema.prisma', () => {
-    const convergence = path.join(apiRoot, 'prisma', 'migrations', '20260929090100_foundation_convergence', 'migration.sql');
+  it('3.12 the convergence migration is idempotent, and every later migration then brings the populated database to schema.prisma', () => {
+    const convergence = path.join(migrationsDir, '20260929090100_foundation_convergence', 'migration.sql');
     execFileSync('npx', ['prisma', 'db', 'execute', '--url', scratchUrl.toString(), '--file', convergence], { cwd: apiRoot, stdio: 'pipe' });
+    const later = migrations().filter((d) => d > PHASE3[PHASE3.length - 1]);
+    expect(later.length).toBeGreaterThan(0);
+    const output = deploy(path.join(apiRoot, 'prisma', 'schema.prisma'));
+    for (const name of later) expect(output).toContain(name);
     execFileSync('npx', ['prisma', 'migrate', 'diff', '--from-url', scratchUrl.toString(), '--to-schema-datamodel', 'prisma/schema.prisma', '--exit-code'], { cwd: apiRoot, stdio: 'pipe' });
   }, 300_000);
 });
