@@ -1,7 +1,13 @@
 import * as Sentry from '@sentry/node';
 import { Logger } from '@nestjs/common';
 import { MonitoringConfig } from '../../config/domains/monitoring.config';
-import { errorsTrackedTotal } from './metrics';
+import { errorsTrackedTotal, zeroSeries } from './metrics';
+
+/** The `kind` label of `errors_tracked_total`: where the error was caught. */
+export const ERROR_KINDS = ['unhandled', 'prisma', 'job', 'startup'] as const;
+
+// The first errors of each kind count towards increase() (DukaanAiUnhandledErrors).
+zeroSeries(errorsTrackedTotal, ERROR_KINDS.map((kind) => ({ kind })));
 
 export interface ErrorContext {
   correlationId?: string;
@@ -10,7 +16,7 @@ export interface ErrorContext {
   route?: string;
   method?: string;
   statusCode?: number;
-  kind: 'unhandled' | 'prisma' | 'job' | 'startup';
+  kind: (typeof ERROR_KINDS)[number];
 }
 
 /**

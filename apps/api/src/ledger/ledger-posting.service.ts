@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LedgerAccount, LedgerEntryType, Prisma } from '@prisma/client';
-import { ledgerPostingFailuresTotal } from '../common/observability/metrics';
+import { ledgerPostingFailuresTotal, zeroSeries } from '../common/observability/metrics';
 
 export interface LedgerEntryInput {
   account: LedgerAccount;
@@ -10,18 +10,23 @@ export interface LedgerEntryInput {
 }
 
 /** Business events that post to the ledger; with `sourceId` they form the posting's unique key. */
-export type LedgerSourceType =
-  | 'SALE'
-  | 'RETURN'
-  | 'CANCELLATION'
-  | 'CUSTOMER_PAYMENT'
-  | 'GRN'
-  | 'PURCHASE_RETURN'
-  | 'ADJUSTMENT_REQUEST'
-  | 'STOCK_ADJUSTMENT'
-  | 'SUPPLIER_PAYMENT'
+export const LEDGER_SOURCE_TYPES = [
+  'SALE',
+  'RETURN',
+  'CANCELLATION',
+  'CUSTOMER_PAYMENT',
+  'GRN',
+  'PURCHASE_RETURN',
+  'ADJUSTMENT_REQUEST',
+  'STOCK_ADJUSTMENT',
+  'SUPPLIER_PAYMENT',
   /** A customer's opening udhar (roadmap 9.20): the UdharTransaction id. */
-  | 'OPENING_BALANCE';
+  'OPENING_BALANCE',
+] as const;
+export type LedgerSourceType = (typeof LEDGER_SOURCE_TYPES)[number];
+
+// The first failure of each source must show in increase() (DukaanAiLedgerPostingFailures).
+zeroSeries(ledgerPostingFailuresTotal, LEDGER_SOURCE_TYPES.map((source) => ({ source })));
 
 export interface LedgerPosting {
   shopId: string;

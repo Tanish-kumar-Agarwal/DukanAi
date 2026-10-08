@@ -128,7 +128,7 @@ tests:
             exp_annotations:
               runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaireconciliationdrift"
               summary: "Financial reconciliation found drift"
-              description: "1 shop(s) have a latest reconciliation run that ended in DRIFT or FAILED. Read it as the shop owner (GET /reconciliation/latest, or `npm run reconcile -- --shop <id> --date <day>` from a checkout): every drift names the check, the document or row and the two figures that disagree. The books are never corrected automatically."
+              description: "1 shop(s) have a latest reconciliation run that ended in DRIFT or FAILED. Read it as the shop owner (GET /reconciliation/latest), or in the API container (node dist/cli/reconcile --shop <id> --date <day>): every drift names the check, the document or row and the two figures that disagree. The books are never corrected automatically."
       - eval_time: 25h
         alertname: DukaanAiReconciliationStale
         exp_alerts: []
@@ -140,7 +140,7 @@ tests:
             exp_annotations:
               runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaireconciliationstale"
               summary: "No financial reconciliation run in 26 hours"
-              description: "The most recent reconciliation run finished 1d 2h 59m 0s ago. Check CRON_ENABLED on at least one instance, CRON_RECONCILIATION, the cron:reconciliation lock and the 'Reconciliation' lines in the API logs; run one by hand with POST /reconciliation/run."
+              description: "The most recent reconciliation run finished 1d 2h 59m 0s ago. Check CRON_ENABLED on at least one instance, CRON_RECONCILIATION, the cron:reconciliation lock and the 'Reconciliation' lines in the API logs (in Loki: a container's own log starts at its start); run the missed night in the API container with node dist/cli/reconcile --all-shops."
 
   # A stack where nothing has been reconciled yet exports the gauge as 0
   # (roadmap 9.18: a fresh drill stack went pending at once): no alert.
@@ -152,6 +152,44 @@ tests:
       - eval_time: 27h
         alertname: DukaanAiReconciliationStale
         exp_alerts: []
+
+  # A redeploy of the API fails one scrape and its series go stale (roadmap
+  # 9.22, walking DukaanAiReconciliationStale: the firing alert resolved at
+  # the redeploy with its cause still there, then waited out its 30 minutes
+  # again). keep_firing_for holds it through the gap; the same holds for
+  # every alert read from an API gauge.
+  - interval: 1m
+    input_series:
+      - series: 'reconciliation_last_run_timestamp_seconds{job="dukaanai-api", instance="api:3002"}'
+        values: '60x1600 stale 60x30'
+    alert_rule_test:
+      - eval_time: 26h40m
+        alertname: DukaanAiReconciliationStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaireconciliationstale"
+              summary: "No financial reconciliation run in 26 hours"
+              description: "The most recent reconciliation run finished 1d 2h 39m 0s ago. Check CRON_ENABLED on at least one instance, CRON_RECONCILIATION, the cron:reconciliation lock and the 'Reconciliation' lines in the API logs (in Loki: a container's own log starts at its start); run the missed night in the API container with node dist/cli/reconcile --all-shops."
+      - eval_time: 26h41m30s
+        alertname: DukaanAiReconciliationStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaireconciliationstale"
+              summary: "No financial reconciliation run in 26 hours"
+              description: "The most recent reconciliation run finished 1d 2h 39m 45s ago. Check CRON_ENABLED on at least one instance, CRON_RECONCILIATION, the cron:reconciliation lock and the 'Reconciliation' lines in the API logs (in Loki: a container's own log starts at its start); run the missed night in the API container with node dist/cli/reconcile --all-shops."
+      - eval_time: 26h45m
+        alertname: DukaanAiReconciliationStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaireconciliationstale"
+              summary: "No financial reconciliation run in 26 hours"
+              description: "The most recent reconciliation run finished 1d 2h 44m 0s ago. Check CRON_ENABLED on at least one instance, CRON_RECONCILIATION, the cron:reconciliation lock and the 'Reconciliation' lines in the API logs (in Loki: a container's own log starts at its start); run the missed night in the API container with node dist/cli/reconcile --all-shops."
 
   # Failure drills (roadmap 9.18). The 60-second MySQL outage: 5xx for one
   # minute out of steady traffic (about 2 requests a second) must not page
@@ -332,7 +370,7 @@ tests:
             exp_annotations:
               runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaicertificateexpiring"
               summary: "The certificate of https://api.example.com/api/health/ready expires in under 14 days"
-              description: "Automatic renewal has not happened (Caddy: ports 80/443 reachable, DNS; cert-manager: the Certificate resource). Renew before it lapses."
+              description: "Automatic renewal has not happened (Caddy: ports 80/443 reachable, DNS; cert-manager: the Certificate resource; a certificate installed as a file is never renewed). Renew before it lapses."
 
   # Certificate expiry (roadmap 9.18): the certificate of app.example.com
   # lapses 30 minutes in. Its warning was still pending (it needs an hour)
@@ -368,7 +406,7 @@ tests:
             exp_annotations:
               runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaicertificateexpired"
               summary: "The certificate of https://app.example.com/login has expired"
-              description: "Every browser refuses this address and every client call to it fails (certificate has expired). Renew now: Caddy renews on restart when ports 80/443 and DNS are right (docker compose logs edge); cert-manager: kubectl describe certificate. The failing probe of the same address (DukaanAiEndpointDown) is held back while this fires."
+              description: "Every browser refuses this address and every client call to it fails (certificate has expired). Renew now: Caddy renews on restart when ports 80/443 and DNS are right (docker compose logs edge); a file certificate is replaced and the edge reloaded (caddy reload --force); cert-manager: kubectl describe certificate. The failing probe of the same address (DukaanAiEndpointDown) is held back while this fires."
       - eval_time: 30m
         alertname: DukaanAiCertificateExpiring
         exp_alerts: []
@@ -393,7 +431,7 @@ tests:
             exp_annotations:
               runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaicertificateexpired"
               summary: "The certificate of https://app.example.com/login has expired"
-              description: "Every browser refuses this address and every client call to it fails (certificate has expired). Renew now: Caddy renews on restart when ports 80/443 and DNS are right (docker compose logs edge); cert-manager: kubectl describe certificate. The failing probe of the same address (DukaanAiEndpointDown) is held back while this fires."
+              description: "Every browser refuses this address and every client call to it fails (certificate has expired). Renew now: Caddy renews on restart when ports 80/443 and DNS are right (docker compose logs edge); a file certificate is replaced and the edge reloaded (caddy reload --force); cert-manager: kubectl describe certificate. The failing probe of the same address (DukaanAiEndpointDown) is held back while this fires."
       - eval_time: 43m
         alertname: DukaanAiCertificateExpired
         exp_alerts: []
@@ -454,3 +492,36 @@ tests:
               runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaicredentialflood"
               summary: "Credential routes are rate-limiting a sustained flood"
               description: "0.22 login/register/refresh attempts per second have been refused with 429 for 10 minutes. The limits hold (docs/PRODUCTION_LIMITS.md); read the access log for the source addresses and accounts (event=http, status=429, route=/api/auth/...) and block the source at the edge if it persists."
+
+  # Ledger (roadmap 9.22): a failed posting pages at once, but only from a
+  # series that existed at 0 before the failure. A series born at 1 by its
+  # first failure shows no increase() and never pages: walking this alert,
+  # one refused sale paged nobody. The API now creates every alerted series
+  # at 0 at start-up (zeroSeries, src/common/observability/alerted-series.spec.ts).
+  - interval: 1m
+    input_series:
+      # created at 0 at start-up, one failure at t=11m
+      - series: 'ledger_posting_failures_total{job="dukaanai-api", instance="api:3002", source="SALE"}'
+        values: '0x10 1+0x30'
+      # no series until its first failure at t=11m: invisible to increase()
+      - series: 'ledger_posting_failures_total{job="dukaanai-api", instance="api:3002", source="RETURN"}'
+        values: '_x11 1+0x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DukaanAiLedgerPostingFailures
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: DukaanAiLedgerPostingFailures
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: dukaanai-api
+              instance: "api:3002"
+              source: SALE
+            exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanailedgerpostingfailures"
+              summary: "Ledger posting failed (source SALE)"
+              description: "1 ledger posting(s) threw in the last 10 minutes; each business transaction was rolled back and the client saw an error. A session holding LedgerAccountBalance rows makes sales wait out the lock wait timeout and answer 503 DATABASE_UNAVAILABLE while readiness stays 200 (sys.innodb_lock_waits names it); 'Unbalanced ledger posting' in the logs is a defect."
+      - eval_time: 25m
+        alertname: DukaanAiLedgerPostingFailures
+        exp_alerts: []

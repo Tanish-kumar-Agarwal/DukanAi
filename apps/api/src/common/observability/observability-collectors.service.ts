@@ -17,6 +17,7 @@ import {
   outboxOldestPendingAgeSeconds,
   outboxRows,
   queueJobs,
+  queuePaused,
   reconciliationLastRunTimestampSeconds,
   reconciliationShopsWithDrift,
   storageVolumeFreeBytes,
@@ -129,6 +130,7 @@ export class ObservabilityCollectorsService {
    */
   private async skipQueues(): Promise<void> {
     queueJobs.reset();
+    queuePaused.reset();
   }
 
   /**
@@ -240,14 +242,23 @@ export class ObservabilityCollectorsService {
     }
   }
 
-  /** Job counts per BullMQ queue, from the queue clients already open in this process. */
+  /**
+   * Job counts per BullMQ queue, from the queue clients already open in this
+   * process. A paused queue keeps its jobs in BullMQ's `paused` list, which
+   * `getJobCounts` reports apart from `waiting`: they wait all the same, so
+   * they count as waiting, and `queue_paused` says why nothing takes them
+   * (a paused queue read 0 waiting and never raised DukaanAiQueueBacklog,
+   * found walking it, roadmap 9.22).
+   */
   async refreshQueues(): Promise<void> {
     const { queues } = queueInstances(this.modules);
     await Promise.all(
       queues.map(async (queue) => {
         try {
-          const counts = await (queue as unknown as { getJobCounts(...states: string[]): Promise<Record<string, number>> }).getJobCounts(...QUEUE_STATES);
-          for (const state of QUEUE_STATES) queueJobs.set({ queue: queue.name, state }, counts[state] ?? 0);
+          const client = queue as unknown as { getJobCounts(...states: string[]): Promise<Record<string, number>>; isPaused(): Promise<boolean> };
+          const [counts, paused] = await Promise.all([client.getJobCounts(...QUEUE_STATES), client.isPaused()]);
+          for (const state of QUEUE_STATES) queueJobs.set({ queue: queue.name, state }, (counts[state] ?? 0) + (state === 'waiting' ? (counts.paused ?? 0) : 0));
+          queuePaused.set({ queue: queue.name }, paused ? 1 : 0);
         } catch (error) {
           this.logger.warn(`Queue metrics for ${queue.name} not refreshed: ${(error as Error).message}`);
         }

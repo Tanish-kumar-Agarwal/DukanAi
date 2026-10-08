@@ -5,7 +5,8 @@ import { Logger } from '@nestjs/common';
 import { MonitoringConfig } from '../../config/domains/monitoring.config';
 import { StorageConfig } from '../../config/domains/storage.config';
 import { UploadConfig } from '../../config/domains/upload.config';
-import { backupLastSuccessTimestampSeconds, buildInfo, dependencyUp, queueJobs, storageVolumeFreeBytes, storageVolumeSizeBytes } from './metrics';
+import * as readiness from '../lifecycle/queue-readiness';
+import { backupLastSuccessTimestampSeconds, buildInfo, dependencyUp, queueJobs, queuePaused, storageVolumeFreeBytes, storageVolumeSizeBytes } from './metrics';
 import { COLLECTOR_BUDGET_MS, ObservabilityCollectorsService } from './observability-collectors.service';
 
 /** The backup-status gauge (roadmap 9.4): one series per `<kind>.last-success` file, valued with its first line. */
@@ -151,5 +152,34 @@ describe('build_info', () => {
     expect((await buildInfo.get()).values).toEqual([{ labels: { release: 'v1.0.0-rc3' }, value: 1 }]);
     build(undefined);
     expect((await buildInfo.get()).values).toEqual([{ labels: { release: 'unknown' }, value: 1 }]);
+  });
+});
+
+/** Roadmap 9.22: a paused queue keeps its jobs in BullMQ's `paused` list; they count as waiting and the pause shows. */
+describe('ObservabilityCollectorsService.refreshQueues', () => {
+  const value = async (gauge: { get(): Promise<{ values: Array<{ labels: Record<string, string | number>; value: number }> }> }, labels: Record<string, string>) =>
+    (await gauge.get()).values.find((v) => Object.entries(labels).every(([k, x]) => v.labels[k] === x))?.value;
+
+  beforeEach(() => {
+    queueJobs.reset();
+    queuePaused.reset();
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('counts the jobs of a paused queue as waiting and reports the pause', async () => {
+    // What BullMQ 5 answers: asked for `waiting`, it also counts the `paused` list, under its own key.
+    const paused = { name: 'system-events', getJobCounts: jest.fn(async () => ({ waiting: 0, active: 0, delayed: 0, failed: 0, paused: 1200 })), isPaused: jest.fn(async () => true) };
+    const running = { name: 'import-jobs', getJobCounts: jest.fn(async () => ({ waiting: 3, active: 1, delayed: 0, failed: 2, paused: 0 })), isPaused: jest.fn(async () => false) };
+    jest.spyOn(readiness, 'queueInstances').mockReturnValue({ queues: [paused, running] as never, workers: [] });
+    const service = new ObservabilityCollectorsService({} as never, {} as never, {} as never, new MonitoringConfig());
+
+    await service.refreshQueues();
+
+    expect(paused.getJobCounts).toHaveBeenCalledWith('waiting', 'active', 'delayed', 'failed');
+    expect(await value(queueJobs, { queue: 'system-events', state: 'waiting' })).toBe(1200);
+    expect(await value(queuePaused, { queue: 'system-events' })).toBe(1);
+    expect(await value(queueJobs, { queue: 'import-jobs', state: 'waiting' })).toBe(3);
+    expect(await value(queueJobs, { queue: 'import-jobs', state: 'failed' })).toBe(2);
+    expect(await value(queuePaused, { queue: 'import-jobs' })).toBe(0);
   });
 });

@@ -454,10 +454,11 @@ does.
 | | | tls-expiry | | | | | | |
 | | | offsite-restore | | | | | | |
 
-Each runbook of row 9.22 is walked once during these runs. The on-call
-person follows the runbook of every alert that fires, and the time from the
-page to the first correct action is the third column of that runbook's
-review.
+Each runbook of row 9.22 is walked once during these runs (the first walk
+of every page, on the local drill stack, is section 7 of
+`docs/RUNBOOKS.md`). The on-call person follows the runbook of every alert
+that fires, and the time from the page to the first correct action is the
+third column of that runbook's review.
 
 ## 7. What these runs do not show
 
@@ -476,7 +477,7 @@ review.
   expired certificate; the drill installs one. In production a certificate
   expires only after renewal has failed for 14 days, all of them under
   `DukaanAiCertificateExpiring`.
-- **The runbooks of row 9.22.** They do not exist yet. Until they do, the
-  "First look" column of `docs/OBSERVABILITY.md` is the runbook, and each
-  alert that fired here was checked against it (§3); row 9.22 walks its own
-  pages during the staging runs.
+- **The runbooks on staging.** Every page of `docs/RUNBOOKS.md` (row 9.22)
+  was walked on this stack, one fault per alert, and corrected where the
+  walk found it wrong (its section 7, 2026-10-08); the staging runs above
+  walk them again with the real paging channel and the managed services.

@@ -1232,8 +1232,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   alerts `DukaanAiReconciliationDrift` (at once) and
   `DukaanAiReconciliationStale` (26 h) with promtool tests. Routes
   `GET /reconciliation/latest|runs|runs/:id`, `POST /reconciliation/run
-  { date? }` (ADMIN_ROLES); CLI `npm run reconcile -- --shop <id> [--date]
-  [--json]` (`scripts/reconcile.ts`, exit 1 on drift). Migration
+  { date? }` (ADMIN_ROLES); CLI `node dist/cli/reconcile --shop <id>
+  [--date] [--json]` or `--all-shops` in the API container, `npm run
+  reconcile -- ...` from a checkout (`src/cli/reconcile.ts`, exit 1 on
+  drift). Migration
   `20261005090000_reconciliation_runs` adds the table and the two drawer
   columns the shift check needs: `Invoice.cancelledShiftId` (set by
   `cancelInvoice`) and `UdharTransaction.shiftId` (set by `recordPayment`);
@@ -1364,8 +1366,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   no template documents: a new secret gets a template line AND a row. A
   `JWT_SECRET` rotation alone only refuses the access tokens (HS256): the
   opaque refresh tokens keep minting new ones, so the procedure is restart
-  + `npm run sessions:revoke-all -- --yes` (`scripts/revoke-all-sessions.ts`
-  over `src/auth/session-revocation.ts`: every live refresh token revoked
+  + `node dist/cli/revoke-all-sessions --yes` in the API container (`npm
+  run sessions:revoke-all -- --yes` from a checkout; `src/cli` over
+  `src/auth/session-revocation.ts`: every live refresh token revoked
   and every `tokenVersion` bumped in one transaction; `--user <id|email>`
   for one account; a dry run without `--yes`), proven by
   `test/integration/credential-rotation.integration-spec.ts`. A
@@ -1649,6 +1652,55 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   is the operator CLI. Found on the way: a Prisma promise returned bare out
   of `runAsSuperAdmin` ran outside it, so every import job stayed PENDING
   (`job-context.spec.ts`).
+- 9.21 releases (`RELEASE.md` is the procedure: backup, check, tag,
+  certify, staging, smoke, a rehearsed rollback, production, verify):
+  versions are semver tags; `scripts/release/release.mjs check <tag>`
+  (shape, every package.json version equals the tag, a dated
+  `## [vX.Y.Z]` section in `CHANGELOG.md`, above every earlier tag, on main)
+  runs before the tag is pushed and again in `release.yml`; `notes` prints
+  the section (the draft release's body); `lint` and
+  `node --test scripts/release/release.test.mjs` run in CI. A change that
+  ships adds its line under `## [Unreleased]`. Images carry
+  `APP_RELEASE` / `APP_REVISION` as build args (OCI labels, `release` in
+  `GET /api/health`, `build_info{release}`); a compose `environment:` entry,
+  even blank, overrides the image's value, so no compose file sets
+  `APP_RELEASE`. `release.yml` never rebuilds a published version (a HEAD on
+  the ghcr manifest with a pull token: 404 builds, 200 refuses, anything
+  else stops; `docker manifest inspect` reported auth failures as absent).
+  Rollback is the previous tag's images; once a row holds an enum value the
+  old client does not know, that release cannot roll back (rc3:
+  `OPENING_BALANCE_EQUITY`), so a new enum value ships one release before
+  its writer (`prisma/MIGRATIONS.md`).
+- 9.22 runbooks (`docs/RUNBOOKS.md`: roles, severities, messages to shop
+  owners, one page per alert, the review template; §7 records the walk of
+  every page on the drill stack, one injected fault each): `runbook_url` on
+  every alert (`runbooks.spec.ts`). What the walks fixed, keep it so:
+  alerted counters exist at 0 from start-up (`zeroSeries`; a series born at
+  1 shows no `increase()`, `alerted-series.spec.ts`); a paused BullMQ queue
+  keeps its jobs in its `paused` list, counted as waiting, with
+  `queue_paused`; the exception filter's and the login lines carry the
+  request's `correlationId` (and the login lines `ip`) as fields, because
+  they run outside the request's log context; `EDGE_BLOCKED_IPS` (Caddy
+  `client_ip`, 403) blocks an address without editing the Caddyfile; the
+  db-ops loops trap SIGTERM (PID 1); every alert read from an API gauge
+  has `keep_firing_for: 2m` (a deploy's one failed scrape resolved a firing
+  alert and restarted its `for:`; promtool case with a `stale` sample).
+  Operator commands ship in the API image: the image has `dist` and no
+  `scripts/` or ts-node, so `npm run <cmd>` there answers `ts-node: not
+  found`. A command a runbook names lives in `src/cli` (`runAsMain`,
+  `process.exitCode`, injectable deps for the spec), runs as `dc exec api
+  node dist/cli/<cmd>`, and `scripts/<cmd>.ts` is only the checkout
+  wrapper that loads `.env.local` / `.env` (`dotenv` stays out of `src`);
+  the boot-regression spec runs each with `--help` and without a
+  database. Commands in a page: every `dc run` in a check takes
+  `--no-deps` (else it starts the stopped dependency the alert is about),
+  a container variable goes inside `sh -c '...'` (the host shell expands it
+  to nothing), lock waits come from `sys.innodb_lock_waits`, sampled
+  (`performance_schema.data_lock_waits` gives thread ids, not the ids
+  `KILL` takes), `dc logs` holds only the running container (older lines
+  are Loki's). `runbooks.spec.ts` also requires a dated **Walked** line
+  and a §7 row per alert: a new alert is walked on the drill stack before
+  it ships.
 
 ## Toolchain
 

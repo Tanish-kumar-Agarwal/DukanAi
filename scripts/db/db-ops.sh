@@ -29,9 +29,15 @@ case "$cmd" in
     # BINLOG_ARCHIVE_INTERVAL_SECONDS (300), for a stack without host cron.
     interval="${BINLOG_ARCHIVE_INTERVAL_SECONDS:-300}"
     echo "binlog-archiver: archiving into $ARCHIVE every ${interval}s"
+    # The loop is PID 1 of its container, and bash ignores SIGTERM there
+    # without a trap: every stop waited out the grace period and was killed
+    # (exit 137; found walking DukaanAiBackupStale, roadmap 9.22). A run in
+    # progress finishes first (bash runs the trap once its child exits); the
+    # sleep is waited on, so a stop between runs is immediate.
+    trap 'echo "binlog-archiver: stopping"; exit 0' TERM INT
     while true; do
       bash /scripts/db/binlog-archive.sh --flush "$@" || echo "binlog-archiver: run failed (exit $?), next try in ${interval}s" >&2
-      sleep "$interval"
+      sleep "$interval" & wait $!
     done
     ;;
   backup-loop)
@@ -45,7 +51,9 @@ case "$cmd" in
     interval="${BACKUP_LOOP_INTERVAL_SECONDS:-86400}"
     delay="${BACKUP_LOOP_INITIAL_DELAY_SECONDS:-60}"
     echo "backup-agent: dump + documents${OFFSITE_REMOTE:++ off-site} into $BACKUPS every ${interval}s (first run in ${delay}s)"
-    sleep "$delay"
+    # PID 1 too: stop at once between runs, after the current job during one (archive-loop above).
+    trap 'echo "backup-agent: stopping"; exit 0' TERM INT
+    sleep "$delay" & wait $!
     while true; do
       bash /scripts/db/backup.sh || echo "backup-agent: dump failed (exit $?)" >&2
       bash /scripts/storage/backup.sh || echo "backup-agent: documents archive failed (exit $?)" >&2
@@ -54,7 +62,7 @@ case "$cmd" in
       else
         echo "backup-agent: OFFSITE_REMOTE is not set: no off-site copy (docs/BACKUP_RESTORE.md)" >&2
       fi
-      sleep "$interval"
+      sleep "$interval" & wait $!
     done
     ;;
   restore) exec bash /scripts/db/restore.sh "$@" ;;

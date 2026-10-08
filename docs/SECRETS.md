@@ -20,7 +20,7 @@ production and staging location; locally the untracked `.env` / `.env.local`.
 |---|---|---|---|---|---|---|
 | `JWT_SECRET` | every API access token (HS256) | API (`JwtConfig`; `JwtModule`, `JwtStrategy`, the socket adapter) | store → API `.env` / `dukaanai-secrets` | platform owner | every access token refused at once; refresh tokens keep working until revoked, so the procedure revokes them: **every session ends** | [JWT secret](#jwt_secret) |
 | `NEXTAUTH_SECRET` | the web session cookie (signed and encrypted JWE) | web (`serverConfig`, NextAuth) | store → web `.env` / `dukaanai-secrets` | platform owner | every browser session cookie becomes unreadable: **every web user signs in again** | [NextAuth secret](#nextauth_secret) |
-| `DATABASE_URL` | the application's database credentials (user, password, host, TLS CA path) | API, `migrate`, `scripts/reconcile.ts`, `scripts/revoke-all-sessions.ts` | store → API `.env` / `dukaanai-secrets` | platform owner | none for users when done with a dual password; a restart otherwise | [Database password](#database_url) |
+| `DATABASE_URL` | the application's database credentials (user, password, host, TLS CA path) | API, `migrate`, the operator commands in the API image (`dist/cli/reconcile`, `dist/cli/revoke-all-sessions`; `npm run reconcile` / `sessions:revoke-all` from a checkout) | store → API `.env` / `dukaanai-secrets` | platform owner | none for users when done with a dual password; a restart otherwise | [Database password](#database_url) |
 | `DB_OPS_DATABASE_URL` | the backup user (RELOAD, REPLICATION CLIENT, SELECT...) | `backup-agent` / `db-ops` (`scripts/db/lib.sh`) | store → host `.env` / `dukaanai-secrets` | platform owner | the next backup run uses it; no user impact | same as above, for the backup user |
 | `MYSQL_ROOT_PASSWORD`, `MYSQL_PASSWORD` | the bundled MySQL of the reference stack only (never production: the production database is managed) | compose `mysql`, `db-ops` on the reference stack | local `.env` | developer | local only | recreate the volume or `ALTER USER` |
 | `REDIS_URL` | the Redis password (and TLS with `rediss://`) | API (`RedisModule`, BullMQ, cache, throttler) | store → API `.env` / `dukaanai-secrets` | platform owner | queues, cache, locks and counters reconnect; nothing persistent is lost (Redis is disposable, `docs/DATA_SAFETY.md`) | [Redis password](#redis_url) |
@@ -67,12 +67,16 @@ row of the log below. Generate 32+ character secrets with
    token signed with the old secret is now refused (401) and open sockets
    drop; browsers hold refresh tokens, which are opaque and would mint new
    access tokens under the new secret.
-3. End the refresh tokens too: `npm run sessions:revoke-all -- --yes`
-   (from `apps/api` with `DATABASE_URL` set; `docker compose -f
-   docker-compose.prod.yml run --rm api npm run sessions:revoke-all -- --yes`
-   on a host). It revokes every live refresh token and bumps every user's
-   `tokenVersion` in one transaction (`src/auth/session-revocation.ts`); a
-   dry run without `--yes` only counts. Every user signs in again. One user
+3. End the refresh tokens too, in the running API container (the image
+   carries the command and the container's `DATABASE_URL`): `docker compose
+   -f docker-compose.prod.yml exec api node dist/cli/revoke-all-sessions
+   --yes`, or `kubectl -n dukaanai exec deploy/dukaanai-api -- node
+   dist/cli/revoke-all-sessions --yes`; from a checkout with `DATABASE_URL`
+   set, `npm run sessions:revoke-all -- --yes` runs the same command (the
+   image has no `npm run` form: no `scripts/`, no ts-node; found walking the
+   runbooks, roadmap 9.22). It revokes every live refresh token and bumps
+   every user's `tokenVersion` in one transaction
+   (`src/auth/session-revocation.ts`); a dry run without `--yes` only counts. Every user signs in again. One user
    only: `--user <id|email>` (the incident lever).
 4. Check: `GET /api/auth/profile` with an old token is 401; a fresh login
    works; `test/integration/credential-rotation.integration-spec.ts` is the
@@ -84,8 +88,8 @@ row of the log below. Generate 32+ character secrets with
 2. Restart the web. Every session cookie becomes unreadable: every web user
    lands on `/login`. The API sessions behind them stay valid until they
    expire (`JWT_REFRESH_EXPIRES_IN`, 7 days idle; `SESSION_ABSOLUTE_LIFETIME`,
-   30 days); run `sessions:revoke-all` as well when the rotation is for a
-   suspected leak.
+   12 hours in production); run `revoke-all-sessions` (step 3 of
+   `JWT_SECRET`) as well when the rotation is for a suspected leak.
 3. Check: the login page loads, a sign-in works, the previous cookie is
    refused.
 
@@ -172,7 +176,8 @@ The key encrypts every copy in the bucket; a replaced key loses them all.
 ### Any secret, on a suspected leak
 
 1. Rotate it first, with the procedure above, production before staging.
-2. `npm run sessions:revoke-all -- --yes` when the secret could mint or read
+2. End every session (`node dist/cli/revoke-all-sessions --yes` in the API
+   container, step 3 of `JWT_SECRET`) when the secret could mint or read
    sessions (`JWT_SECRET`, `NEXTAUTH_SECRET`, the database).
 3. Search the history: `gitleaks git . --config .gitleaks.toml` and the
    provider's audit log for the key's use.

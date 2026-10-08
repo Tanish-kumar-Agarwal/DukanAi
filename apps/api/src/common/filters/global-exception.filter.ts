@@ -98,6 +98,11 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       error = HttpStatus[statusCode] || 'Conflict';
       code = invCode;
       details = (exception as { details?: unknown }).details;
+    // Every line below names the request's correlation id as a field: the
+    // filter runs after the request's async context has ended, so the
+    // logger's ambient id would read "system-job", and the runbooks' query by
+    // correlation id would miss the very line that explains a 500 (found
+    // walking DukaanAiHigh5xxRate, roadmap 9.22).
     } else if (isDatabaseUnavailable(exception)) {
       // The database went away (roadmap 9.18): a temporary condition the
       // client should retry, not a bug. Idempotent writes (checkout, returns,
@@ -107,7 +112,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       error = 'ServiceUnavailable';
       code = 'DATABASE_UNAVAILABLE';
       response.setHeader('Retry-After', '5');
-      this.logger.warn(`Database unavailable [correlationId=${correlationId}]: ${(exception as Error).message.split('\n').filter(Boolean).pop() ?? ''}`);
+      this.logger.warn({ message: `Database unavailable: ${(exception as Error).message.split('\n').filter(Boolean).pop() ?? ''}`, correlationId: String(correlationId) });
     } else if (isStorageFull(exception)) {
       // A full volume (roadmap 9.18): nothing was kept, the request can be
       // repeated once space is freed.
@@ -115,7 +120,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       message = 'The document store is full. Nothing was saved; try again once space has been freed.';
       error = 'InsufficientStorage';
       code = 'STORAGE_FULL';
-      this.logger.error(`Storage full [correlationId=${correlationId}]: ${(exception as Error).message}`);
+      this.logger.error({ message: `Storage full: ${(exception as Error).message}`, correlationId: String(correlationId) });
     } else if (exception instanceof Prisma.PrismaClientKnownRequestError) {
       // Known Prisma errors: expose a safe, deterministic code without internals.
       const mapped = PRISMA_STATUS[exception.code];
@@ -129,19 +134,13 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         const target = (exception.meta as { target?: unknown } | undefined)?.target;
         details = { target: Array.isArray(target) ? target.map(String) : target === undefined ? undefined : String(target) };
       }
-      this.logger.error(
-        `Prisma error ${exception.code} [correlationId=${correlationId}]`,
-        exception.message,
-      );
+      this.logger.error({ message: `Prisma error ${exception.code}`, correlationId: String(correlationId) }, exception.message);
     } else {
       statusCode = HttpStatus.INTERNAL_SERVER_ERROR;
       message = 'Internal server error';
       error = 'InternalServerError';
       trackAs = 'unhandled';
-      this.logger.error(
-        `Unhandled exception [correlationId=${correlationId}]`,
-        exception instanceof Error ? exception.stack : String(exception),
-      );
+      this.logger.error({ message: 'Unhandled exception', correlationId: String(correlationId) }, exception instanceof Error ? exception.stack : String(exception));
     }
 
     if (trackAs) {

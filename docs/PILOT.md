@@ -157,6 +157,13 @@ each was measured on the development build:
 | L-05 | POS, phone and tablet portrait | The cart sits below the product grid (first line at about 1,160 px) | a cart summary bar, or tabs for products and cart |
 | L-06 | POS, 1024 px landscape | The always-shown sidebar takes 256 px of the POS's width | collapse the sidebar on the POS below 1280 px |
 
+Found walking the runbooks (roadmap 9.22, `docs/RUNBOOKS.md` §7), open for
+the owner's decision because the fix needs a screen as well:
+
+| ID | Where | Observation | Proposal |
+|---|---|---|---|
+| R-01 | Product photos | A photo that cannot be decoded (cut off in transit from a phone) passes the upload's signature check, fails its thumbnail job three times and stays in the product's gallery as a broken image: no route removes a media asset | `DELETE /media/:id` (MANAGER+) and a remove button in the gallery; meanwhile the shop uploads the photo again |
+
 ## 4. Setup before day 1
 
 **Readiness.** On staging, then on production before its fortnight:

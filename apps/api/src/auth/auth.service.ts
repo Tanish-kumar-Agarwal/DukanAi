@@ -42,6 +42,12 @@ const hashToken = (token: string): string => crypto.createHash('sha256').update(
  * absolute lifetime passes or on logout, and access tokens die with it because
  * `JwtStrategy` checks the family on every request.
  */
+/** Who made a login attempt, for its log lines (roadmap 9.22). */
+export interface LoginAttempt {
+  ip?: string;
+  correlationId?: string;
+}
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -58,39 +64,33 @@ export class AuthService {
    * The credential check behind `POST /auth/login`. Every decision is logged
    * (ASVS 7.2.1, roadmap 9.15) with the account and the reason, never the
    * password; the caller still answers one generic 401 for every refusal.
+   * Each line carries the client address and the request's correlation id
+   * (the guard runs outside the request's log context), so a flood's
+   * accounts can be grouped by address and joined to the access log.
    */
-  async validateUser(email: string, pass: string): Promise<SafeUserDto | null> {
+  async validateUser(email: string, pass: string, attempt: LoginAttempt = {}): Promise<SafeUserDto | null> {
+    const refuse = (message: string): null => {
+      this.logger.warn({ message: `Login refused for ${message}`, ...attempt });
+      return null;
+    };
     const user = await this.usersService.findByEmailWithPassword(email);
     // Google OAuth users have no password — they cannot use credentials login.
     if (!user || !user.password) {
-      this.logger.warn(`Login refused for ${email}: ${user ? 'no password set (Google sign-in account)' : 'unknown account'}`);
-      return null;
+      return refuse(`${email}: ${user ? 'no password set (Google sign-in account)' : 'unknown account'}`);
     }
 
-    if (user.isDeleted) {
-      this.logger.warn(`Login refused for user ${user.id}: account deleted`);
-      return null;
-    }
-
-    if (!user.isActive) {
-      this.logger.warn(`Login refused for user ${user.id}: account suspended`);
-      return null;
-    }
-
-    if (await this.usersService.isLockedNow(user)) {
-      this.logger.warn(`Login refused for user ${user.id}: account locked after repeated failures`);
-      return null;
-    }
+    if (user.isDeleted) return refuse(`user ${user.id}: account deleted`);
+    if (!user.isActive) return refuse(`user ${user.id}: account suspended`);
+    if (await this.usersService.isLockedNow(user)) return refuse(`user ${user.id}: account locked after repeated failures`);
 
     const passwordValid = await bcrypt.compare(pass, user.password);
     if (!passwordValid) {
       await this.usersService.incrementFailedAttempts(user.id);
-      this.logger.warn(`Login refused for user ${user.id}: wrong password`);
-      return null;
+      return refuse(`user ${user.id}: wrong password`);
     }
 
     await this.usersService.resetFailedAttempts(user.id);
-    this.logger.log(`Login succeeded for user ${user.id}`);
+    this.logger.log({ message: `Login succeeded for user ${user.id}`, ...attempt });
     return this.usersService.findSafeById(user.id);
   }
 

@@ -589,9 +589,12 @@ Routes (`OWNER` / `ADMIN` / `SUPER_ADMIN`; `VIEWER` and the counter roles are
   RECONCILIATION_INVALID_DATE` for a day that does not exist, `400
   RECONCILIATION_FUTURE_DATE` for one that has not started.
 
-From a checkout: `npm run reconcile -- --shop <id> [--date <day>] [--json]`
-(`apps/api/scripts/reconcile.ts`, exit 0 clean, 1 drift, 2 usage or
-failure) records the run with trigger `CLI`. Metrics and alerts:
+From the API container: `node dist/cli/reconcile --shop <id> [--date <day>]
+[--json]`, or `--all-shops [--date <day>]` for every shop the nightly run
+visits, each on its previous business day unless a day is named (the
+catch-up after a missed night); from a checkout `npm run reconcile -- ...`
+is the same command (`apps/api/src/cli/reconcile.ts`, exit 0 clean, 1
+drift, 2 usage or a failed run). Each run is recorded with trigger `CLI`. Metrics and alerts:
 `docs/OBSERVABILITY.md` (`reconciliation_*`, `DukaanAiReconciliationDrift`,
 `DukaanAiReconciliationStale`). Evidence:
 `test/integration/reconciliation.integration-spec.ts` (a mixed day with a

@@ -152,6 +152,17 @@ describe('AuthService.validateUser lockout', () => {
     expect(usersService.incrementFailedAttempts).not.toHaveBeenCalled();
   });
 
+  it('logs a refusal with the client address and the correlation id as fields, never the password (roadmap 9.22)', async () => {
+    usersService.findByEmailWithPassword.mockResolvedValue(null);
+    const warn = jest.spyOn((service as unknown as { logger: { warn: (m: unknown) => void } }).logger, 'warn').mockImplementation(() => undefined);
+
+    await expect(service.validateUser('nobody@example.com', 'Wrong-password-123', { ip: '203.0.113.77', correlationId: 'corr-login-1' })).resolves.toBeNull();
+
+    expect(warn).toHaveBeenCalledWith({ message: 'Login refused for nobody@example.com: unknown account', ip: '203.0.113.77', correlationId: 'corr-login-1' });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('Wrong-password-123');
+    warn.mockRestore();
+  });
+
   it('checks the password again once the lock has expired (the service clears it)', async () => {
     usersService.findByEmailWithPassword.mockResolvedValue(record);
     usersService.isLockedNow.mockResolvedValue(false);

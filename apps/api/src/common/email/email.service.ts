@@ -2,10 +2,17 @@ import { Injectable, Logger } from '@nestjs/common';
 import { createTransport, Transporter } from 'nodemailer';
 import { EmailConfig } from '../../config/domains/email.config';
 import { isProductionEnv } from '../../config/validation/env-rules';
-import { emailMessagesTotal } from '../observability/metrics';
+import { emailMessagesTotal, zeroSeries } from '../observability/metrics';
 
 /** What a message is for: the `purpose` label of `email_messages_total`. */
-export type EmailPurpose = 'invitation' | 'password_reset' | 'password_changed';
+export const EMAIL_PURPOSES = ['invitation', 'password_reset', 'password_changed'] as const;
+export type EmailPurpose = (typeof EMAIL_PURPOSES)[number];
+
+/** The `outcome` label: the relay accepted it, refused it or was unreachable, or no SMTP_URL (logged). */
+export const EMAIL_OUTCOMES = ['sent', 'failed', 'logged'] as const;
+
+// The first failed message of each purpose must show in increase() (DukaanAiEmailDeliveryFailing).
+zeroSeries(emailMessagesTotal, EMAIL_PURPOSES.flatMap((purpose) => EMAIL_OUTCOMES.map((outcome) => ({ purpose, outcome }))));
 
 export interface OutboundEmail {
   purpose: EmailPurpose;

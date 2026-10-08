@@ -267,8 +267,9 @@ Web:
 `NEXT_PUBLIC_AUTH_DISABLED` and `AUTH_DISABLED` are never set in a container:
 both builds and the API refuse them under `NODE_ENV=production`. Every
 secret above comes from the secret store; `docs/SECRETS.md` is the register
-(owner, where it lives, rotation procedure) and `npm run sessions:revoke-all`
-the lever that ends every session after a `JWT_SECRET` rotation or a leak.
+(owner, where it lives, rotation procedure) and `node
+dist/cli/revoke-all-sessions --yes`, run in the API container, the lever
+that ends every session after a `JWT_SECRET` rotation or a leak.
 
 ## Compose from a fresh clone
 
@@ -498,7 +499,9 @@ the Ingress controller, the web and the monitoring namespace only).
   ledger postings, tenders, shifts, stock, account balances and the
   dashboard figure) and records a `ReconciliationRun` row; the owner reads
   it at `GET /reconciliation/latest`, runs one on demand with
-  `POST /reconciliation/run`, and an operator from a checkout with
-  `npm run reconcile -- --shop <id> --date <day>`. Drift is reported, never
-  corrected (`docs/POS_BILLING_CONTRACT.md` §11, `docs/OBSERVABILITY.md`).
+  `POST /reconciliation/run`, and an operator in the API container with
+  `node dist/cli/reconcile --shop <id> --date <day>` (`--all-shops` runs
+  what a missed night would have; `npm run reconcile` is the same command
+  from a checkout). Drift is reported, never corrected
+  (`docs/POS_BILLING_CONTRACT.md` §11, `docs/OBSERVABILITY.md`).
 - `DEPLOYMENT_CHECKLIST.md` keeps the go-live order.

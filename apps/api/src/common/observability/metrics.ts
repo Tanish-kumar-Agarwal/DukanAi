@@ -1,4 +1,4 @@
-import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from 'prom-client';
+import { collectDefaultMetrics, Counter, Gauge, Histogram, LabelValues, Registry } from 'prom-client';
 
 /**
  * The process-wide Prometheus registry and every application metric
@@ -58,8 +58,16 @@ export const outboxRows = new Gauge({
 
 export const queueJobs = new Gauge({
   name: 'queue_jobs',
-  help: 'BullMQ jobs per queue and state (waiting, active, delayed, failed).',
+  help: 'BullMQ jobs per queue and state (waiting, active, delayed, failed); waiting includes the jobs of a paused queue.',
   labelNames: ['queue', 'state'] as const,
+  registers: [metricsRegistry],
+});
+
+/** 1 while a BullMQ queue is paused (no worker takes its jobs; the pause is kept in Redis across restarts), else 0. */
+export const queuePaused = new Gauge({
+  name: 'queue_paused',
+  help: 'Whether the BullMQ queue is paused: 1 paused (its jobs wait, counted as waiting), 0 running.',
+  labelNames: ['queue'] as const,
   registers: [metricsRegistry],
 });
 
@@ -168,6 +176,20 @@ export const buildInfo = new Gauge({
   labelNames: ['release'] as const,
   registers: [metricsRegistry],
 });
+
+/**
+ * Creates each labelled series at 0 (roadmap 9.22). A labelled counter has no
+ * series until its first event, which then starts it at 1, and increase() sees
+ * no change in a series whose first sample is already 1: an alert on
+ * `increase(...) > 0` missed the first failure of each kind after every start
+ * (found walking DukaanAiLedgerPostingFailures: one refused sale, no page).
+ * The module that owns a label's values calls this at load, before anything
+ * can count, for every value an alert can match; adding 0 never resets a count.
+ * `alerted-series.spec.ts` fails when an alerted counter lacks its zero series.
+ */
+export function zeroSeries<T extends string>(counter: Counter<T>, labelSets: ReadonlyArray<LabelValues<T>>): void {
+  for (const labels of labelSets) counter.inc(labels, 0);
+}
 
 /** Status label as the code, e.g. "503"; everything a route answers is counted. */
 export function statusLabel(statusCode: number): string {

@@ -43,6 +43,17 @@ describe('CorrelationLogger', () => {
     expect(parsed.message).toEqual({ event: 'http', status: 401, correlationId: 'corr-from-request' });
   });
 
+  it('keeps the explicit correlation id of an error logged with its stack outside the request (the exception filter)', () => {
+    // As Nest's Logger wrapper calls it: message, stack, context.
+    new CorrelationLogger().error({ message: 'Prisma error P2022', correlationId: 'corr-500' }, 'Invalid `prisma.notification.findMany()` invocation', 'GlobalExceptionFilter');
+    expect(captured).toHaveLength(1);
+    const parsed = JSON.parse(captured[0]) as { message: Record<string, unknown>; stack?: string; context?: string };
+    // Loki's json parser flattens this to message_correlationId, which the runbooks query.
+    expect(parsed.message).toEqual({ message: 'Prisma error P2022', correlationId: 'corr-500' });
+    expect(parsed.stack).toContain('prisma.notification.findMany');
+    expect(parsed.context).toBe('GlobalExceptionFilter');
+  });
+
   it('tags entries outside a request as system-job and wraps plain strings', () => {
     new CorrelationLogger('Spec').warn('disk almost full');
     const parsed = JSON.parse(captured[0]) as { message: Record<string, unknown> };

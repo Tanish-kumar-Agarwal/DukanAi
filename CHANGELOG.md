@@ -140,6 +140,9 @@ staging with its rehearsed rollback, the pilot in a shop, the external penetrati
 - `docs/RUNBOOKS.md`: a page per alert (what it means, first checks, fix, how to verify, what to tell the shops),
   incident roles and severities, status messages for shop owners and the post-incident review template. Every alert
   links its page (`runbook_url`, shown in Slack and PagerDuty), and `runbooks.spec.ts` fails on an alert without one.
+  Every page was walked on the drill stack with one injected fault and corrected where it was wrong (its section 7).
+  (9.22)
+- `EDGE_BLOCKED_IPS`: addresses or ranges the edge answers 403, set in `.env` (no Caddyfile edit on the server).
   (9.22)
 
 #### Changed
@@ -176,6 +179,19 @@ staging with its rehearsed rollback, the pilot in a shop, the external penetrati
   are counted and alerted. (9.19)
 - Operations: db-ops on the Debian MySQL image (it has `mysqlbinlog`), the Kubernetes secrets template name, the
   compose stack's API URL behind the edge, smoke checks under `pipefail`. (9.2, 9.7, 9.18)
+- Alerts that could not fire, found by walking the runbooks: the first ledger-posting, email or tracked-error failure
+  after a start never paged (a labelled counter born at 1 shows no `increase()`; every alerted series now exists at 0,
+  `alerted-series.spec.ts`), and a paused queue reported 0 waiting jobs, so `DukaanAiQueueBacklog` stayed silent
+  (paused jobs count as waiting; new `queue_paused`). (9.22)
+- Logs the runbooks search: a 500's error line and every login outcome carry the request's correlation id as a field
+  (the login lines the client address too); alert descriptions round their counts. (9.22)
+- The binlog archiver and the backup agent ignored SIGTERM as PID 1 and were killed after the grace period (exit 137);
+  they now stop at once between runs. (9.22)
+- The operator commands the runbooks and `docs/SECRETS.md` name were not in the API image (`npm run reconcile` and
+  `npm run sessions:revoke-all` answered `ts-node: not found` there): `node dist/cli/reconcile` (with `--all-shops`
+  for a missed night) and `node dist/cli/revoke-all-sessions` ship with the API. (9.22)
+- A deploy resolved a firing alert read from an API gauge (one failed scrape) and restarted its hold time; those
+  alerts now keep firing 2 minutes (`keep_firing_for`). (9.22)
 
 ### Phase 8: Data model, scripts and configuration (8.1 to 8.6 and the phase gate)
 

@@ -6,6 +6,14 @@
 # docs/RUNBOOKS.md (roadmap 9.22; runbooks.spec.ts keeps the two in step and
 # docs/OBSERVABILITY.md has the one-line summary). Validate after an edit:
 # `promtool check rules deploy/prometheus/alerts.yml`.
+#
+# keep_firing_for: 2m on every alert read from a gauge the API exports
+# (storage, outbox, backups, reconciliation, queues): a restart of the API
+# (any deploy, one replica) fails one scrape, its series go stale, and a
+# firing alert resolved with its cause still there, then waited out its
+# `for:` again (walking DukaanAiReconciliationStale, roadmap 9.22: resolved
+# at the redeploy, pending again ten seconds later, 30 minutes from a new
+# page). Rates and increases read range vectors and are not affected.
 groups:
   - name: dukaanai-api
     rules:
@@ -77,6 +85,7 @@ groups:
       - alert: DukaanAiStorageLow
         expr: min by (volume) (storage_volume_free_bytes{job="dukaanai-api"} / storage_volume_size_bytes{job="dukaanai-api"}) < 0.10
         for: 15m
+        keep_firing_for: 2m
         labels:
           severity: warning
         annotations:
@@ -86,6 +95,7 @@ groups:
       - alert: DukaanAiStorageFull
         expr: min by (volume) (storage_volume_free_bytes{job="dukaanai-api"} / storage_volume_size_bytes{job="dukaanai-api"}) < 0.02
         for: 1m
+        keep_firing_for: 2m
         labels:
           severity: critical
         annotations:
@@ -103,7 +113,7 @@ groups:
         annotations:
           runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaiunhandlederrors"
           summary: "Unhandled API errors in the last 15 minutes"
-          description: "{{ $value }} server-side errors were handed to error tracking (kind={{ $labels.kind }}). Each carries its correlation id as a tag."
+          description: "{{ printf \"%.0f\" $value }} server-side errors were handed to error tracking (kind={{ $labels.kind }}). Each carries its correlation id as a tag."
 
       # ---- ledger -------------------------------------------------------
       # A ledger posting that threw means a sale, return, receipt or payment
@@ -116,7 +126,7 @@ groups:
         annotations:
           runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanailedgerpostingfailures"
           summary: "Ledger posting failed (source {{ $labels.source }})"
-          description: "{{ $value }} ledger posting(s) threw in the last 10 minutes. Find the 'Unbalanced ledger posting' or database error in the JSON logs; the business transaction was rolled back, so the client saw an error."
+          description: "{{ printf \"%.0f\" $value }} ledger posting(s) threw in the last 10 minutes; each business transaction was rolled back and the client saw an error. A session holding LedgerAccountBalance rows makes sales wait out the lock wait timeout and answer 503 DATABASE_UNAVAILABLE while readiness stays 200 (sys.innodb_lock_waits names it); 'Unbalanced ledger posting' in the logs is a defect."
 
       # ---- checkout latency ---------------------------------------------
       - alert: DukaanAiCheckoutSlow
@@ -137,6 +147,7 @@ groups:
       - alert: DukaanAiOutboxLag
         expr: max(outbox_oldest_pending_age_seconds{job="dukaanai-api"}) > 300
         for: 10m
+        keep_firing_for: 2m
         labels:
           severity: warning
         annotations:
@@ -147,6 +158,7 @@ groups:
       - alert: DukaanAiOutboxFailedRows
         expr: max(outbox_rows{job="dukaanai-api", status="FAILED"}) > 0
         for: 15m
+        keep_firing_for: 2m
         labels:
           severity: warning
         annotations:
@@ -168,6 +180,7 @@ groups:
           or (time() - backup_last_success_timestamp_seconds{job="dukaanai-api", kind="documents"}) > 93600
           or (time() - backup_last_success_timestamp_seconds{job="dukaanai-api", kind="offsite"}) > 93600
         for: 5m
+        keep_firing_for: 2m
         labels:
           severity: critical
         annotations:
@@ -198,12 +211,13 @@ groups:
       - alert: DukaanAiReconciliationDrift
         expr: max(reconciliation_shops_with_drift{job="dukaanai-api"}) > 0
         for: 0m
+        keep_firing_for: 2m
         labels:
           severity: critical
         annotations:
           runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaireconciliationdrift"
           summary: "Financial reconciliation found drift"
-          description: "{{ $value }} shop(s) have a latest reconciliation run that ended in DRIFT or FAILED. Read it as the shop owner (GET /reconciliation/latest, or `npm run reconcile -- --shop <id> --date <day>` from a checkout): every drift names the check, the document or row and the two figures that disagree. The books are never corrected automatically."
+          description: "{{ $value }} shop(s) have a latest reconciliation run that ended in DRIFT or FAILED. Read it as the shop owner (GET /reconciliation/latest), or in the API container (node dist/cli/reconcile --shop <id> --date <day>): every drift names the check, the document or row and the two figures that disagree. The books are never corrected automatically."
 
       # The nightly job has not recorded a run anywhere for 26 hours: it is
       # not scheduled on any instance (CRON_ENABLED, CRON_RECONCILIATION), or
@@ -213,27 +227,30 @@ groups:
         # prom-client gauge always has a sample): 0 is "never", not 1970.
         expr: (time() - max(reconciliation_last_run_timestamp_seconds{job="dukaanai-api"} > 0)) > 93600
         for: 30m
+        keep_firing_for: 2m
         labels:
           severity: warning
         annotations:
           runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaireconciliationstale"
           summary: "No financial reconciliation run in 26 hours"
-          description: "The most recent reconciliation run finished {{ $value | humanizeDuration }} ago. Check CRON_ENABLED on at least one instance, CRON_RECONCILIATION, the cron:reconciliation lock and the 'Reconciliation' lines in the API logs; run one by hand with POST /reconciliation/run."
+          description: "The most recent reconciliation run finished {{ $value | humanizeDuration }} ago. Check CRON_ENABLED on at least one instance, CRON_RECONCILIATION, the cron:reconciliation lock and the 'Reconciliation' lines in the API logs (in Loki: a container's own log starts at its start); run the missed night in the API container with node dist/cli/reconcile --all-shops."
 
       # ---- queues -------------------------------------------------------
       - alert: DukaanAiQueueBacklog
         expr: max by (queue) (queue_jobs{job="dukaanai-api", state="waiting"}) > 1000
         for: 15m
+        keep_firing_for: 2m
         labels:
           severity: warning
         annotations:
           runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaiqueuebacklog"
           summary: "BullMQ queue {{ $labels.queue }} has a backlog"
-          description: "{{ $value }} jobs are waiting on {{ $labels.queue }} for 15 minutes: the worker is not keeping up or not running. Check the worker's errors in the logs and add an API instance."
+          description: "{{ $value }} jobs are waiting on {{ $labels.queue }} for 15 minutes: the queue is paused (queue_paused is 1; a pause is kept in Redis, a restart does not lift it), or its worker is not running or not keeping up. Check queue_paused, then the worker's errors in the logs; add an API instance for a sustained load."
 
       - alert: DukaanAiQueueFailedJobs
         expr: max by (queue) (queue_jobs{job="dukaanai-api", state="failed"}) > 0
         for: 30m
+        keep_firing_for: 2m
         labels:
           severity: warning
         annotations:
@@ -301,7 +318,7 @@ groups:
         annotations:
           runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaicertificateexpiring"
           summary: "The certificate of {{ $labels.instance }} expires in under 14 days"
-          description: "Automatic renewal has not happened (Caddy: ports 80/443 reachable, DNS; cert-manager: the Certificate resource). Renew before it lapses."
+          description: "Automatic renewal has not happened (Caddy: ports 80/443 reachable, DNS; cert-manager: the Certificate resource; a certificate installed as a file is never renewed). Renew before it lapses."
       # keep_firing_for: the verified probes recover up to a minute after
       # the renewed certificate is read (another job, another scrape
       # offset), and their DukaanAiEndpointDown must stay held back until
@@ -314,4 +331,4 @@ groups:
         annotations:
           runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaicertificateexpired"
           summary: "The certificate of {{ $labels.instance }} has expired"
-          description: "Every browser refuses this address and every client call to it fails (certificate has expired). Renew now: Caddy renews on restart when ports 80/443 and DNS are right (docker compose logs edge); cert-manager: kubectl describe certificate. The failing probe of the same address (DukaanAiEndpointDown) is held back while this fires."
+          description: "Every browser refuses this address and every client call to it fails (certificate has expired). Renew now: Caddy renews on restart when ports 80/443 and DNS are right (docker compose logs edge); a file certificate is replaced and the edge reloaded (caddy reload --force); cert-manager: kubectl describe certificate. The failing probe of the same address (DukaanAiEndpointDown) is held back while this fires."

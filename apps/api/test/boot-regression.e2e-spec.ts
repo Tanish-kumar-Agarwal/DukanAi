@@ -33,6 +33,11 @@ interface BootMatrix {
  *    release candidate (scripts/certify/boot-matrix.sh, roadmap 9.12) runs
  *    the same matrix against the API image.
  *
+ * 4. Roadmap 9.22: the operator commands the runbooks name (`node
+ *    dist/cli/reconcile`, `node dist/cli/revoke-all-sessions`) are part of
+ *    the build: the documented `npm run` forms answered `ts-node: not found`
+ *    in the image, which carries `dist` and no `scripts/`.
+ *
  * Reverting any fix makes the corresponding test fail. Every boot here fails
  * at configuration validation, before anything dials the database or Redis.
  */
@@ -56,8 +61,11 @@ describe('production boot regressions', () => {
 
   const outputOf = (result: ReturnType<typeof boot>) => `${result.stdout ?? ''}${result.stderr ?? ''}`;
 
+  /** The operator commands a runbook or docs/SECRETS.md tells an operator to run in the API container (roadmap 9.22). */
+  const commands = ['reconcile', 'revoke-all-sessions'].map((name) => ({ name, file: path.join(apiRoot, 'dist', 'cli', `${name}.js`) }));
+
   beforeAll(() => {
-    if (!existsSync(entrypoint)) {
+    if (!existsSync(entrypoint) || commands.some((c) => !existsSync(c.file))) {
       execSync('npm run build', { cwd: apiRoot, stdio: 'inherit' });
     }
   }, 180_000);
@@ -66,6 +74,17 @@ describe('production boot regressions', () => {
     expect(startProd).toMatch(/\bNODE_ENV=production\b/);
     expect(existsSync(entrypoint)).toBe(true);
   });
+
+  it('the build carries the operator commands, which run with node alone (the image has no scripts/ and no ts-node)', () => {
+    for (const { name, file } of commands) {
+      const run = (...args: string[]) => spawnSync(process.execPath, [file, ...args], { cwd: apiRoot, env: { PATH: process.env.PATH }, encoding: 'utf8', timeout: 30_000 });
+      const help = run('--help');
+      expect({ name, status: help.status, usage: help.stdout.startsWith(`usage: ${name}`) }).toEqual({ name, status: 0, usage: true });
+      // Without a database it refuses with the reason, exit 2, no stack trace.
+      const bare = run(...(name === 'reconcile' ? ['--all-shops'] : []));
+      expect({ name, status: bare.status, stderr: bare.stderr.trim() }).toEqual({ name, status: 2, stderr: 'error: DATABASE_URL is not set' });
+    }
+  }, 90_000);
 
   it('a startup crash is reported on stderr instead of dying silently', () => {
     // PORT=not-a-number always fails config validation, whatever else is in the

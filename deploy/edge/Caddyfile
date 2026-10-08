@@ -17,6 +17,10 @@
 #                   for a locally trusted CA (development, the compose smoke)
 #   EDGE_MAX_BODY   request body cap                      (64MB)
 #   EDGE_UPSTREAM_TIMEOUT  how long an upstream may take to answer (60s)
+#   EDGE_BLOCKED_IPS       addresses or CIDR ranges refused with 403 before
+#                   they reach the web or the API, space-separated
+#                   (docs/RUNBOOKS.md, DukaanAiCredentialFlood); the default
+#                   0.0.0.0/32 matches no client
 #
 # Caddy's own X-Forwarded-For handling: an X-Forwarded-For sent by the
 # client is discarded (no `trusted_proxies` is configured), so the value the
@@ -33,6 +37,8 @@
 	request_body {
 		max_size {$EDGE_MAX_BODY:64MB}
 	}
+	@blocked client_ip {$EDGE_BLOCKED_IPS:0.0.0.0/32}
+	respond @blocked 403
 }
 
 {$WEB_HOST:app.localhost} {

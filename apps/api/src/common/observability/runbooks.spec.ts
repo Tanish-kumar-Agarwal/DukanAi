@@ -61,6 +61,16 @@ describe('alert runbooks (roadmap 9.22)', () => {
     for (const part of PARTS) expect({ name, part, present: page.includes(part) }).toEqual({ name, part, present: true });
   });
 
+  it('every page records its walk and section 7 has its row (the gate of roadmap 9.22: a new alert is walked on the drill stack before it ships)', () => {
+    const doc = readFileSync(join(ROOT, 'docs/RUNBOOKS.md'), 'utf8');
+    const record = doc.slice(doc.indexOf('## 7. '));
+    for (const alert of alerts) {
+      const page = pages.get(alert.name) ?? '';
+      expect({ alert: alert.name, walked: /\*\*Walked:\*\* \d{4}-\d{2}-\d{2}\b/.test(page) }).toEqual({ alert: alert.name, walked: true });
+      expect({ alert: alert.name, recorded: record.includes(`| \`${alert.name}\` |`) }).toEqual({ alert: alert.name, recorded: true });
+    }
+  });
+
   it('the one-line summary in docs/OBSERVABILITY.md names every alert', () => {
     const observability = readFileSync(join(ROOT, 'docs/OBSERVABILITY.md'), 'utf8');
     for (const alert of alerts) expect({ alert: alert.name, listed: observability.includes(`| \`${alert.name}\` |`) }).toEqual({ alert: alert.name, listed: true });

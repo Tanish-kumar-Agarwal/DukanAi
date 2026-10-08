@@ -47,6 +47,14 @@ describe('GlobalExceptionFilter error tracking (roadmap 7.6)', () => {
     expect(capture).not.toHaveBeenCalled();
   });
 
+  it('logs the request correlation id as a field of the error line, not only inside its text', () => {
+    const error = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    filter.catch(new Prisma.PrismaClientKnownRequestError('The column `Notification.message` does not exist', { code: 'P2022', clientVersion: 'test' }), host(request).args);
+    expect(error).toHaveBeenLastCalledWith({ message: 'Prisma error P2022', correlationId: 'corr-1' }, expect.stringContaining('does not exist'));
+    filter.catch(new Error('kaboom'), host(request).args);
+    expect(error).toHaveBeenLastCalledWith({ message: 'Unhandled exception', correlationId: 'corr-1' }, expect.stringContaining('kaboom'));
+  });
+
   it('labels a request the router never matched as unmatched', () => {
     const { args, response } = host({ correlationId: 'corr-2', method: 'GET' });
     filter.catch(new Error('early'), args);
