@@ -1620,6 +1620,35 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   API URL, Google on both sides, SMTP (forgot-password 503), metrics hidden,
   shop profile, OCR key (a non-image upload: 503 vs 400, no model call),
   session lifetime.
+- 9.20 onboarding (`docs/ONBOARDING.md` is the first-day procedure; contract
+  §13): `POST /imports/{products|customers|opening-stock}/upload`
+  (MANAGEMENT_ROLES, `mode` UPSERT / CREATE_ONLY / UPDATE_ONLY, `dryRun`),
+  `GET /imports/templates/:kind`, `jobs`, `jobs/:id`, `/rows` (paged,
+  `?status`), `/errors`, `/report` (CSV through the formula-guarded
+  `csvCell`), `POST /imports/jobs/:id/apply` (the dry run re-run for real as
+  a new job on the same file). The importers (`import-export/importers/*`)
+  only plan: match, validate, diff; every write goes through the service a
+  person uses (`ProductsService`, `CustomersService.create/update` +
+  `recordOpeningBalance`, `InventoryDomainService.recordOpeningStock`).
+  Matching is by folded SKU, the national phone number (`normalizePhone`)
+  and SKU or barcode; an opening is keyed `OPENING:<customerId>` (udhar row)
+  or `OPENING:<inventoryItemId>` (stock movement): the same value again is
+  UNCHANGED, another value or an opening after any activity is a row error,
+  never an overwrite. Opening udhar posts DR ACCOUNTS_RECEIVABLE / CR
+  OPENING_BALANCE_EQUITY (source `OPENING_BALANCE`, credit-normal account,
+  migration `20261008090000_onboarding_imports`); opening stock is an
+  OPENING_BALANCE movement whose STOCK_ADJUSTMENT posting has OBE as contra.
+  Templates in `docs/onboarding/*.csv` are generated from `import-columns.ts`
+  (`import-columns.spec.ts` keeps them equal). The worker runs as the job's
+  creator (else the shop owner) under `jobContext` and refuses the job (row
+  0, FAILED) when that user left the shop or lost MANAGEMENT_ROLES; a resumed
+  job skips reported rows; Excel's `9.85E+09` is refused, never guessed.
+  Gate: `scripts/onboarding/scale-gate.mjs` (5,000 products, 2,000
+  customers, re-run all UNCHANGED, reconciliation CLEAN, dashboard = files)
+  on MariaDB and MySQL 8 (ONBOARDING.md §9); `scripts/onboarding/import.mjs`
+  is the operator CLI. Found on the way: a Prisma promise returned bare out
+  of `runAsSuperAdmin` ran outside it, so every import job stayed PENDING
+  (`job-context.spec.ts`).
 
 ## Toolchain
 

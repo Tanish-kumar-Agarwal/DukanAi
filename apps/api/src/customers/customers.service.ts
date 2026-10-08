@@ -19,6 +19,14 @@ import { withSerializationRetry } from '../common/db/serialization-retry';
 
 type CreateInput = CreateCustomerDto & Partial<CreateEnterpriseCustomerDto>;
 
+/** The idempotency key of a customer's one opening-udhar row (roadmap 9.20). */
+export function openingBalanceKey(customerId: string): string {
+  return `OPENING:${customerId}`;
+}
+
+/** Largest balance a `Decimal(10, 2)` udhar column holds. */
+const MAX_OPENING_BALANCE = new Prisma.Decimal('99999999.99');
+
 @Injectable()
 export class CustomersService {
   private readonly logger = new Logger(CustomersService.name);
@@ -353,6 +361,120 @@ export class CustomersService {
       error.code === 'P2002' &&
       String((error.meta as { target?: unknown })?.target ?? '').includes('idempotencyKey')
     );
+  }
+
+  /**
+   * The opening udhar of a customer (roadmap 9.20): what the customer owed
+   * the shop (positive) or had paid in advance (negative) on the day the shop
+   * started on DukaanAI. One ADJUSTMENT UdharTransaction keyed
+   * `OPENING:<customerId>` (reference "Opening balance") moves the balance
+   * from 0, and one OPENING_BALANCE posting carries it into the books: DR
+   * ACCOUNTS_RECEIVABLE / CR OPENING_BALANCE_EQUITY, the other way round for
+   * an advance. Once per customer: the same amount again is UNCHANGED,
+   * another amount is 409 OPENING_BALANCE_EXISTS, and a customer whose udhar
+   * already moved (a credit sale, a repayment, a balance from before) is 409
+   * OPENING_BALANCE_AFTER_ACTIVITY: the difference is a repayment or a
+   * credit sale, not an opening. MANAGER and above, like a credit limit.
+   */
+  async recordOpeningBalance(
+    id: string,
+    amount: number,
+    actor: Pick<BillingActor, 'shopId' | 'userId' | 'role' | 'ipAddress'>,
+    note?: string,
+  ): Promise<{ status: 'CREATED' | 'UNCHANGED'; transactionId: string; outstandingBalance: Prisma.Decimal }> {
+    if (!isManager(actor.role)) {
+      throw new ForbiddenException({ message: 'Only a manager can record an opening balance.', code: 'OPENING_BALANCE_REQUIRES_MANAGER' });
+    }
+    if (!Number.isFinite(amount)) throw new BadRequestException({ message: 'The opening balance must be an amount in rupees.', code: 'INVALID_AMOUNT' });
+    const value = money(amount);
+    if (value.isZero()) throw new BadRequestException({ message: 'An opening balance of 0 needs no entry.', code: 'INVALID_AMOUNT' });
+    if (value.abs().greaterThan(MAX_OPENING_BALANCE)) {
+      throw new BadRequestException({ message: `An opening balance must not exceed ${MAX_OPENING_BALANCE.toFixed(2)}.`, code: 'INVALID_AMOUNT' });
+    }
+    const key = openingBalanceKey(id);
+
+    return withSerializationRetry(() => this.prisma.$transaction(async (tx) => {
+      // Same row lock as every credit sale and repayment of the customer.
+      const rows = await tx.$queryRaw<Array<{ id: string; name: string; outstandingBalance: unknown }>>`
+        SELECT id, name, outstandingBalance FROM Customer WHERE id = ${id} AND shopId = ${actor.shopId} AND isDeleted = false FOR UPDATE
+      `;
+      if (rows.length === 0) throw new NotFoundException({ message: 'Customer not found', code: 'CUSTOMER_NOT_FOUND' });
+      const { name } = rows[0];
+      const balance = new Prisma.Decimal(String(rows[0].outstandingBalance));
+
+      const recorded = await tx.udharTransaction.findFirst({ where: { shopId: actor.shopId, idempotencyKey: key } });
+      if (recorded) {
+        const recordedAmount = recorded.balanceAfter.minus(recorded.balanceBefore);
+        if (recordedAmount.equals(value)) return { status: 'UNCHANGED' as const, transactionId: recorded.id, outstandingBalance: balance };
+        throw new ConflictException({
+          message: `The opening balance of ${name} is already recorded as ${recordedAmount.toFixed(2)}; record the difference as a repayment or a credit sale.`,
+          code: 'OPENING_BALANCE_EXISTS',
+          details: { recorded: recordedAmount.toFixed(2), requested: value.toFixed(2) },
+        });
+      }
+      const activity = await tx.udharTransaction.count({ where: { shopId: actor.shopId, customerId: id } });
+      if (activity > 0 || !balance.isZero()) {
+        throw new ConflictException({
+          message: `${name} already has udhar activity (balance ${balance.toFixed(2)}); an opening balance is only recorded before the first credit sale or repayment.`,
+          code: 'OPENING_BALANCE_AFTER_ACTIVITY',
+          details: { outstandingBalance: balance.toFixed(2), transactions: activity },
+        });
+      }
+
+      const now = this.clock.now();
+      const transaction = await tx.udharTransaction.create({
+        data: {
+          shopId: actor.shopId,
+          customerId: id,
+          type: 'ADJUSTMENT',
+          amount: value.abs(),
+          balanceBefore: 0,
+          balanceAfter: value,
+          reference: 'Opening balance',
+          idempotencyKey: key,
+          notes: note ?? null,
+          recordedById: actor.userId,
+          createdAt: now,
+        },
+      });
+      const customer = await tx.customer.update({ where: { id, shopId: actor.shopId }, data: { outstandingBalance: value } });
+
+      const owed = value.greaterThan(0);
+      await this.ledger.post(tx, {
+        shopId: actor.shopId,
+        source: { type: 'OPENING_BALANCE', id: transaction.id },
+        description: `Opening balance ${name}`,
+        entries: [
+          { account: owed ? LedgerAccount.ACCOUNTS_RECEIVABLE : LedgerAccount.OPENING_BALANCE_EQUITY, type: LedgerEntryType.DEBIT, amount: value.abs() },
+          { account: owed ? LedgerAccount.OPENING_BALANCE_EQUITY : LedgerAccount.ACCOUNTS_RECEIVABLE, type: LedgerEntryType.CREDIT, amount: value.abs() },
+        ],
+      });
+
+      await tx.auditLog.create({
+        data: {
+          shopId: actor.shopId,
+          userId: actor.userId,
+          action: 'CUSTOMER_OPENING_BALANCE_RECORDED',
+          entity: 'Customer',
+          entityId: id,
+          ipAddress: actor.ipAddress ?? null,
+          beforeData: { outstandingBalance: balance.toFixed(2) },
+          afterData: { outstandingBalance: value.toFixed(2), transactionId: transaction.id, note: note ?? null },
+        },
+      });
+      await this.auditService.logAction(
+        {
+          customerId: id,
+          actorId: actor.userId,
+          ipAddress: actor.ipAddress,
+          action: 'CUSTOMER_OPENING_BALANCE_RECORDED',
+          previousPayload: { outstandingBalance: balance.toFixed(2) },
+          newPayload: { outstandingBalance: value.toFixed(2) },
+        },
+        tx,
+      );
+      return { status: 'CREATED' as const, transactionId: transaction.id, outstandingBalance: customer.outstandingBalance };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }));
   }
 
   async softDelete(id: string, actor?: Pick<BillingActor, 'userId' | 'ipAddress'>) {

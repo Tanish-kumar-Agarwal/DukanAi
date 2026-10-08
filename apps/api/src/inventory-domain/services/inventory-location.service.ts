@@ -60,6 +60,11 @@ export class InventoryLocationService {
     return locationId;
   }
 
+  /** The sale location when it already exists, without creating it (read-only callers: an import's dry run, roadmap 9.20). */
+  async findSaleLocation(db: Db, shopId: string): Promise<string | null> {
+    return this.findDefaultBin(db, shopId);
+  }
+
   /** Default bin of an explicit warehouse (goods receipts, purchase returns). */
   async resolveWarehouseBin(db: Db, shopId: string, warehouseId?: string | null): Promise<string> {
     if (!warehouseId) return this.resolveSaleLocation(db, shopId);

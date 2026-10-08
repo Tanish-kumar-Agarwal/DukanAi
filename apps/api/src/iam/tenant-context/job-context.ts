@@ -47,7 +47,8 @@ export async function runInShopOf<T>(
 ): Promise<T | undefined> {
   const delegate = db[model] as ShopLookup | undefined;
   if (!delegate) throw new Error(`runInShopOf: unknown model ${model}`);
-  const row = await tenant.runAsSuperAdmin(() => delegate.findUnique({ where: { id }, select: { shopId: true } }));
+  // Awaited inside the scope: a Prisma promise is lazy, so returning it bare would run the query outside it.
+  const row = await tenant.runAsSuperAdmin(async () => await delegate.findUnique({ where: { id }, select: { shopId: true } }));
   if (!row?.shopId) return undefined;
   const shopId = row.shopId;
   return tenant.runWithContext(jobContext(shopId, jobId), () => fn(shopId));

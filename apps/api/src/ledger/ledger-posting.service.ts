@@ -19,7 +19,9 @@ export type LedgerSourceType =
   | 'PURCHASE_RETURN'
   | 'ADJUSTMENT_REQUEST'
   | 'STOCK_ADJUSTMENT'
-  | 'SUPPLIER_PAYMENT';
+  | 'SUPPLIER_PAYMENT'
+  /** A customer's opening udhar (roadmap 9.20): the UdharTransaction id. */
+  | 'OPENING_BALANCE';
 
 export interface LedgerPosting {
   shopId: string;
@@ -36,7 +38,11 @@ export interface LedgerPostingResult {
   postingId: string | null;
 }
 
-/** Accounts whose balance grows with debits (assets / expenses). */
+/**
+ * Accounts whose balance grows with debits (assets / expenses). Every other
+ * account is credit-normal: revenue, GST and payables (liabilities), and
+ * OPENING_BALANCE_EQUITY (the shop's capital on day one, roadmap 9.20).
+ */
 export const DEBIT_NORMAL: ReadonlySet<LedgerAccount> = new Set<LedgerAccount>([
   LedgerAccount.CASH,
   LedgerAccount.BANK,

@@ -264,6 +264,9 @@ enum LedgerAccount {
   UDHAR_RECEIVABLE
   ACCOUNTS_PAYABLE
   INVENTORY_ADJUSTMENT
+  /// Contra of every opening balance a shop brings in on day one (opening
+  /// stock, opening udhar; roadmap 9.20). Credit-normal, like owner's equity.
+  OPENING_BALANCE_EQUITY
 }
 
 /// Physical tender used to settle an invoice or a customer repayment.
@@ -752,6 +755,7 @@ model User {
   barcodeChanges    BarcodeHistory[]
   printJobs         BarcodePrintJob[]
   udharTransactions UdharTransaction[] @relation("UdharRecordedBy")
+  importJobs        ImportJob[]        @relation("ImportJobCreatedBy")
   inventoryLogs     InventoryLog[]     @relation("InventoryRecordedBy")
   mediaAudits       MediaAudit[]
   auditLogs         AuditLog[]         @relation("AuditUser")
@@ -3979,6 +3983,13 @@ enum JobStatus {
   ROLLED_BACK
 }
 
+/// The three onboarding imports (roadmap 9.20); one pipeline, one report shape.
+enum ImportKind {
+  PRODUCTS
+  CUSTOMERS
+  OPENING_STOCK
+}
+
 enum ImportMode {
   CREATE_ONLY
   UPDATE_ONLY
@@ -3994,8 +4005,14 @@ model ImportJob {
   fileSize Int
   fileUrl  String // Local or S3 path
   format   String // CSV, XLSX, JSON, XML
+  /// What the file holds (roadmap 9.20): products, customers with opening udhar, or opening stock.
+  kind     ImportKind @default(PRODUCTS)
   mode     ImportMode @default(UPSERT)
   status   JobStatus  @default(PENDING)
+  /// A dry run validates and plans every row and writes nothing but its report.
+  dryRun   Boolean    @default(false)
+  /// The user who started it: the worker acts as them (product createdBy, udhar recordedBy).
+  createdById String?
 
   totalRows    Int @default(0)
   validRows    Int @default(0)
@@ -4003,6 +4020,8 @@ model ImportJob {
   createdCount Int @default(0)
   updatedCount Int @default(0)
   skippedCount Int @default(0)
+  /// Rows already in the shop exactly as the file says (a re-run of the same file is all unchanged).
+  unchangedCount Int @default(0)
 
   errorReportUrl String?
   mappingId      String?
@@ -4011,9 +4030,13 @@ model ImportJob {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  shop    Shop           @relation(fields: [shopId], references: [id], onDelete: Restrict)
-  mapping ImportMapping? @relation(fields: [mappingId], references: [id], onDelete: SetNull)
-  rows    ImportJobRow[]
+  shop      Shop           @relation(fields: [shopId], references: [id], onDelete: Restrict)
+  mapping   ImportMapping? @relation(fields: [mappingId], references: [id], onDelete: SetNull)
+  createdBy User?          @relation("ImportJobCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  rows      ImportJobRow[]
+
+  @@index([shopId, createdAt])
+  @@index([createdById])
 }
 
 model ImportJobRow {
@@ -4021,9 +4044,11 @@ model ImportJobRow {
   importJobId String
   rowNumber   Int
   rawData     Json // The raw parsed row
-  status      String   @default("PENDING") // PENDING, SUCCESS, ERROR
+  status      String   @default("PENDING") // PENDING, SUCCESS, ERROR, SKIPPED
   errors      Json? // Validation errors for this row
-  actionTaken String? // CREATED, UPDATED, SKIPPED
+  actionTaken String? // CREATED, UPDATED, UNCHANGED, SKIPPED; WOULD_CREATE / WOULD_UPDATE in a dry run
+  /// What the row changes (roadmap 9.20), in words: "sellingPrice 599.00 → 649.00", "opening udhar 1250.00".
+  changes     Json?
   createdAt   DateTime @default(now())
 
   importJob ImportJob @relation(fields: [importJobId], references: [id], onDelete: Cascade)

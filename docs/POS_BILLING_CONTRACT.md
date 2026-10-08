@@ -295,6 +295,16 @@ totalReceipts, openedBy: { id, name }, closedBy }`.
 - `POST /customers/search { query, skip?, take? }` returns an array.
 - `DELETE /customers/:id` soft-deletes; `409 CUSTOMER_HAS_BALANCE` when the
   outstanding balance is not zero.
+- Opening udhar (roadmap 9.20, written by the customer import of §13 through
+  `CustomersService.recordOpeningBalance`): what the customer owed
+  (positive) or had paid in advance (negative) on the shop's first day. One
+  `ADJUSTMENT` ledger row with `reference` "Opening balance" and
+  `idempotencyKey` `OPENING:<customerId>`, `balanceBefore` 0, no invoice, no
+  shift; MANAGER+. Once per customer: the same amount again is UNCHANGED,
+  another is `409 OPENING_BALANCE_EXISTS`, and a customer whose udhar already
+  moved (any ledger row, or a balance from before) is
+  `409 OPENING_BALANCE_AFTER_ACTIVITY`: a difference is a repayment or a
+  credit sale.
 
 Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
 `MANAGER`+.
@@ -329,7 +339,9 @@ Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
   can sell the chosen one). Ambiguity comes from an alternate barcode
   (`ProductBarcode`) or a variant carrying another product's code.
 - Barcodes are unique per shop: `409 BARCODE_IN_USE` on create/update.
-- `POST /products` / `PATCH /products/:id` accept `cessRate` (percent, 0-100).
+- `POST /products` / `PATCH /products/:id` accept `cessRate` (percent, 0-100)
+  and `reorderPoint` (the low-stock level in the product unit, >= 0; 10 when
+  absent).
 - Price changes on `PATCH /products/:id` (selling/cost/MRP/wholesale price,
   GST slab or cess) write an `AuditLog` row (`PRODUCT_PRICE_CHANGED`,
   before/after).
@@ -441,13 +453,14 @@ its business source, `(shopId, sourceType, sourceId)` with a unique index:
 `SALE` / `RETURN` / `CANCELLATION` (invoice id), `CUSTOMER_PAYMENT` (udhar
 transaction id), `GRN`, `PURCHASE_RETURN`, `ADJUSTMENT_REQUEST`,
 `STOCK_ADJUSTMENT` (their document ids), `SUPPLIER_PAYMENT` (SupplierPayment
-id). A replay of an already-posted
+id), `OPENING_BALANCE` (the opening udhar's UdharTransaction id). A replay of an already-posted
 source posts nothing; a concurrent duplicate fails on the index and its
 transaction rolls back. Every `LedgerTransaction` row carries the header's
 `postingId`. Debit-normal accounts: `CASH`, `BANK`,
 `ACCOUNTS_RECEIVABLE`, `UDHAR_RECEIVABLE`, `COST_OF_GOODS`, `INVENTORY`,
 `INVENTORY_ADJUSTMENT`. Credit-normal: `SALES_REVENUE`, `GST_PAYABLE`,
-`ACCOUNTS_PAYABLE`.
+`ACCOUNTS_PAYABLE`, `OPENING_BALANCE_EQUITY` (the shop's capital on its
+first day: the contra of every opening balance, roadmap 9.20).
 
 | Event | Debit | Credit |
 |---|---|---|
@@ -458,7 +471,9 @@ transaction rolls back. Every `LedgerTransaction` row carries the header's
 | Goods receipt (GRN accepted) | INVENTORY (Σ unitPrice × acceptedQuantity) | ACCOUNTS_PAYABLE |
 | Purchase return | ACCOUNTS_PAYABLE | INVENTORY |
 | Supplier payment / vendor-bill payment | ACCOUNTS_PAYABLE | CASH (tender `CASH`) / BANK (other tenders) |
-| Stock adjustment, damage, loss, expiry, opening balance | delta > 0: INVENTORY / INVENTORY_ADJUSTMENT; delta < 0: INVENTORY_ADJUSTMENT / INVENTORY, at `Product.costPrice` | |
+| Stock adjustment, damage, loss, expiry | delta > 0: INVENTORY / INVENTORY_ADJUSTMENT; delta < 0: INVENTORY_ADJUSTMENT / INVENTORY, at `Product.costPrice` | |
+| Opening stock (adjustment reason `OPENING_BALANCE`, manual or imported) | INVENTORY | OPENING_BALANCE_EQUITY, at `Product.costPrice` (a negative opening the other way round) |
+| Opening udhar (source `OPENING_BALANCE`) | ACCOUNTS_RECEIVABLE (owed) / OPENING_BALANCE_EQUITY (advance) | OPENING_BALANCE_EQUITY (owed) / ACCOUNTS_RECEIVABLE (advance) |
 
 `Supplier.pendingPayables` is the per-supplier view of `ACCOUNTS_PAYABLE`,
 maintained in the same transaction as each posting (receipt adds, purchase
@@ -602,3 +617,54 @@ way, the old year's sequence rows and numbers are untouched (the unique key
 is `(shopId, financialYear, invoiceNumber)`), the same-day cancellation
 window flips with the business day, and the dashboard's `businessDate` and
 `GET /billing/invoices?from&to` agree with the FY tags.
+
+## 13. Onboarding imports (roadmap 9.20)
+
+A shop's day-one data arrives as three CSV (or JSON array) files, imported in
+this order: products, opening stock, customers. The procedure is
+`docs/ONBOARDING.md`; the templates are `docs/onboarding/*.csv` and
+`GET /imports/templates/{products|customers|opening-stock}` (the same bytes,
+`import-columns.spec.ts`).
+
+- `POST /imports/{products|customers|opening-stock}/upload` (multipart:
+  `file`, `mode?` = `UPSERT` (default) | `CREATE_ONLY` | `UPDATE_ONLY`,
+  `dryRun?` = `"true"` | `"false"`; MANAGER+) stores the file and queues a
+  job: `201 { jobId, kind, dryRun }`. `MERGE` / `REPLACE` are 400. The
+  worker runs the job as the uploading user, who must still be an active
+  manager of the shop (else the job is FAILED with the reason in row 0).
+- A dry run validates and plans every row against the shop's data and writes
+  only the report; `POST /imports/jobs/:id/apply` (MANAGER+) runs a finished
+  dry run (COMPLETED or PARTIAL_SUCCESS) for real as a new job on the same
+  file (`409 IMPORT_NOT_A_DRY_RUN`, `409 IMPORT_DRY_RUN_NOT_APPLICABLE`).
+- `GET /imports/jobs` (paged, newest first), `GET /imports/jobs/:id` (status
+  and counters: `totalRows`, `validRows`, `errorRows`, `createdCount`,
+  `updatedCount`, `unchangedCount`, `skippedCount`), `GET
+  /imports/jobs/:id/rows?status=SUCCESS|ERROR|SKIPPED&skip&take` (paged, file
+  order; row 0 is the file itself: unread columns, a missing required column,
+  an unreadable file), `GET /imports/jobs/:id/errors`, `GET
+  /imports/jobs/:id/report` (the whole report as CSV, the row's own cells
+  under the template headers). A row is `{ rowNumber, status, actionTaken,
+  changes, errors, rawData }`; `actionTaken` is `CREATED` / `UPDATED` /
+  `UNCHANGED` / `SKIPPED`, `WOULD_CREATE` / `WOULD_UPDATE` in a dry run;
+  `errors` holds every issue with its `field` and `severity` (a warning never
+  refuses a row). Row numbers are spreadsheet lines (the header is line 1).
+- Every row is written through the service the screens use: products through
+  `ProductsService.create/update` (matched by SKU, case-insensitive),
+  customers through `CustomersService.create/update` (matched by the national
+  phone number) and `recordOpeningBalance` (§4), opening stock through
+  `InventoryDomainService.recordOpeningStock` (§9). A blank cell never clears
+  a stored value; a row that names an existing record with nothing to change
+  is UNCHANGED, so the same file imported twice changes nothing. A refused
+  write (409 from a concurrent change) is that row's error and the run goes
+  on.
+- Rules beyond the create DTOs: MRP >= selling price, also against the
+  stored MRP when the file leaves it blank; GST slab 0/5/12/18/28 (blank: 18
+  on a new product, with a warning); unit by the POS rule (KG, GM, LTR, ML
+  in decimals, the rest whole); a customer's state is an Indian state or
+  union territory (`apps/api/src/common/india/states.ts`, the web picker's
+  list): it decides CGST/SGST against IGST; a code a spreadsheet turned into
+  scientific notation (`8.90123E+12`) is refused; the same SKU, barcode,
+  phone or product twice in one file is refused on the later row; opening
+  stock is refused for a product that already moved or carries stock from
+  before the stock ledger, for SERVICE / DIGITAL products, and when another
+  quantity is already recorded; a 0 quantity is SKIPPED.

@@ -169,6 +169,11 @@ state (the state decides CGST/SGST against IGST); the GSTIN prints on every
 receipt when set. The shop's time zone is Asia/Kolkata (`ShopSettings.timezone`,
 the default): the business day, invoice dates and the dashboard follow it.
 
+**The shop's data.** Products, the counted opening stock and the customers
+with their opening udhar are imported on day 0 by the procedure in
+`docs/ONBOARDING.md` (each file a dry run first, the reconciliation CLEAN
+afterwards), not typed in at the counter.
+
 **Thermal printer (80 mm).** Printing goes through the browser's print
 dialog, so the device that prints needs the printer's driver:
 

@@ -12,6 +12,11 @@ import { InventoryCacheService } from '../../inventory/inventory-cache.service';
 import { assertOwned } from '../../prisma/tenant-ownership';
 import { ListQueryDto, pageArgs } from '../../common/pagination';
 
+/** The key of an item's one opening-stock movement (stock ledger `correlationId` and `referenceId`). */
+export function openingStockKey(inventoryItemId: string): string {
+  return `OPENING:${inventoryItemId}`;
+}
+
 @Injectable()
 export class InventoryDomainService {
   private readonly logger = new Logger(InventoryDomainService.name);
@@ -122,157 +127,248 @@ export class InventoryDomainService {
       });
 
       if (!item) throw new NotFoundException('Inventory item not found');
-
-      // 2. Delegate to Engine
-      const isDeduction = quantityChange < 0;
-      let mutationType = MutationType.ADJUSTMENT;
-      if (isDeduction && reason === AdjustmentReason.DAMAGE) mutationType = MutationType.DAMAGE;
-      if (isDeduction && reason === AdjustmentReason.EXPIRY) mutationType = MutationType.EXPIRED;
-      if (isDeduction && reason === AdjustmentReason.LOSS) mutationType = MutationType.LOSS;
-      if (!isDeduction && reason === AdjustmentReason.OPENING_BALANCE) mutationType = MutationType.OPENING;
-
-      let engineResult;
-      try {
-        engineResult = await this.inventoryMutationEngine.mutateStock(tx, {
-          shopId,
-          locationId: item.locationId,
-          productId: item.productId,
-          // The row the caller named: a variant's item, not the product-level row (roadmap 3.7, audit P2-27).
-          variantId: item.variantId,
-          quantity: Math.abs(quantityChange),
-          mutationType,
-          metadata: { direction: isDeduction ? -1 : 1 },
-          reason: opts?.notes ? `${reason} - ${opts.notes}` : reason,
-          referenceId: opts?.correlationId || `ADJ-${new Date().getTime()}`,
-          performedBy: createdBy,
-          occurredAt: new Date(),
-          allowNegative: item.isNegativeAllowed,
-        });
-      } catch (e: any) {
-        if (e instanceof OptimisticLockConflictError) {
-          throw new ConflictException('Concurrent modification detected. Please retry.');
-        }
-        if (e instanceof InsufficientStockError) {
-          throw new BadRequestException(
-            `Insufficient stock. Requested deduction: ${Math.abs(quantityChange)}`
-          );
-        }
-        throw e;
-      }
-
-      // Authoritative values come from the engine (post-update row), never from the pre-lock read.
-      const newOnHand = engineResult.balanceAfter.toNumber();
-      const oldOnHand = engineResult.balanceAfter.minus(isDeduction ? -Math.abs(quantityChange) : Math.abs(quantityChange)).toNumber();
-
-      const adjustment = await tx.inventoryAdjustment.create({
-        data: {
-          shopId,
-          inventoryItemId,
-          reason,
-          quantityBefore: oldOnHand,
-          quantityChange: quantityChange,
-          quantityAfter: newOnHand,
-          createdBy,
-          notes: opts?.notes,
-          correlationId: opts?.correlationId,
-        },
-      });
-
-      // Accounting effect of a manual adjustment: stock value moves between
-      // INVENTORY (asset) and INVENTORY_ADJUSTMENT (expense) at cost price.
-      if (!engineResult.bypassed) {
-        const product = await tx.product.findUnique({ where: { id: item.productId }, select: { costPrice: true } });
-        const value = new Prisma.Decimal(product?.costPrice ?? 0).mul(Math.abs(quantityChange)).toDecimalPlaces(2);
-        if (value.greaterThan(0)) {
-          await this.ledger.post(tx, {
-            shopId,
-            source: { type: 'STOCK_ADJUSTMENT', id: adjustment.id },
-            description: `Stock adjustment ${inventoryItemId} (${reason})`,
-            entries: isDeduction
-              ? [
-                  { account: LedgerAccount.INVENTORY_ADJUSTMENT, type: LedgerEntryType.DEBIT, amount: value },
-                  { account: LedgerAccount.INVENTORY, type: LedgerEntryType.CREDIT, amount: value },
-                ]
-              : [
-                  { account: LedgerAccount.INVENTORY, type: LedgerEntryType.DEBIT, amount: value },
-                  { account: LedgerAccount.INVENTORY_ADJUSTMENT, type: LedgerEntryType.CREDIT, amount: value },
-                ],
-          });
-        }
-      }
-
-
-      // 7. Emit event to Outbox
-      await this.eventPublisher.publish(tx as any, {
-        shopId,
-        eventType: 'InventoryAdjusted',
-        entityId: inventoryItemId,
-        entityType: 'InventoryItem',
-        payload: {
-          inventoryItemId,
-          productId: item.productId,
-          reason,
-          quantityBefore: oldOnHand,
-          quantityChange,
-          quantityAfter: newOnHand,
-        },
-      });
-
-      // 8. Check thresholds and generate alerts
-      if (newOnHand <= item.reorderPoint.toNumber()) {
-        await tx.inventoryAlert.create({
-          data: {
-            shopId,
-            inventoryItemId,
-            alertType: 'LOW_STOCK',
-            message: `Stock for item ${inventoryItemId} is below reorder point (${item.reorderPoint})`,
-            currentValue: newOnHand,
-            thresholdValue: item.reorderPoint,
-          },
-        });
-      }
-
-      if (newOnHand < 0) {
-        await tx.inventoryAlert.create({
-          data: {
-            shopId,
-            inventoryItemId,
-            alertType: 'NEGATIVE_STOCK',
-            message: `Negative stock detected for item ${inventoryItemId}: ${newOnHand}`,
-            currentValue: newOnHand,
-          },
-        });
-      }
-
-      // 9. Audit trail for the operator action
-      await tx.auditLog.create({
-        data: {
-          shopId,
-          userId: createdBy,
-          action: 'STOCK_ADJUSTED',
-          entity: 'InventoryItem',
-          entityId: inventoryItemId,
-          beforeData: { onHand: oldOnHand },
-          afterData: { onHand: newOnHand, quantityChange, reason, notes: opts?.notes ?? null, productId: item.productId },
-        },
-      });
-
-      this.logger.log(`Stock adjusted: ${inventoryItemId} ${oldOnHand} → ${newOnHand} (${reason})`);
-
-      return {
-        inventoryItemId,
-        productId: item.productId,
-        quantityBefore: oldOnHand,
-        quantityChange,
-        quantityAfter: newOnHand,
-        productStockAfter: engineResult.productStockAfter.toNumber(),
-        reason,
-      };
+      return this.applyAdjustment(tx, shopId, item, reason, quantityChange, createdBy, opts);
     });
 
     // Keep the Redis fast-path in step with the authoritative aggregate.
     await this.inventoryCache.syncStock(result.productId, result.productStockAfter);
     return result;
+  }
+
+  /**
+   * The opening stock of a product (roadmap 9.20): the counted quantity on
+   * the shelf on day one, recorded as the first movement of its product-level
+   * item at the sale location (`OPENING_BALANCE`, valued at cost against
+   * OPENING_BALANCE_EQUITY). Once per item: the movement is keyed
+   * (`OPENING:<itemId>`), so the same quantity again is `UNCHANGED` and
+   * another quantity is 409 `OPENING_STOCK_EXISTS`; an item that already
+   * moved (a sale, a receipt, a legacy `currentStock` bootstrap) is 409
+   * `OPENING_STOCK_AFTER_MOVEMENTS`: the difference is a stock adjustment.
+   */
+  async recordOpeningStock(input: { productId: string; quantity: number; createdBy: string; notes?: string }): Promise<{ status: 'CREATED' | 'UNCHANGED'; inventoryItemId: string; quantityAfter: number }> {
+    const shopId = this.tenantContext.getShopId();
+    if (!Number.isFinite(input.quantity) || input.quantity <= 0) {
+      throw new BadRequestException({ message: 'Opening stock must be more than 0.', code: 'INVALID_QUANTITY' });
+    }
+    const item = await this.ensureInventoryItem(input.productId);
+    const key = openingStockKey(item.id);
+    const quantity = new Prisma.Decimal(input.quantity);
+
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      // Same lock as every stock mutation of the product, before reading its movements.
+      await this.inventoryMutationEngine.lockProducts(tx, shopId, [input.productId]);
+      const current = await tx.inventoryItem.findFirstOrThrow({ where: { id: item.id, shopId } });
+      const opening = await tx.stockLedgerEntry.findFirst({ where: { shopId, inventoryItemId: item.id, correlationId: key }, select: { quantity: true } });
+      if (opening) {
+        if (opening.quantity.equals(quantity)) return { status: 'UNCHANGED' as const, quantityAfter: current.onHand.toNumber(), productStockAfter: null };
+        throw new ConflictException({
+          message: `The opening stock of this product is already recorded as ${opening.quantity.toString()}; record the difference as a stock adjustment.`,
+          code: 'OPENING_STOCK_EXISTS',
+          details: { recorded: opening.quantity.toString(), requested: quantity.toString() },
+        });
+      }
+      const movements = await tx.stockLedgerEntry.count({ where: { shopId, inventoryItemId: item.id } });
+      if (movements > 0) {
+        throw new ConflictException({
+          message: `This product already has stock movements (${current.onHand.toString()} on hand); record the difference as a stock adjustment.`,
+          code: 'OPENING_STOCK_AFTER_MOVEMENTS',
+          details: { onHand: current.onHand.toString(), movements },
+        });
+      }
+      const result = await this.applyAdjustment(tx, shopId, current, AdjustmentReason.OPENING_BALANCE, input.quantity, input.createdBy, {
+        notes: input.notes,
+        idempotencyKey: key,
+        referenceId: key,
+      });
+      return { status: 'CREATED' as const, quantityAfter: result.quantityAfter, productStockAfter: result.productStockAfter };
+    });
+
+    if (outcome.productStockAfter !== null) await this.inventoryCache.syncStock(input.productId, outcome.productStockAfter);
+    return { status: outcome.status, inventoryItemId: item.id, quantityAfter: outcome.quantityAfter };
+  }
+
+  /**
+   * One adjustment of an item inside the caller's transaction: the engine
+   * mutation, the InventoryAdjustment row, the ledger posting at cost, the
+   * outbox event, threshold alerts and the audit row. A keyed movement that
+   * is already in the stock ledger (`opts.idempotencyKey`) writes nothing
+   * and comes back `idempotent`.
+   */
+  private async applyAdjustment(
+    tx: Prisma.TransactionClient,
+    shopId: string,
+    item: { id: string; productId: string; locationId: string; variantId: string | null; isNegativeAllowed: boolean; reorderPoint: Prisma.Decimal },
+    reason: AdjustmentReason,
+    quantityChange: number,
+    createdBy: string,
+    opts?: { notes?: string; correlationId?: string; idempotencyKey?: string; referenceId?: string },
+  ) {
+    const inventoryItemId = item.id;
+    // 2. Delegate to Engine
+    const isDeduction = quantityChange < 0;
+    let mutationType = MutationType.ADJUSTMENT;
+    if (isDeduction && reason === AdjustmentReason.DAMAGE) mutationType = MutationType.DAMAGE;
+    if (isDeduction && reason === AdjustmentReason.EXPIRY) mutationType = MutationType.EXPIRED;
+    if (isDeduction && reason === AdjustmentReason.LOSS) mutationType = MutationType.LOSS;
+    if (!isDeduction && reason === AdjustmentReason.OPENING_BALANCE) mutationType = MutationType.OPENING;
+
+    let engineResult;
+    try {
+      engineResult = await this.inventoryMutationEngine.mutateStock(tx, {
+        shopId,
+        locationId: item.locationId,
+        productId: item.productId,
+        // The row the caller named: a variant's item, not the product-level row (roadmap 3.7, audit P2-27).
+        variantId: item.variantId,
+        quantity: Math.abs(quantityChange),
+        mutationType,
+        metadata: { direction: isDeduction ? -1 : 1 },
+        reason: opts?.notes ? `${reason} - ${opts.notes}` : reason,
+        referenceId: opts?.referenceId ?? (opts?.correlationId || `ADJ-${new Date().getTime()}`),
+        idempotencyKey: opts?.idempotencyKey,
+        performedBy: createdBy,
+        occurredAt: new Date(),
+        allowNegative: item.isNegativeAllowed,
+      });
+    } catch (e: any) {
+      if (e instanceof OptimisticLockConflictError) {
+        throw new ConflictException('Concurrent modification detected. Please retry.');
+      }
+      if (e instanceof InsufficientStockError) {
+        throw new BadRequestException(
+          `Insufficient stock. Requested deduction: ${Math.abs(quantityChange)}`
+        );
+      }
+      throw e;
+    }
+
+    if (engineResult.idempotent) {
+      // The keyed movement is already in the stock ledger: nothing new is written (roadmap 9.20 re-runs).
+      const after = engineResult.balanceAfter.toNumber();
+      return {
+        inventoryItemId,
+        productId: item.productId,
+        quantityBefore: after - quantityChange,
+        quantityChange,
+        quantityAfter: after,
+        productStockAfter: engineResult.productStockAfter.toNumber(),
+        reason,
+        idempotent: true,
+      };
+    }
+
+    // Authoritative values come from the engine (post-update row), never from the pre-lock read.
+    const newOnHand = engineResult.balanceAfter.toNumber();
+    const oldOnHand = engineResult.balanceAfter.minus(isDeduction ? -Math.abs(quantityChange) : Math.abs(quantityChange)).toNumber();
+
+    const adjustment = await tx.inventoryAdjustment.create({
+      data: {
+        shopId,
+        inventoryItemId,
+        reason,
+        quantityBefore: oldOnHand,
+        quantityChange: quantityChange,
+        quantityAfter: newOnHand,
+        createdBy,
+        notes: opts?.notes,
+        correlationId: opts?.correlationId,
+      },
+    });
+
+    // Accounting effect: stock value moves between INVENTORY (asset) and the
+    // contra at cost price: INVENTORY_ADJUSTMENT (expense) for counts, damage,
+    // loss and expiry; OPENING_BALANCE_EQUITY for opening stock, which is the
+    // shop's capital on day one, not a gain (roadmap 9.20).
+    if (!engineResult.bypassed) {
+      const product = await tx.product.findUnique({ where: { id: item.productId }, select: { costPrice: true } });
+      const value = new Prisma.Decimal(product?.costPrice ?? 0).mul(Math.abs(quantityChange)).toDecimalPlaces(2);
+      const contra = reason === AdjustmentReason.OPENING_BALANCE ? LedgerAccount.OPENING_BALANCE_EQUITY : LedgerAccount.INVENTORY_ADJUSTMENT;
+      if (value.greaterThan(0)) {
+        await this.ledger.post(tx, {
+          shopId,
+          source: { type: 'STOCK_ADJUSTMENT', id: adjustment.id },
+          description: `Stock adjustment ${inventoryItemId} (${reason})`,
+          entries: isDeduction
+            ? [
+                { account: contra, type: LedgerEntryType.DEBIT, amount: value },
+                { account: LedgerAccount.INVENTORY, type: LedgerEntryType.CREDIT, amount: value },
+              ]
+            : [
+                { account: LedgerAccount.INVENTORY, type: LedgerEntryType.DEBIT, amount: value },
+                { account: contra, type: LedgerEntryType.CREDIT, amount: value },
+              ],
+        });
+      }
+    }
+
+
+    // 7. Emit event to Outbox
+    await this.eventPublisher.publish(tx as any, {
+      shopId,
+      eventType: 'InventoryAdjusted',
+      entityId: inventoryItemId,
+      entityType: 'InventoryItem',
+      payload: {
+        inventoryItemId,
+        productId: item.productId,
+        reason,
+        quantityBefore: oldOnHand,
+        quantityChange,
+        quantityAfter: newOnHand,
+      },
+    });
+
+    // 8. Check thresholds and generate alerts
+    if (newOnHand <= item.reorderPoint.toNumber()) {
+      await tx.inventoryAlert.create({
+        data: {
+          shopId,
+          inventoryItemId,
+          alertType: 'LOW_STOCK',
+          message: `Stock for item ${inventoryItemId} is below reorder point (${item.reorderPoint})`,
+          currentValue: newOnHand,
+          thresholdValue: item.reorderPoint,
+        },
+      });
+    }
+
+    if (newOnHand < 0) {
+      await tx.inventoryAlert.create({
+        data: {
+          shopId,
+          inventoryItemId,
+          alertType: 'NEGATIVE_STOCK',
+          message: `Negative stock detected for item ${inventoryItemId}: ${newOnHand}`,
+          currentValue: newOnHand,
+        },
+      });
+    }
+
+    // 9. Audit trail for the operator action
+    await tx.auditLog.create({
+      data: {
+        shopId,
+        userId: createdBy,
+        action: 'STOCK_ADJUSTED',
+        entity: 'InventoryItem',
+        entityId: inventoryItemId,
+        beforeData: { onHand: oldOnHand },
+        afterData: { onHand: newOnHand, quantityChange, reason, notes: opts?.notes ?? null, productId: item.productId },
+      },
+    });
+
+    this.logger.log(`Stock adjusted: ${inventoryItemId} ${oldOnHand} → ${newOnHand} (${reason})`);
+
+    return {
+      inventoryItemId,
+      productId: item.productId,
+      quantityBefore: oldOnHand,
+      quantityChange,
+      quantityAfter: newOnHand,
+      productStockAfter: engineResult.productStockAfter.toNumber(),
+      reason,
+      idempotent: false,
+    };
   }
 
   /**
