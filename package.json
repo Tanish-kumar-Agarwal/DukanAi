@@ -12,6 +12,8 @@
   ],
   "scripts": {
     "dev": "turbo run dev",
+    "start:all": "run-all.bat",
+    "stop:all": "stop-all.bat",
     "build": "turbo run build",
     "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
