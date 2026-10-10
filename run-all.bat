@@ -32,6 +32,19 @@ if %errorlevel% neq 0 (
     cd /d "%~dp0apps\api"
     start "DukaanAI API" cmd /k "npx cross-env NODE_ENV=development node dist/main.js"
     cd /d "%~dp0"
+    
+    echo       Waiting for API backend to initialize on port 3002...
+    set /a waitApi=0
+    :wait_for_api
+    timeout /t 1 /nobreak >nul
+    netstat -ano | findstr /R ":3002.*LISTENING" >nul 2>&1
+    if !errorlevel! neq 0 (
+        set /a waitApi+=1
+        if !waitApi! lss 15 goto wait_for_api
+        echo       [Note] API backend is still initializing...
+    ) else (
+        echo       API backend is ready on port 3002!
+    )
 ) else (
     echo       API backend is already up and running on http://localhost:3002!
 )
@@ -44,6 +57,16 @@ if %errorlevel% neq 0 (
     cd /d "%~dp0apps\web"
     start "DukaanAI Web" cmd /k "npm run dev"
     cd /d "%~dp0"
+    
+    echo       Waiting for Web frontend to bind to port 3010...
+    set /a waitWeb=0
+    :wait_for_web
+    timeout /t 1 /nobreak >nul
+    netstat -ano | findstr /R ":3010.*LISTENING" >nul 2>&1
+    if !errorlevel! neq 0 (
+        set /a waitWeb+=1
+        if !waitWeb! lss 25 goto wait_for_web
+    )
 ) else (
     echo       Web frontend is already up and running on http://localhost:3010!
 )
@@ -57,3 +80,4 @@ echo ========================================================
 
 :: Open website automatically in your default browser
 start http://localhost:3010
+
