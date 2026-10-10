@@ -34,7 +34,7 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1051.0",
+    "@aws-sdk/client-s3": "^3.1147.0",
     "@dukaanai/invoice-math": "*",
     "@keyv/redis": "^5.1.6",
     "@nestjs/bullmq": "^11.0.4",
@@ -53,7 +53,7 @@
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/websockets": "^11.1.21",
     "@prisma/client": "6.19.3",
-    "@sentry/node": "^11.4.0",
+    "@sentry/node": "^11.5.0",
     "archiver": "^7.0.1",
     "axios": "^1.20.0",
     "bcrypt": "^6.0.0",
@@ -74,11 +74,11 @@
     "ioredis": "^5.10.1",
     "keyv": "^5.6.0",
     "multer": "^2.4.0",
-    "nodemailer": "^10.0.13",
+    "nodemailer": "^10.0.16",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "passport-local": "^1.0.0",
-    "pdfkit": "^0.19.1",
+    "pdfkit": "^0.20.2",
     "prisma": "6.19.3",
     "prom-client": "^15.1.3",
     "redlock": "^5.0.0-beta.2",
@@ -127,7 +127,7 @@
     "ts-loader": "^9.5.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.3",
-    "typescript-eslint": "^8.20.0"
+    "typescript-eslint": "^8.71.1"
   },
   "jest": {
     "moduleFileExtensions": [
