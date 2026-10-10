@@ -169,8 +169,14 @@ Roadmap 9.14, in `.github/workflows/release.yml` and `.github/workflows/ci.yml`:
 the API image:
 
 ```
-docker run --rm -e DATABASE_URL=mysql://user:pass@host:3306/dukaanai dukaanai-api npx prisma migrate deploy
+docker run --rm -e DATABASE_URL=mysql://user:pass@host:3306/dukaanai dukaanai-api /app/node_modules/.bin/prisma migrate deploy
 ```
+
+The images carry no npm, npx or corepack (roadmap 9.14: the Node base
+image's bundled npm fails the release Trivy gate), so a command in a
+container names the binary: the Prisma CLI is `/app/node_modules/.bin/prisma`
+(also on the API image's `PATH`), the operator commands are
+`node dist/cli/<command>`.
 
 Compose models it as the `migrate` service (`api` depends on
 `service_completed_successfully`); on Kubernetes it is a Job or an init

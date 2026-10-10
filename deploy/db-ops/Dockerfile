@@ -11,8 +11,16 @@ LABEL org.opencontainers.image.title="dukaanai-db-ops" \
       org.opencontainers.image.source="https://github.com/shoryabansalgithub/DukanAi-real" \
       org.opencontainers.image.version="${APP_RELEASE}" \
       org.opencontainers.image.revision="${APP_REVISION}"
+# Debian's security updates are taken at build time (roadmap 9.14, the
+# release Trivy gate); the MySQL packages stay at the base image's release so
+# the clients match the server line the image was chosen for. gosu exists
+# only for the MySQL server entrypoint, which this image replaces, and is an
+# old Go build: removed.
 RUN apt-get update \
+  && apt-mark hold $(dpkg-query -W -f '${db:Status-Abbrev} ${Package}\n' 'mysql-*' | awk '$1 == "ii" { print $2 }') \
+  && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
   && apt-get install -y --no-install-recommends rclone ca-certificates \
+  && rm -f /usr/local/bin/gosu \
   && rm -rf /var/lib/apt/lists/*
 # The repository's scripts are baked in so the image runs on its own (the
 # Kubernetes backup sidecar, deploy/k8s); compose mounts the checkout's

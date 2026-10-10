@@ -29,7 +29,7 @@ spec:
       containers:
         - name: migrate
           image: dukaanai-api
-          command: ["npx", "prisma", "migrate", "deploy"]
+          command: ["/app/node_modules/.bin/prisma", "migrate", "deploy"]
           env:
             - name: DATABASE_URL
               valueFrom:

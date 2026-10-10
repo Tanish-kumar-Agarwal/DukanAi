@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Migrations of the API image on MySQL 8 and MariaDB (roadmap 9.12, the
 # phase 8 exit gate re-run on the candidate): for each engine a fresh server
-# is started in a container, the image's own `npx prisma migrate deploy`
+# is started in a container, the image's own Prisma CLI
+# (`/app/node_modules/.bin/prisma migrate deploy`; the image has no npx)
 # applies every migration it carries, `prisma migrate diff` from the
 # resulting database to the image's prisma/schema.prisma must be empty
 # (--exit-code), `migrate status` must report nothing pending and a second
@@ -53,23 +54,23 @@ engine() {
   run() { docker run --rm --network "$NET" -e DATABASE_URL="$url" "$IMAGE" "$@"; }
 
   step=deploy
-  run npx prisma migrate deploy > "$OUT/$label-deploy.log" 2>&1 || verdict=FAIL
+  run /app/node_modules/.bin/prisma migrate deploy > "$OUT/$label-deploy.log" 2>&1 || verdict=FAIL
   echo "   migrate deploy: $(grep -c 'migration' "$OUT/$label-deploy.log") lines mentioning migrations, exit $([ "$verdict" = PASS ] && echo 0 || echo non-zero)"
 
   if [ "$verdict" = PASS ]; then
     step=diff
-    run npx prisma migrate diff --from-url "$url" --to-schema-datamodel prisma/schema.prisma --exit-code > "$OUT/$label-diff.log" 2>&1 || verdict=FAIL
+    run /app/node_modules/.bin/prisma migrate diff --from-url "$url" --to-schema-datamodel prisma/schema.prisma --exit-code > "$OUT/$label-diff.log" 2>&1 || verdict=FAIL
     echo "   migrate diff --exit-code: $([ "$verdict" = PASS ] && echo 'no difference' || echo 'DIFFERENCE')"
   fi
   if [ "$verdict" = PASS ]; then
     step=status
-    run npx prisma migrate status > "$OUT/$label-status.log" 2>&1
+    run /app/node_modules/.bin/prisma migrate status > "$OUT/$label-status.log" 2>&1
     grep -q "Database schema is up to date" "$OUT/$label-status.log" || verdict=FAIL
     echo "   migrate status: $(grep -E 'up to date|pending|not yet' "$OUT/$label-status.log" | head -n 1)"
   fi
   if [ "$verdict" = PASS ]; then
     step=redeploy
-    run npx prisma migrate deploy > "$OUT/$label-redeploy.log" 2>&1
+    run /app/node_modules/.bin/prisma migrate deploy > "$OUT/$label-redeploy.log" 2>&1
     grep -q "No pending migrations" "$OUT/$label-redeploy.log" || verdict=FAIL
     echo "   second deploy: $(grep -E 'No pending|applied' "$OUT/$label-redeploy.log" | head -n 1)"
   fi

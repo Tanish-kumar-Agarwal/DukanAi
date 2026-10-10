@@ -92,6 +92,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnAppli
             `Prisma error: ${(error as Error).message?.split('\n').pop()?.trim()}`,
             'Apply the pending migrations (never `prisma db push`, which bypasses the migration history):',
             '    cd apps/api && npx prisma migrate status && npx prisma migrate deploy',
+            'or, in the API image (no npx there; compose runs the `migrate` service):',
+            '    /app/node_modules/.bin/prisma migrate status && /app/node_modules/.bin/prisma migrate deploy',
             'A migration recorded as failed or edited after it was applied is settled with',
             '    npx prisma migrate resolve --applied <name>   (or --rolled-back <name>)',
             'and then `migrate deploy` again; see apps/api/prisma/MIGRATIONS.md.',

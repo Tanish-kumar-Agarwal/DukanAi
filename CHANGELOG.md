@@ -13,6 +13,14 @@ release notes of the tag.
 
 ## [Unreleased]
 
+### Fixed
+
+- The release Trivy gate (9.14) failed on the first images built from main: every image now takes Debian's security
+  updates at build time (`apt-get upgrade`; db-ops keeps its MySQL packages at the base release), the API and web
+  runtime images no longer carry the npm / npx / corepack bundled with the Node image, and db-ops drops the unused
+  `gosu` binary. The migrate step runs the image's Prisma CLI by path (`/app/node_modules/.bin/prisma migrate deploy`)
+  in compose, the production compose file, the Kubernetes Job and the certify migrate check.
+
 ## [v1.0.0-rc3] - 2026-10-08
 
 The first version tagged in git (v1.0.0-rc1 and v1.0.0-rc2 below never were). It covers everything after v1.0.0-rc2

@@ -9,11 +9,17 @@
 # the API URL the browser calls is a build argument; everything server-side
 # (NEXTAUTH_SECRET, NEXTAUTH_URL, API_INTERNAL_URL, Google OAuth) is runtime
 # environment. NEXT_PUBLIC_AUTH_DISABLED is never set here: next.config.js
-# refuses a production build with it. Node pinned like apps/api/Dockerfile.
+# refuses a production build with it. Node pinned like apps/api/Dockerfile,
+# and patched like it (roadmap 9.14): Debian security updates at build time,
+# no npm / npx / corepack in the runtime stage (the standalone server needs
+# only node).
 ARG NODE_VERSION=22.22.2
 
 FROM node:${NODE_VERSION}-bookworm-slim AS base
 ENV NPM_CONFIG_UPDATE_NOTIFIER=false NPM_CONFIG_FUND=false NPM_CONFIG_AUDIT=false NEXT_TELEMETRY_DISABLED=1
+RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
+  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 FROM base AS deps
@@ -43,6 +49,8 @@ LABEL org.opencontainers.image.title="dukaanai-web" \
       org.opencontainers.image.version="${APP_RELEASE}" \
       org.opencontainers.image.revision="${APP_REVISION}"
 ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0 APP_RELEASE=${APP_RELEASE}
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 COPY --from=build --chown=node:node /app/apps/web/.next/standalone ./
 COPY --from=build --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
 USER node

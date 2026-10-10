@@ -857,7 +857,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   file copied in. The API image holds only the API's production
   `node_modules` (`npm ci --omit=dev -w api -w @dukaanai/invoice-math`
   + `prisma generate`), `dist`, and `prisma/` so the same image runs the
-  release step `npx prisma migrate deploy`. The web image is Next's
+  release step `/app/node_modules/.bin/prisma migrate deploy` (no npx in
+  the image, 9.14). The web image is Next's
   standalone output: `NEXT_STANDALONE=true` switches `output: 'standalone'`
   on in `next.config.js` (opt-in because `next start` refuses it) with
   `outputFileTracingRoot` at the monorepo root; `NEXT_PUBLIC_API_URL` is a
@@ -1463,7 +1464,17 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   workspace) beside the github-actions pins. No docker here, so the image
   scan, SBOM and control are proven by the jobs; locally the pinned Trivy
   was shown to produce a valid CycloneDX document and `trivy fs` of the
-  tree is clean.
+  tree is clean. What the first gate run on main found, keep it so: every
+  image `apt-get upgrade`s Debian at build time (the Node and MySQL base
+  images lag the security archive; db-ops holds its `mysql-*` packages), the
+  API and web runtime stages delete the npm / npx / corepack the Node image
+  bundles (npm's own tar, brace-expansion, sigstore ... are fixable HIGH /
+  CRITICAL and an npm upgrade still carries some), and db-ops deletes the
+  unused `gosu` (an old Go stdlib). So nothing in a container runs `npx`:
+  the migrate step is `/app/node_modules/.bin/prisma migrate deploy` (an
+  absolute path, so new compose files still run an older image on rollback).
+  Read the gate with `trivy rootfs` locally: `trivy fs` skips the
+  `package.json` of installed packages.
 - 9.15 ASVS L2: `docs/security/ASVS_L2.md` is the control-by-control
   record (Met / N/A / Fixed / Owner; no Open) and `docs/security/
   PENTEST_SCOPE.md` the scope letter + findings tracker for the owner's

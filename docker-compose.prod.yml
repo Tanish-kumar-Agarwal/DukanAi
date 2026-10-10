@@ -42,7 +42,7 @@ services:
   # exits; `api` starts only after it succeeded. Re-run on every deploy.
   migrate:
     image: ${IMAGE_REGISTRY:-ghcr.io/shoryabansalgithub}/dukaanai-api:${IMAGE_TAG:?}
-    command: ["npx", "prisma", "migrate", "deploy"]
+    command: ["/app/node_modules/.bin/prisma", "migrate", "deploy"]
     environment:
       DATABASE_URL: *database-url
     volumes:

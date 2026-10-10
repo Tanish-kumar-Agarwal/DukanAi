@@ -259,9 +259,9 @@ screens show their error panel.
   only; it answered "Database schema is up to date!" while a column the
   code reads was missing (found walking this page). Compare the live
   schema with the image's:
-  `dc run --rm --no-deps migrate sh -c 'npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code'`.
+  `dc run --rm --no-deps migrate sh -c '/app/node_modules/.bin/prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code'`.
   Exit 0 is no drift; exit 2 lists every table and column that differ.
-  - A pending migration (`dc run --rm --no-deps migrate npx prisma migrate status`
+  - A pending migration (`dc run --rm --no-deps migrate /app/node_modules/.bin/prisma migrate status`
     lists one): the release step was missed; run it (`dc run --rm migrate`).
   - Drift: the schema was changed by hand, or a database from another
     release was restored. Undo exactly what the diff names. A renamed

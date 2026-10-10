@@ -70,7 +70,7 @@ services:
         APP_RELEASE: ${APP_RELEASE:-}
         APP_REVISION: ${APP_REVISION:-}
     image: dukaanai-api
-    command: ["npx", "prisma", "migrate", "deploy"]
+    command: ["/app/node_modules/.bin/prisma", "migrate", "deploy"]
     environment:
       DATABASE_URL: mysql://${MYSQL_USER:-dukaanai}:${MYSQL_PASSWORD:-dukaanai-local-only}@mysql:3306/${MYSQL_DATABASE:-dukaanai}
     depends_on:
