@@ -90,7 +90,7 @@ export class OutboxReaperService implements OnApplicationBootstrap {
     if (exhausted.length > 0) {
       outcome.failed += await this.prisma.$executeRaw`
         UPDATE OutboxEvent
-        SET status = 'FAILED', error = 'stale claim: no worker finished it', retryCount = retryCount + 1, processedAt = NOW(3)
+        SET status = 'FAILED', error = 'stale claim: no worker finished it', retryCount = retryCount + 1, processedAt = ${now}
         WHERE id IN (${Prisma.join(exhausted)}) AND status IN ('CLAIMED', 'PROCESSING')
       `;
     }

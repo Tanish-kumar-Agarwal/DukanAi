@@ -15,6 +15,12 @@ import { IsNotPlaceholder } from '../validation/env-rules';
  *   `APP_RELEASE` (a commit SHA or an image tag) and `SENTRY_ENVIRONMENT`
  *   (defaults to `NODE_ENV`) label every event; `SENTRY_TRACES_SAMPLE_RATE`
  *   is 0 by default (errors only, no performance traces).
+ * - `BACKUP_STATUS_DIR` (roadmap 9.4) is where the backup jobs record their
+ *   last success (`<kind>.last-success`, written by `scripts/db/lib.sh`);
+ *   every scrape turns the files into `backup_last_success_timestamp_seconds{kind}`
+ *   for the stale-backup alert. Unset, the gauge has no series and the
+ *   "never recorded" alert fires, which is right for a production instance
+ *   without backups wired.
  */
 @Injectable()
 @ConfigDomain({ owner: 'Monitoring', feature: 'Configuration', version: '2.0.0', description: 'MonitoringConfig Domain' })
@@ -58,6 +64,13 @@ export class MonitoringConfig {
   @StringFromEnv()
   @EnvVariable('APP_RELEASE')
   readonly appRelease?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotPlaceholder()
+  @StringFromEnv()
+  @EnvVariable('BACKUP_STATUS_DIR')
+  readonly backupStatusDir?: string;
 
   get errorTrackingEnabled(): boolean {
     return typeof this.sentryDsn === 'string' && this.sentryDsn.trim() !== '';

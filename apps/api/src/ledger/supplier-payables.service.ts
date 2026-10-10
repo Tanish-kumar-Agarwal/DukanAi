@@ -46,8 +46,9 @@ export class SupplierPayablesService {
   /** Goods sent back: the supplier is owed `value` less, never below zero. */
   async reducePayable(tx: Prisma.TransactionClient, shopId: string, supplierId: string | null | undefined, value: Prisma.Decimal): Promise<void> {
     if (!supplierId || value.lessThanOrEqualTo(0)) return;
+    const now = new Date(); // application clock, UTC (roadmap 8.2)
     await tx.$executeRaw`
-      UPDATE Supplier SET pendingPayables = GREATEST(pendingPayables - ${value.toFixed(2)}, 0), updatedAt = NOW(3)
+      UPDATE Supplier SET pendingPayables = GREATEST(pendingPayables - ${value.toFixed(2)}, 0), updatedAt = ${now}
       WHERE id = ${supplierId} AND shopId = ${shopId}
     `;
   }
@@ -71,8 +72,9 @@ export class SupplierPayablesService {
       SELECT id, pendingPayables, isDeleted FROM Supplier WHERE id = ${input.supplierId} AND shopId = ${input.shopId} FOR UPDATE
     `;
     if (rows.length === 0 || Boolean(rows[0].isDeleted)) throw new NotFoundException({ message: 'Supplier not found.', code: 'SUPPLIER_NOT_FOUND' });
+    const now = new Date(); // application clock, UTC (roadmap 8.2)
     const settled = await tx.$executeRaw`
-      UPDATE Supplier SET pendingPayables = pendingPayables - ${amount.toFixed(2)}, updatedAt = NOW(3)
+      UPDATE Supplier SET pendingPayables = pendingPayables - ${amount.toFixed(2)}, updatedAt = ${now}
       WHERE id = ${input.supplierId} AND shopId = ${input.shopId} AND pendingPayables >= ${amount.toFixed(2)}
     `;
     if (settled === 0) {

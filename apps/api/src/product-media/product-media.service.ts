@@ -133,9 +133,12 @@ export class ProductMediaService {
    */
   async getGallery(shopId: string, productId?: string, variantId?: string, query?: ListQueryDto) {
     if (!productId && !variantId) throw new NotFoundException('Must provide productId or variantId');
+    // The gallery of an unknown or foreign product is 404, not an empty page (phase 4 gate).
+    await assertOwned(this.prisma, 'product', productId, shopId);
+    await assertOwned(this.prisma, 'productVariant', variantId, shopId);
     const { skip, take } = pageArgs(query);
     const where = { shopId, productId, variantId };
-    const [items, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
       this.prisma.mediaReference.findMany({
         where,
         include: {
@@ -144,7 +147,8 @@ export class ProductMediaService {
               metadata: true,
               storage: true,
               thumbanils: { take: MAX_LIST_TAKE }, // Note spelling
-              tags: { take: MAX_LIST_TAKE },
+              // Explicit join rows (roadmap 8.1); the response keeps the tag objects.
+              tags: { take: MAX_LIST_TAKE, select: { tag: { select: { id: true, shopId: true, name: true } } } },
             },
           },
         },
@@ -154,7 +158,7 @@ export class ProductMediaService {
       }),
       this.prisma.mediaReference.count({ where }),
     ]);
-    return { items, total, skip, take };
+    return { items: rows.map((row) => ({ ...row, asset: { ...row.asset, tags: row.asset.tags.map((t) => t.tag) } })), total, skip, take };
   }
 
   /** Attaches a named tag (created on first use, unique per shop) to one of the shop's assets. */
@@ -168,7 +172,13 @@ export class ProductMediaService {
       create: { shopId, name: tag },
       select: { id: true, name: true },
     });
-    await this.prisma.mediaAsset.update({ where: { id: assetId }, data: { tags: { connect: { id: mediaTag.id } } }, select: { id: true } });
+    // The join row is tenant-owned (roadmap 8.1): idempotent per (asset, tag).
+    await this.prisma.mediaAssetTag.upsert({
+      where: { assetId_tagId: { assetId, tagId: mediaTag.id } },
+      update: {},
+      create: { assetId, tagId: mediaTag.id, shopId },
+      select: { assetId: true },
+    });
     return { assetId, tag: mediaTag };
   }
 

@@ -76,6 +76,28 @@ describe('Search limits, reconciliation paging, dashboard totals cache (roadmap 
       expect(res.status).toBe(200);
       expect(res.body.map((p: { id: string }) => p.id)).toContain(soap);
     });
+
+    it('a product typed in full is found first when more products than the candidate cap share its words (9.19)', async () => {
+      // 120 live products share three words with the target and the target is
+      // the newest row: the unordered candidate list (id order, cap 100 here)
+      // left it out before ranking, so the POS never offered it.
+      const common = { costPrice: 60, sellingPrice: 100, mrp: 120, wholesalePrice: 90, unit: 'PCS' as const, shopId: A.shopId };
+      await run.system(() =>
+        prisma.product.createMany({
+          data: Array.from({ length: 120 }, (_, i) => ({ ...common, name: `Basmati Rice ${A.suffix} pack ${i}`, sku: `BASMATI-${i}-${A.suffix}` })),
+        }),
+      );
+      const name = `Basmati Rice ${A.suffix} Royal Gold`;
+      const target = await run.system(() => prisma.product.create({ data: { ...common, name, sku: `ROYALGOLD-${A.suffix}` } }));
+
+      const res = await owner.get(`/api/search?q=${encodeURIComponent(name)}&limit=30`);
+      expect(res.status).toBe(200);
+      expect(res.body[0]?.id).toBe(target.id);
+      // A shared word still lists the others (the broad half of the candidates).
+      const broad = await owner.get(`/api/search?q=${encodeURIComponent(`Basmati ${A.suffix}`)}&limit=30`);
+      expect(broad.status).toBe(200);
+      expect(broad.body).toHaveLength(30);
+    });
   });
 
   describe('5.4 reconciliation', () => {

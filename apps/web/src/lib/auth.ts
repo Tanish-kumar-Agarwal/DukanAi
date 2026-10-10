@@ -2,8 +2,9 @@ import type { NextAuthOptions, User, Account, Profile } from 'next-auth';
 import type { JWT } from 'next-auth/jwt';
 import CredentialsProvider from 'next-auth/providers/credentials';
 import GoogleProvider from 'next-auth/providers/google';
-import { clientConfig, serverConfig } from '../config/env';
+import { clientConfig, hasGoogleCredentials, serverConfig } from '../config/env';
 import { decodeJwtExpiryMs } from './jwt';
+import { RefreshHandoff } from './refresh-handoff';
 
 // ---------------------------------------------------------------------------
 // Augmented user payload — what our NestJS backend returns and what we store
@@ -29,15 +30,6 @@ function isDukaanUser(u: User): u is DukaanUser {
 // roadmap 7.3); the public URL is what the browser, and this message, use.
 const API_URL = serverConfig.API_INTERNAL_URL ?? clientConfig.NEXT_PUBLIC_API_URL;
 
-/** Values the committed templates leave behind; a provider registered with them only produces confusing OAuth errors. */
-const PLACEHOLDER = /replace_me|your_|change_?me|placeholder/i;
-
-export function hasGoogleCredentials<T extends { GOOGLE_CLIENT_ID?: string; GOOGLE_CLIENT_SECRET?: string }>(
-  config: T,
-): config is T & { GOOGLE_CLIENT_ID: string; GOOGLE_CLIENT_SECRET: string } {
-  const { GOOGLE_CLIENT_ID: id, GOOGLE_CLIENT_SECRET: secret } = config;
-  return Boolean(id && secret && !PLACEHOLDER.test(id) && !PLACEHOLDER.test(secret));
-}
 
 /** Message surfaced on the login form when the backend cannot be reached. */
 export const API_UNREACHABLE_MESSAGE = `The DukaanAI API at ${clientConfig.NEXT_PUBLIC_API_URL} is unreachable. Make sure the backend server is running, then try again.`;
@@ -76,7 +68,7 @@ async function forwardedClientHeaders(): Promise<Record<string, string>> {
 
 type ProvisionResult =
   | { ok: true; user: DukaanUser }
-  | { ok: false; reason: 'rejected' | 'unreachable' };
+  | { ok: false; reason: 'rejected' | 'unreachable'; status?: number; code?: string };
 
 async function provisionUserFromBackend(
   payload: Record<string, unknown>,
@@ -112,24 +104,31 @@ async function provisionUserFromBackend(
       };
     }
     console.error(`Auth backend rejected sign-in (HTTP ${res.status}):`, data);
-    return { ok: false, reason: 'rejected' };
+    return { ok: false, reason: 'rejected', status: res.status, code: typeof data?.code === 'string' ? data.code : undefined };
   } catch (error) {
     console.error('Auth backend returned an unreadable response:', error);
-    return { ok: false, reason: 'rejected' };
+    return { ok: false, reason: 'rejected', status: res.status };
   }
 }
 
 // ---------------------------------------------------------------------------
 // Refresh-token exchange. `POST /api/auth/refresh { refresh_token }` returns a
 // brand new `{ access_token, refresh_token, user }` pair and revokes the old
-// refresh token. Because the old token is single-use, concurrent JWT callbacks
-// (parallel `getSession()` calls) must share one in-flight exchange per token.
+// refresh token. Because the old token is single-use, every JWT callback that
+// still holds it (parallel `getSession()` calls, and the ones that arrive just
+// after the first exchange with the browser's old cookie) must be answered
+// with the one exchange's successor: see `refreshHandoff` below.
 // ---------------------------------------------------------------------------
 type RefreshOutcome =
   | { ok: true; accessToken: string; refreshToken: string; accessTokenExpires: number }
   | { ok: false };
 
-const inflightRefreshes = new Map<string, Promise<RefreshOutcome>>();
+// A rotated token's successor is handed to every caller that still holds the
+// consumed token for a while (roadmap 9.17): sharing the exchange only while
+// it was in flight signed the account out of everything after one token
+// lifetime, because late callers with the old cookie tripped the API's reuse
+// detection. Two minutes covers the slowest poll that can carry an old cookie.
+const refreshHandoff = new RefreshHandoff<RefreshOutcome>({ graceMs: 2 * 60 * 1000 });
 
 async function exchangeRefreshToken(refreshToken: string): Promise<RefreshOutcome> {
   try {
@@ -156,13 +155,7 @@ async function exchangeRefreshToken(refreshToken: string): Promise<RefreshOutcom
 }
 
 function refreshOnce(refreshToken: string): Promise<RefreshOutcome> {
-  const existing = inflightRefreshes.get(refreshToken);
-  if (existing) return existing;
-  const pending = exchangeRefreshToken(refreshToken).finally(() => {
-    inflightRefreshes.delete(refreshToken);
-  });
-  inflightRefreshes.set(refreshToken, pending);
-  return pending;
+  return refreshHandoff.once(refreshToken, () => exchangeRefreshToken(refreshToken));
 }
 
 async function refreshAccessToken(token: JWT): Promise<JWT> {
@@ -243,13 +236,19 @@ export const authOptions: NextAuthOptions = {
       if (account?.provider === 'credentials') return true;
 
       // Google OAuth — only the Google-issued ID token is sent; the API
-      // verifies it and derives the identity itself. Returning false here
-      // sends the browser back to /login?error=AccessDenied.
+      // verifies it and derives the identity itself. Returning false sends
+      // the browser back to /login?error=AccessDenied, which is right only
+      // for the API's 409 (the address has a password account); any other
+      // failure names its own reason (roadmap 9.19).
       if (account?.provider === 'google') {
-        if (!account.id_token) return false;
+        if (!account.id_token) return '/login?error=OAuthCallback';
         const provisioned = await provisionUserFromBackend({ idToken: account.id_token });
 
-        if (!provisioned.ok) return false;
+        if (!provisioned.ok) {
+          if (provisioned.status === 409) return false;
+          if (provisioned.code === 'GOOGLE_SIGNIN_NOT_CONFIGURED') return '/login?error=GoogleNotConfigured';
+          return provisioned.reason === 'unreachable' ? '/login?error=GoogleApiUnreachable' : '/login?error=OAuthCallback';
+        }
 
         // Mutate the user object so the jwt callback receives our fields.
         // NextAuth v4 copies properties from user → token.user in the jwt

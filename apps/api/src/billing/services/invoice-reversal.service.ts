@@ -15,6 +15,7 @@ import { BillingFeatureConfig } from '../../config/domains/features/billing-feat
 import { BillingCheckpoints, BillingFlow } from '../billing-checkpoints';
 import { withSerializationRetry } from '../../common/db/serialization-retry';
 import { financialYearLabel, isSameBusinessDay } from '../../common/time/business-day';
+import { Clock } from '../../common/time/clock';
 
 type Tx = Prisma.TransactionClient;
 
@@ -58,6 +59,7 @@ export class InvoiceReversalService {
     private readonly ledger: LedgerPostingService,
     private readonly billingConfig: BillingFeatureConfig,
     private readonly checkpoints: BillingCheckpoints,
+    private readonly clock: Clock,
   ) {}
 
   private transaction<T>(flow: BillingFlow, fn: (tx: Tx) => Promise<T>): Promise<T> {
@@ -116,7 +118,7 @@ export class InvoiceReversalService {
         });
         const math = this.returnMath(lines, { invoiceTotal: original.totalAmount, refundedTotal: prior.refunded, completesInvoice });
         const refundTotal = money(math.finalTotal);
-        const now = new Date();
+        const now = this.clock.now();
         const financialYear = financialYearLabel(now, timeZone);
 
         // Shift before customer (canonical lock order). The refund nets against
@@ -174,6 +176,7 @@ export class InvoiceReversalService {
             changeAmount: new Prisma.Decimal(0),
             notes: [dto.reason, dto.notes].filter(Boolean).join(' - ') || null,
             shiftId,
+            createdAt: now,
             items: {
               create: math.lines.map((line) => {
                 const src = lines.find((l) => l.item.id === line.lineRef)!.item;
@@ -321,11 +324,11 @@ export class InvoiceReversalService {
         if (hasReturns) {
           throw new ConflictException({ message: 'Invoice already has returns; cancel is not allowed.', code: 'INVOICE_NOT_CANCELLABLE' });
         }
-        if (!isSameBusinessDay(original.createdAt, new Date(), timeZone)) {
+        const now = this.clock.now();
+        if (!isSameBusinessDay(original.createdAt, now, timeZone)) {
           throw new ConflictException({ message: 'Only invoices from the current business day can be cancelled; use a return instead.', code: 'INVOICE_NOT_CANCELLABLE' });
         }
 
-        const now = new Date();
         const lines: ReversalLine[] = this.sortForLocking(original.items.map((item) => ({ item, quantity: new Decimal(item.quantity.toString()) })));
         // A cancellation reverses the whole sale: the settlement makes the math
         // land exactly on the stored total, round-off included.
@@ -358,7 +361,9 @@ export class InvoiceReversalService {
         await this.checkpoints.reach('BEFORE_INVOICE', 'CANCEL');
         const cancelled = await tx.invoice.update({
           where: { id: original.id },
-          data: { status: 'CANCELLED', cancelReason: dto.reason, cancelledAt: now, cancelledById: actor.userId },
+          // cancelledShiftId records which drawer refunds it (roadmap 9.5): the
+          // reconciliation rebuilds every shift's cash from its documents.
+          data: { status: 'CANCELLED', cancelReason: dto.reason, cancelledAt: now, cancelledById: actor.userId, cancelledShiftId: shiftId },
           include: INVOICE_INCLUDE,
         });
 

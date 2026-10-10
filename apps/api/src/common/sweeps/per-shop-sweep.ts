@@ -10,8 +10,8 @@ export interface SweepSummary {
   failed: number;
 }
 
-/** Shops a global sweep visits: everything that can still trade or be reopened. */
-const SWEPT_STATUSES: ShopStatus[] = [ShopStatus.ACTIVE, ShopStatus.SUSPENDED, ShopStatus.LOCKED];
+/** Shops a global sweep visits: everything that can still trade or be reopened (also `reconcile --all-shops`). */
+export const SWEPT_SHOP_STATUSES: ShopStatus[] = [ShopStatus.ACTIVE, ShopStatus.SUSPENDED, ShopStatus.LOCKED];
 
 /** Shops are visited in pages so a sweep never loads every tenant into memory at once. */
 export const SWEEP_PAGE_SIZE = 200;
@@ -35,7 +35,7 @@ export async function sweepEveryShop(
     // Awaited inside the scope: a bare PrismaPromise is lazy and would run outside the bypass.
     const page = await tenantContext.runAsSuperAdmin(async () =>
       await prisma.shop.findMany({
-        where: { status: { in: SWEPT_STATUSES } },
+        where: { status: { in: SWEPT_SHOP_STATUSES } },
         select: { id: true },
         orderBy: { id: 'asc' },
         take: SWEEP_PAGE_SIZE,

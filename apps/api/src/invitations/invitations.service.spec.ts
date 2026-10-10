@@ -1,7 +1,8 @@
-import { BadRequestException, ConflictException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, ConflictException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { EmailService } from '../common/email/email.service';
 import { AppConfig } from '../config/domains/app.config';
+import { SecurityConfig } from '../config/domains/security.config';
 import { PrismaService } from '../prisma/prisma.service';
 import { InvitationsService } from './invitations.service';
 
@@ -14,12 +15,12 @@ describe('InvitationsService', () => {
       invitation: { create: jest.fn().mockResolvedValue({ id: 'inv-1', expiresAt: new Date('2026-10-01T00:00:00Z') }) },
     };
     const prisma = {
-      invitation: { count: jest.fn().mockResolvedValue(0), findFirst: jest.fn().mockResolvedValue(null), findUnique: jest.fn(), delete: jest.fn() },
+      invitation: { count: jest.fn().mockResolvedValue(0), findFirst: jest.fn().mockResolvedValue(null), findUnique: jest.fn(), delete: jest.fn().mockResolvedValue({}) },
       user: { findUnique: jest.fn().mockResolvedValue(null) },
       $transaction: jest.fn().mockImplementation((fn: (t: unknown) => unknown) => fn(tx)),
     };
     const email = { isConfigured: configured, send: jest.fn().mockResolvedValue(undefined) };
-    const service = new InvitationsService(prisma as unknown as PrismaService, email as unknown as EmailService, appConfig);
+    const service = new InvitationsService(prisma as unknown as PrismaService, email as unknown as EmailService, appConfig, Object.assign(new SecurityConfig(), { bcryptRounds: 4 }));
     return { service, prisma, tx, email };
   }
   const owner = { id: 'owner-1', role: Role.OWNER };
@@ -45,6 +46,18 @@ describe('InvitationsService', () => {
     expect(message.text).not.toContain(created.token);
     expect(JSON.stringify(result)).not.toMatch(/[0-9a-f]{64}/);
     expect(result).toMatchObject({ invitationId: 'inv-1', email: 'new.cashier@example.com', role: Role.CASHIER });
+  });
+
+  it('a mail the relay refuses removes the invitation and answers 502 INVITATION_EMAIL_FAILED, so a retry is not blocked', async () => {
+    const { service, prisma, email } = build();
+    email.send.mockRejectedValueOnce(new Error('550 5.7.1 mailbox unavailable'));
+
+    const failure = await service.generate('shop-1', owner, { email: 'typo@example.con', role: Role.CASHIER }).catch((err: unknown) => err);
+
+    expect(failure).toBeInstanceOf(BadGatewayException);
+    expect((failure as BadGatewayException).getResponse()).toMatchObject({ code: 'INVITATION_EMAIL_FAILED' });
+    expect(prisma.invitation.delete).toHaveBeenCalledWith({ where: { id: 'inv-1' } });
+    expect(email.send.mock.calls[0][0]).toMatchObject({ purpose: 'invitation' });
   });
 
   it.each([

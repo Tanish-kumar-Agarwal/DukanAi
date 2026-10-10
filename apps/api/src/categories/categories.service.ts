@@ -142,11 +142,12 @@ export class CategoriesService {
     const depthDelta = newDepth - oldDepth;
     if (oldPrefix === newPrefix && depthDelta === 0) return 0;
     const pattern = `${oldPrefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    const now = new Date(); // application clock, UTC (roadmap 8.2)
     return tx.$executeRaw`
       UPDATE \`Category\`
       SET \`path\` = CONCAT(${newPrefix}, SUBSTRING(\`path\`, CHAR_LENGTH(${oldPrefix}) + 1)),
           \`depth\` = \`depth\` + ${depthDelta},
-          \`updatedAt\` = NOW(3)
+          \`updatedAt\` = ${now}
       WHERE \`shopId\` = ${shopId}
         AND \`isDeleted\` = 0
         AND \`path\` LIKE ${pattern}

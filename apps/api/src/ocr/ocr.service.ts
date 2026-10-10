@@ -35,6 +35,8 @@ export interface OcrScanResult {
 
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 const MAX_RETRIES = 3;
+/** A retry that would start with less of the budget left than this is not made. */
+const MIN_RETRY_BUDGET_MS = 2000;
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 const MAX_KEYWORDS = 4;
 const CANDIDATES_PER_ITEM = 5;
@@ -99,7 +101,10 @@ Extract every line item. Return ONLY a JSON array of objects with exactly these 
 Example: [{"rawName": "Maggi Noodles", "qty": 2, "price": 14.50}]`;
   }
 
-  /** One Gemini call with retries on transient failures; returns the normalised line items. */
+  /**
+   * One Gemini call with retries on transient failures, all inside
+   * `OCR_TOTAL_TIMEOUT_MS`; returns the normalised line items.
+   */
   private async parseWithGemini(image: Buffer, mimeType: string, documentType: string): Promise<OcrLineItem[]> {
     const payload = JSON.stringify({
       contents: [{ parts: [{ text: this.buildPrompt(documentType) }, { inlineData: { mimeType, data: image.toString('base64') } }] }],
@@ -107,9 +112,10 @@ Example: [{"rawName": "Maggi Noodles", "qty": 2, "price": 14.50}]`;
     });
     const url = `${GEMINI_BASE_URL}/${encodeURIComponent(this.ocrConfig.model)}:generateContent`;
 
+    const deadline = Date.now() + this.ocrConfig.totalTimeoutMs;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.ocrConfig.timeoutMs);
+      const timeout = setTimeout(() => controller.abort(), Math.max(1, Math.min(this.ocrConfig.timeoutMs, deadline - Date.now())));
       let response: Response;
       try {
         // The key travels in a header (never in the URL, where proxies and logs keep it).
@@ -122,21 +128,19 @@ Example: [{"rawName": "Maggi Noodles", "qty": 2, "price": 14.50}]`;
       } catch (error) {
         clearTimeout(timeout);
         const timedOut = (error as { name?: string })?.name === 'AbortError';
-        if (attempt < MAX_RETRIES) {
+        if (attempt < MAX_RETRIES && (await this.backoffWithin(attempt, deadline))) {
           this.logger.warn(`Gemini ${timedOut ? 'timed out' : 'unreachable'}; retrying (attempt ${attempt}/${MAX_RETRIES})`);
-          await this.backoff(attempt);
           continue;
         }
-        this.logger.error(`Gemini ${timedOut ? 'timed out' : 'unreachable'} after ${MAX_RETRIES} attempts`);
+        this.logger.error(`Gemini ${timedOut ? 'timed out' : 'unreachable'} after ${attempt} attempt(s)`);
         throw new BadGatewayException({ message: 'The OCR model could not be reached.', code: timedOut ? 'OCR_TIMEOUT' : 'OCR_UNREACHABLE' });
       }
       clearTimeout(timeout);
 
       if (!response.ok) {
         const detail = (await response.text().catch(() => '')).slice(0, 500);
-        if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_RETRIES) {
+        if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_RETRIES && (await this.backoffWithin(attempt, deadline))) {
           this.logger.warn(`Gemini answered ${response.status}; retrying (attempt ${attempt}/${MAX_RETRIES})`);
-          await this.backoff(attempt);
           continue;
         }
         this.logger.error(`Gemini answered ${response.status}: ${detail}`);
@@ -150,9 +154,12 @@ Example: [{"rawName": "Maggi Noodles", "qty": 2, "price": 14.50}]`;
     throw new BadGatewayException({ message: 'The OCR model could not be reached.', code: 'OCR_UNREACHABLE' });
   }
 
-  private backoff(attempt: number): Promise<void> {
+  /** Waits before the next attempt and says whether one still fits the budget (no wait when it does not). */
+  private async backoffWithin(attempt: number, deadline: number): Promise<boolean> {
     const delay = Math.pow(2, attempt) * (this.ocrConfig.backoffMs / 2);
-    return new Promise((resolve) => setTimeout(resolve, delay));
+    if (deadline - Date.now() - delay < MIN_RETRY_BUDGET_MS) return false;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    return true;
   }
 
   /** Strict parse of the model's answer: a JSON array of items, at most `maxItems`, each with a usable name. */

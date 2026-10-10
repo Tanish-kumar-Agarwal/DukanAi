@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import { RootLayout } from '@/components/layout/RootLayout';
 import { ToastProvider } from '@/components/ui/Toast';
 import Providers from '@/components/Providers';
+import { API_URL_META_NAME, GOOGLE_SIGNIN_META_NAME, googleSignInEnabled, publicApiUrl } from '@/config/env';
 import './globals.css';
 
 /**
@@ -18,10 +19,20 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
-export const metadata: Metadata = {
-  title: 'DukaanAI - AI-Powered Retail OS',
-  description: 'AI-powered retail operating system for small businesses',
-};
+/**
+ * Built per request (the layout is dynamic): `other` renders the
+ * `<meta name="dukaanai-api-url">` the browser reads for the API URL, so the
+ * same image serves staging and production with `API_PUBLIC_URL` set at
+ * runtime (roadmap 9.9), and `<meta name="dukaanai-google-signin">`, whether
+ * this server offers Google sign-in (roadmap 9.19).
+ */
+export function generateMetadata(): Metadata {
+  return {
+    title: 'DukaanAI - AI-Powered Retail OS',
+    description: 'AI-powered retail operating system for small businesses',
+    other: { [API_URL_META_NAME]: publicApiUrl(), [GOOGLE_SIGNIN_META_NAME]: googleSignInEnabled() ? 'on' : 'off' },
+  };
+}
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   return (

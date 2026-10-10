@@ -1,4 +1,5 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -18,6 +19,7 @@ import { UserMapper, safeUserSelect } from '../users/user.mapper';
 import { ADMIN_ROLES, outranks } from '../auth/role-sets';
 import { EmailService } from '../common/email/email.service';
 import { AppConfig } from '../config/domains/app.config';
+import { SecurityConfig } from '../config/domains/security.config';
 import { isProductionEnv } from '../config/validation/env-rules';
 
 /** Who is acting: the caller's id and role, as JwtStrategy put them on the request. */
@@ -44,6 +46,7 @@ export class InvitationsService {
     private readonly prisma: PrismaService,
     private readonly email: EmailService,
     private readonly appConfig: AppConfig,
+    private readonly securityConfig: SecurityConfig,
   ) {}
 
   async generate(shopId: string, inviter: Actor, data: CreateInvitationDto) {
@@ -91,11 +94,25 @@ export class InvitationsService {
       return [shopRow, row] as const;
     });
 
-    await this.email.send({
-      to: email,
-      subject: `You're invited to ${shop.name} on DukaanAI`,
-      text: this.invitationText(shop.name, data.role, rawToken, expiresAt),
-    });
+    try {
+      await this.email.send({
+        purpose: 'invitation',
+        to: email,
+        subject: `You're invited to ${shop.name} on DukaanAI`,
+        text: this.invitationText(shop.name, data.role, rawToken, expiresAt),
+      });
+    } catch {
+      // The token exists only in the message that was not delivered: the row
+      // is unusable, and left in place it would refuse every new attempt for
+      // this address until it expired (roadmap 9.19).
+      await this.prisma.invitation.delete({ where: { id: invitation.id } }).catch((err: unknown) => {
+        this.logger.error(`Invitation ${invitation.id} could not be removed after the failed send: ${err instanceof Error ? err.message : String(err)}`);
+      });
+      throw new BadGatewayException({
+        message: `The invitation email to ${email} could not be delivered, so no invitation was created. Check the address and try again.`,
+        code: 'INVITATION_EMAIL_FAILED',
+      });
+    }
     this.logger.log(`Invitation ${invitation.id} for ${data.role} sent to ${email} by ${inviter.id}`);
 
     return { message: 'Invitation sent', invitationId: invitation.id, email, role: data.role, expiresAt: invitation.expiresAt };
@@ -126,7 +143,8 @@ export class InvitationsService {
       throw new BadRequestException('This invitation has expired');
     }
 
-    const salt = await bcrypt.genSalt();
+    // The same work factor as registration and reset (ASVS 2.4.x), never bcrypt's default.
+    const salt = await bcrypt.genSalt(this.securityConfig.bcryptRounds);
     const hashedPassword = await bcrypt.hash(data.password, salt);
     const userId = crypto.randomUUID();
 

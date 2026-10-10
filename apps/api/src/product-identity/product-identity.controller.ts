@@ -9,6 +9,7 @@ import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
 import { AssignBarcodeDto } from './dto/assign-barcode.dto';
 import { RenderBarcodeQueryDto } from './dto/render-barcode.dto';
+import { SearchIdentityQueryDto } from './dto/search-identity-query.dto';
 
 /** Barcodes and SKU identities (roadmap 4.1): shop and user from the verified session. */
 @Controller('product-identity')
@@ -32,8 +33,8 @@ export class ProductIdentityController {
   }
 
   @Get('barcode/search')
-  async searchBarcode(@Query('q') query: string, @CurrentShop() shopId: string) {
-    return this.productIdentityService.searchIdentity(shopId, query);
+  async searchBarcode(@Query() query: SearchIdentityQueryDto, @CurrentShop() shopId: string) {
+    return this.productIdentityService.searchIdentity(shopId, query.q);
   }
 
   /** Change history of a barcode; a SKU (variant identity) has no barcode history and answers an empty list. */

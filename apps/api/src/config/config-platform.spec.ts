@@ -16,7 +16,6 @@ describe('Configuration Platform Integration', () => {
     // 1. Environment Variable Setup
     process.env = {
       ...originalEnv,
-      SALES_ENABLE_CREDIT_LIMITS: 'false',
       SALES_DEFAULT_CREDIT_LIMIT: '50000',
       SECURITY_MAX_LOGIN_ATTEMPTS: '7',
       RATE_LIMIT_SHORT_TTL_MS: '5000',
@@ -63,9 +62,8 @@ describe('Configuration Platform Integration', () => {
     
     // 4. Runtime Behaviour
     expect(salesConfig).toBeDefined();
-    expect(salesConfig.defaultPaginationLimit).toBe(50); // default
+    expect(salesConfig.recentEventsLimit).toBe(100); // default
     expect(salesConfig.defaultCreditLimit).toBe(50000); // overriden by env
-    expect(salesConfig.creditHoldThreshold).toBe(10000); // default fallback
   });
 
   it('should seamlessly inject fully hydrated SecurityConfig to consumers', () => {

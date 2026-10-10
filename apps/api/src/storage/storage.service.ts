@@ -51,7 +51,7 @@ export class StorageService {
   ): Promise<void> {
     if (!(await fs.pathExists(filePath))) {
       await fs.ensureDir(path.dirname(filePath));
-      await fs.writeJson(filePath, defaultData, { spaces: 2 });
+      await this.writeJsonAtomic(filePath, defaultData);
     }
   }
 
@@ -100,6 +100,45 @@ export class StorageService {
           details: { file: path.basename(target) },
         });
       }
+      // `wx` created the file before the write failed (a full volume: roadmap
+      // 9.18). A truncated file left behind would answer every retry 409
+      // STORAGE_EVIDENCE_EXISTS for good; it is ours, so it goes.
+      await fs.remove(target).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /**
+   * Every file of one request, or none: the targets were checked absent
+   * before the first byte, so a failure part-way (a full volume) removes the
+   * files this request already wrote and the same request can be repeated.
+   */
+  private async writeAllEvidence(writes: Array<[string, Buffer | string]>): Promise<void> {
+    const written: string[] = [];
+    try {
+      for (const [target, data] of writes) {
+        await fs.ensureDir(path.dirname(target));
+        await this.writeEvidence(target, data);
+        written.push(target);
+      }
+    } catch (error) {
+      await Promise.all(written.map((target) => fs.remove(target).catch(() => undefined)));
+      throw error;
+    }
+  }
+
+  /**
+   * JSON indexes are replaced whole through a temporary file and a rename,
+   * so a failed write (a full volume) leaves the previous index intact
+   * instead of a truncated file that the next reader takes for empty.
+   */
+  private async writeJsonAtomic(target: string, data: unknown): Promise<void> {
+    const temp = `${target}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    try {
+      await fs.writeFile(temp, JSON.stringify(data, null, 2));
+      await fs.rename(temp, target);
+    } catch (error) {
+      await fs.remove(temp).catch(() => undefined);
       throw error;
     }
   }
@@ -111,15 +150,21 @@ export class StorageService {
     const shopId = this.tenantContext.getShopId();
     const fileName = `${level}_${new Date().toISOString().split('T')[0]}.log`;
     const logFile = this.storagePathBuilder.getLogFile(shopId, fileName);
-    
-    await fs.ensureDir(path.dirname(logFile));
+    await fs.ensureDir(path.dirname(logFile)).catch(() => undefined);
 
     const timestamp = new Date().toISOString();
     const actorInfo = ` actor=${this.getActor()}`;
     const logEntry = `[${timestamp}]${actorInfo} ${action}\n`;
-    
-    await fs.appendFile(logFile, logEntry);
+
     this.logger[level === 'info' ? 'log' : 'error'](`[Shop:${shopId}] ${action}${actorInfo}`);
+    // The shop's action log is a convenience copy of the line above (which
+    // reaches the log store): a full volume must not turn a document that
+    // was stored into an error (roadmap 9.18).
+    try {
+      await fs.appendFile(logFile, logEntry);
+    } catch (error) {
+      this.logger.warn(`[Shop:${shopId}] storage action log not written: ${(error as Error).message}`);
+    }
   }
 
   async createCustomerFolder(
@@ -133,15 +178,11 @@ export class StorageService {
 
     const metaPath = path.join(customerPath, 'customer.meta.json');
     if (!(await fs.pathExists(metaPath))) {
-      await fs.writeJson(
-        metaPath,
-        {
-          customerId,
-          createdAt: new Date().toISOString().split('T')[0],
-          totalInvoices: 0,
-        },
-        { spaces: 2 },
-      );
+      await this.writeJsonAtomic(metaPath, {
+        customerId,
+        createdAt: new Date().toISOString().split('T')[0],
+        totalInvoices: 0,
+      });
     }
 
     await this.logAction(`Created customer folder customer=${customerId}`, 'info');
@@ -174,7 +215,7 @@ export class StorageService {
       });
     }
 
-    await fs.writeJson(indexPath, index, { spaces: 2 });
+    await this.writeJsonAtomic(indexPath, index);
     await this.logAction(`Updated customer index customer=${customerId}`, 'info');
   }
 
@@ -196,12 +237,11 @@ export class StorageService {
     const jsonPath = path.join(invoiceDir, `${baseName}.json`);
     const previewPath = path.join(invoiceDir, `${baseName}-preview.jpg`);
     await this.assertNoneExist([pdfPath, jsonPath, ...(thumbnailFile ? [previewPath] : [])]);
-    await this.writeEvidence(pdfPath, pdfFile.buffer);
-    await this.writeEvidence(jsonPath, JSON.stringify(jsonContent, null, 2));
-
-    if (thumbnailFile) {
-      await this.writeEvidence(previewPath, thumbnailFile.buffer);
-    }
+    await this.writeAllEvidence([
+      [pdfPath, pdfFile.buffer],
+      [jsonPath, JSON.stringify(jsonContent, null, 2)],
+      ...(thumbnailFile ? [[previewPath, thumbnailFile.buffer] as [string, Buffer]] : []),
+    ]);
 
     const registryPath = this.storagePathBuilder.getSystemFile(shopId, 'invoice_registry.json');
     await fs.ensureDir(path.dirname(registryPath));
@@ -214,7 +254,7 @@ export class StorageService {
       timestamp: new Date().toISOString(),
     });
     
-    await fs.writeJson(registryPath, registry, { spaces: 2 });
+    await this.writeJsonAtomic(registryPath, registry);
     await this.logAction(`Stored invoice invoice=${invoiceId} customer=${customerId}`, 'info');
   }
 
@@ -246,10 +286,7 @@ export class StorageService {
     if (ocrText) writes.push([path.join(ocrDir, `${baseName}.txt`), ocrText], [path.join(billsDir, `${baseName}.txt`), ocrText]);
 
     await this.assertNoneExist(writes.map(([target]) => target));
-    for (const [target, data] of writes) {
-      await fs.ensureDir(path.dirname(target));
-      await this.writeEvidence(target, data);
-    }
+    await this.writeAllEvidence(writes);
 
     await this.logAction(`Stored captured bill bill=${billId} customer=${customerId}`, 'info');
   }
@@ -268,7 +305,7 @@ export class StorageService {
     const paymentId = crypto.randomBytes(8).toString('hex');
     const fileName = `PAYMENT-${dateStr}-${paymentId}.json`;
 
-    await fs.writeJson(path.join(paymentsDir, fileName), paymentData, { spaces: 2 });
+    await this.writeAllEvidence([[path.join(paymentsDir, fileName), JSON.stringify(paymentData, null, 2)]]);
     await this.logAction(`Stored payment customer=${customerId} file=${fileName}`, 'info');
   }
 
@@ -351,12 +388,14 @@ export class StorageService {
           .catch(reject);
       });
 
-      output.on('error', reject);
-      archive.on('error', (error: Error) => {
-        this.logAction(`Backup error type=${type}: ${error.message}`, 'error')
-          .then(() => reject(error))
-          .catch(reject);
-      });
+      // A failed archive (a full volume) leaves no partial zip that looks like a backup.
+      const fail = (error: Error) => {
+        output.destroy();
+        void fs.remove(backupPath).catch(() => undefined);
+        void this.logAction(`Backup error type=${type}: ${error.message}`, 'error').finally(() => reject(error));
+      };
+      output.on('error', fail);
+      archive.on('error', fail);
 
       archive.pipe(output);
 

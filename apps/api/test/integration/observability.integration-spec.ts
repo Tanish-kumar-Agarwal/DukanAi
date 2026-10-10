@@ -10,6 +10,9 @@ import { randomUUID } from 'crypto';
 import request from 'supertest';
 import { BillingService } from '../../src/billing/billing.service';
 import { httpMetricsMiddleware } from '../../src/common/observability/http-metrics.middleware';
+import { promises as fs } from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { ledgerPostingFailuresTotal } from '../../src/common/observability/metrics';
 import { MonitoringConfig } from '../../src/config/domains/monitoring.config';
 import { LedgerPostingService } from '../../src/ledger/ledger-posting.service';
@@ -130,6 +133,22 @@ describe('observability: metrics endpoint and application metrics (roadmap 7.6)'
     const before = (await ledgerPostingFailuresTotal.get()).values.find((v) => v.labels.source === 'SALE')?.value ?? 0;
     await expect(tenantRunner(app).system(() => ledger.post(prisma, unbalanced))).rejects.toThrow(/Unbalanced ledger posting/);
     expect(sample(await scrape(), 'ledger_posting_failures_total', { source: 'SALE' })).toBe(before + 1);
+  });
+
+  it('turns the backup status files into backup_last_success_timestamp_seconds{kind} on every scrape (roadmap 9.4)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'backup-status-'));
+    try {
+      await fs.writeFile(path.join(dir, 'dump.last-success'), '2026-10-05T02:00:07Z\n/backups/x.sql.gz\n');
+      Object.assign(monitoring, { backupStatusDir: dir });
+      expect(sample(await scrape(), 'backup_last_success_timestamp_seconds', { kind: 'dump' })).toBe(Date.parse('2026-10-05T02:00:07Z') / 1000);
+      await fs.writeFile(path.join(dir, 'offsite.last-success'), '2026-10-05T03:10:00Z\n');
+      const text = await scrape();
+      expect(sample(text, 'backup_last_success_timestamp_seconds', { kind: 'offsite' })).toBe(Date.parse('2026-10-05T03:10:00Z') / 1000);
+      expect(sample(text, 'backup_last_success_timestamp_seconds', { kind: 'dump' })).toBe(Date.parse('2026-10-05T02:00:07Z') / 1000);
+    } finally {
+      Object.assign(monitoring, { backupStatusDir: undefined });
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('requires the bearer token once METRICS_TOKEN is set and answers 404 when metrics are disabled', async () => {

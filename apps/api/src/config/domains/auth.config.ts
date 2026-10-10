@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigDomain, EnvVariable } from '../registry/registry.decorators';
-import { IsBoolean } from 'class-validator';
+import { IsBoolean, IsOptional, IsString } from 'class-validator';
+import { isPlaceholderValue } from '../validation/env-rules';
 
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);
 const FALSY = new Set(['false', '0', 'no', 'off', '']);
@@ -47,6 +48,16 @@ export function assertAuthBypassPermitted(authDisabled: boolean | undefined, nod
 }
 
 /**
+ * `GOOGLE_CLIENT_ID` as the API uses it: blank or a template placeholder is
+ * "Google sign-in off", the same rule the web applies before it registers
+ * the provider (roadmap 9.19).
+ */
+export function parseGoogleClientId(raw: string | undefined | null): string | undefined {
+  const value = raw?.trim();
+  return value && !isPlaceholderValue(value) ? value : undefined;
+}
+
+/**
  * Authentication configuration domain.
  *
  * Owns the reversible AUTH_DISABLED switch consumed by AuthBypassService and
@@ -60,4 +71,14 @@ export class AuthConfig {
   @IsBoolean()
   @EnvVariable('AUTH_DISABLED')
   readonly authDisabled: boolean = false;
+
+  /**
+   * The OAuth web client Google issues id tokens for: a token is accepted only
+   * when its `aud` is this id. The web's NextAuth provider uses the same value.
+   * Unset: Google sign-in answers 503 GOOGLE_SIGNIN_NOT_CONFIGURED.
+   */
+  @IsOptional()
+  @IsString()
+  @EnvVariable('GOOGLE_CLIENT_ID')
+  readonly googleClientId?: string;
 }

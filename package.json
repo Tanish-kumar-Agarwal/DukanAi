@@ -1,6 +1,6 @@
 {
   "name": "dukaanai",
-  "version": "0.1.0",
+  "version": "1.0.0-rc3",
   "description": "DukaanAI - AI-Powered Retail Operating System",
   "private": true,
   "engines": {
@@ -19,7 +19,7 @@
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "type-check": "turbo run type-check",
     "test": "turbo run test",
-    "clean": "turbo clean"
+    "clean": "turbo run clean"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -24,8 +24,8 @@ function ResetPasswordForm() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (password.length < 8 || password.length > 72) {
-      setError('The password must be between 8 and 72 characters.');
+    if (password.length < 12 || password.length > 72) {
+      setError('The password must be between 12 and 72 characters.');
       return;
     }
     if (password !== confirm) {
@@ -97,14 +97,14 @@ function ResetPasswordForm() {
               <label htmlFor="reset-password" className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">New password</label>
               <div className="relative">
                 <Lock size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input id="reset-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Min. 8 characters" autoComplete="new-password" minLength={8} maxLength={72} required disabled={!tokenValid} className={inputClass} />
+                <input id="reset-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Min. 12 characters" autoComplete="new-password" minLength={12} maxLength={72} required disabled={!tokenValid} className={inputClass} />
               </div>
             </div>
             <div>
               <label htmlFor="reset-confirm" className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">Confirm password</label>
               <div className="relative">
                 <Lock size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input id="reset-confirm" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="Repeat the password" autoComplete="new-password" minLength={8} maxLength={72} required disabled={!tokenValid} className={inputClass} />
+                <input id="reset-confirm" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="Repeat the password" autoComplete="new-password" minLength={12} maxLength={72} required disabled={!tokenValid} className={inputClass} />
               </div>
             </div>
             <button type="submit" disabled={loading || !tokenValid} className="w-full py-3 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-xl text-sm font-bold shadow-lg shadow-purple-500/30 transition-all disabled:opacity-60">

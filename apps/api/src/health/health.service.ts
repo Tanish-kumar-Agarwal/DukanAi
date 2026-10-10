@@ -3,6 +3,7 @@ import type Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
 import { REDIS_CLIENT } from '../common/redis/redis.module';
 import { GracefulShutdownService } from '../common/lifecycle/graceful-shutdown.service';
+import { MonitoringConfig } from '../config/domains/monitoring.config';
 
 export type CheckStatus = 'up' | 'down';
 
@@ -10,6 +11,8 @@ export interface LivenessReport {
   status: 'ok';
   timestamp: string;
   uptimeSeconds: number;
+  /** The release this instance runs (`APP_RELEASE`, baked into release images; roadmap 9.21), null when unset. */
+  release: string | null;
 }
 
 export interface ReadinessReport {
@@ -37,10 +40,11 @@ export class HealthService {
     private readonly prisma: PrismaService,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly shutdown: GracefulShutdownService,
+    private readonly monitoring: MonitoringConfig,
   ) {}
 
   liveness(): LivenessReport {
-    return { status: 'ok', timestamp: new Date().toISOString(), uptimeSeconds: Math.floor(process.uptime()) };
+    return { status: 'ok', timestamp: new Date().toISOString(), uptimeSeconds: Math.floor(process.uptime()), release: this.monitoring.appRelease || null };
   }
 
   async readiness(): Promise<ReadinessReport> {

@@ -6,7 +6,7 @@ import { SkeletonBox } from '@/components/ui/Skeleton';
 import { productsApi, productToSearchResult, searchApi } from '@/lib/api-client';
 import { useDebounce } from '@/hooks/useDebounce';
 import type { SearchResult } from '@/types';
-import { extractApiError } from './api-errors';
+import { backgroundRetryDelayMs, extractApiError, isRetryableFailure } from './api-errors';
 import { money, qty } from './format';
 
 const GRID_LIMIT = 60;
@@ -44,24 +44,50 @@ export function ProductSearch({ query, onQueryChange, onAdd, inputRef, cartQuant
 
   const debounced = useDebounce(query.trim(), 250);
 
-  const loadInitial = useCallback(async () => {
-    setInitialLoading(true);
-    setInitialError(null);
+  // A load or search that failed retryably (the API restarting, the database
+  // away) runs again on its own with a backoff while its error stays on
+  // screen (roadmap 9.18: a POS opened during an API restart stayed on the
+  // error); Retry, or typing, starts over at once.
+  const initialAuto = useRef<{ timer: number | null; attempt: number }>({ timer: null, attempt: 0 });
+  const loadInitialRef = useRef<(background?: boolean) => Promise<void>>(async () => undefined);
+  const loadInitial = useCallback(async (background = false) => {
+    const auto = initialAuto.current;
+    if (auto.timer !== null) window.clearTimeout(auto.timer);
+    auto.timer = null;
+    if (!background) {
+      auto.attempt = 0;
+      setInitialLoading(true);
+      setInitialError(null);
+    }
     try {
       const products = await productsApi.list({ limit: GRID_LIMIT });
+      auto.attempt = 0;
+      setInitialError(null);
       setInitial(products.map(productToSearchResult));
     } catch (err) {
-      setInitialError(extractApiError(err, 'Loading products (GET /products)').message);
+      const info = extractApiError(err, 'Loading products (GET /products)');
+      setInitialError(info.message);
+      if (isRetryableFailure(info)) auto.timer = window.setTimeout(() => void loadInitialRef.current(true), backgroundRetryDelayMs(auto.attempt++));
     } finally {
       setInitialLoading(false);
     }
   }, []);
+  loadInitialRef.current = loadInitial;
 
   useEffect(() => {
     void loadInitial();
   }, [loadInitial, refreshToken]);
 
+  useEffect(() => () => {
+    if (initialAuto.current.timer !== null) window.clearTimeout(initialAuto.current.timer);
+  }, []);
+
+  const searchAuto = useRef<{ timer: number | null; attempt: number; due: boolean }>({ timer: null, attempt: 0, due: false });
   useEffect(() => {
+    const auto = searchAuto.current;
+    const background = auto.due;
+    auto.due = false;
+    if (!background) auto.attempt = 0;
     if (!debounced) {
       setResults(null);
       setSearching(false);
@@ -69,21 +95,38 @@ export function ProductSearch({ query, onQueryChange, onAdd, inputRef, cartQuant
       return undefined;
     }
     const controller = new AbortController();
-    setSearching(true);
-    setSearchError(null);
+    if (!background) {
+      setSearching(true);
+      setSearchError(null);
+    }
     searchApi
       .search(debounced, { limit: SEARCH_LIMIT, signal: controller.signal })
       .then((rows) => {
-        if (!controller.signal.aborted) setResults(rows);
+        if (controller.signal.aborted) return;
+        auto.attempt = 0;
+        setSearchError(null);
+        setResults(rows);
       })
       .catch((err) => {
         const info = extractApiError(err, 'Searching products (GET /search)');
-        if (!info.isCanceled && !controller.signal.aborted) setSearchError(info.message);
+        if (info.isCanceled || controller.signal.aborted) return;
+        setSearchError(info.message);
+        if (isRetryableFailure(info)) {
+          auto.timer = window.setTimeout(() => {
+            auto.timer = null;
+            auto.due = true;
+            setSearchRetry((n) => n + 1);
+          }, backgroundRetryDelayMs(auto.attempt++));
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted) setSearching(false);
       });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      if (auto.timer !== null) window.clearTimeout(auto.timer);
+      auto.timer = null;
+    };
   }, [debounced, searchRetry]);
 
   const isSearchMode = query.trim().length > 0;

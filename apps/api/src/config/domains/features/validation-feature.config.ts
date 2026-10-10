@@ -15,5 +15,5 @@ export class ValidationFeatureConfig {
   @Min(1)
   @IntegerFromEnv()
   @EnvVariable('VALIDATION_DUPLICATE_SCAN_LIMIT')
-  duplicateScanLimit: number = 200;
+  duplicateScanLimit: number = 10;
 }

@@ -49,6 +49,8 @@ test.describe('security headers (6.4)', () => {
       expect(csp).toMatch(/script-src 'self' 'nonce-[A-Za-z0-9+/=]+' 'strict-dynamic'/);
       expect(csp).not.toMatch(/script-src[^;]*'unsafe-inline'/);
       expect(csp).toContain(`connect-src 'self' ${new URL(API_URL).origin}`);
+      // The API URL the browser uses is served per request (one image for every environment, roadmap 9.9).
+      await expect(page.locator('meta[name="dukaanai-api-url"]')).toHaveAttribute('content', API_URL);
 
       // Next.js stamped its inline scripts with the nonce from the request header.
       const nonce = /'nonce-([^']+)'/.exec(csp)![1];

@@ -18,6 +18,26 @@ export interface ApiErrorInfo {
   isCanceled: boolean;
 }
 
+/**
+ * Worth retrying with the SAME request key: no answer at all, or a server-side
+ * failure (5xx: the edge's 502 while the API restarts, 503
+ * DATABASE_UNAVAILABLE while the database is away, a 504). Checkout, returns
+ * and payments are idempotent per key, so a retry either finds the document
+ * the lost answer was about or creates it once (roadmap 9.18 failure drills).
+ */
+export function isRetryableFailure(info: ApiErrorInfo): boolean {
+  return info.isNetwork || (info.status !== null && info.status >= 500);
+}
+
+/**
+ * Delay before a page load that failed retryably tries again on its own: 1 s,
+ * 2 s, 4 s, 8 s, then every 10 s. A POS opened while the API restarts (one
+ * replica: every deploy) recovers without a reload (roadmap 9.18).
+ */
+export function backgroundRetryDelayMs(attempt: number): number {
+  return Math.min(1_000 * 2 ** attempt, 10_000);
+}
+
 export function extractApiError(error: unknown, operation: string): ApiErrorInfo {
   if (axios.isAxiosError(error)) {
     const isCanceled = axios.isCancel(error) || error.code === 'ERR_CANCELED';

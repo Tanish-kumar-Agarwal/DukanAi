@@ -29,7 +29,9 @@ function isPublicPath(pathname: string): boolean {
 
 function apiOrigin(): string | null {
   try {
-    return new URL(process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3002/api').origin;
+    // API_PUBLIC_URL is the runtime value (one image per release, roadmap 9.9);
+    // NEXT_PUBLIC_API_URL the build-time fallback and the local default.
+    return new URL(process.env.API_PUBLIC_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3002/api').origin;
   } catch {
     return null;
   }

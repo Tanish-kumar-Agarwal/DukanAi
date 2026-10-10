@@ -1,3 +1,4 @@
+import { IsAcceptablePassword, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from '../../auth/password-policy';
 import { ApiProperty } from '@nestjs/swagger';
 import { IsEmail, IsString, MaxLength, MinLength } from 'class-validator';
 
@@ -6,11 +7,10 @@ export class CreateUserDto {
   @IsEmail()
   email: string;
 
-  /** bcrypt hashes the first 72 bytes only, so longer passwords are refused rather than silently truncated. */
-  @ApiProperty({ minLength: 8, maxLength: 72 })
+  /** The one password policy (src/auth/password-policy.ts): 12-72 characters, not a common password. */
+  @ApiProperty({ minLength: MIN_PASSWORD_LENGTH, maxLength: MAX_PASSWORD_LENGTH })
   @IsString()
-  @MinLength(8)
-  @MaxLength(72)
+  @IsAcceptablePassword()
   password: string;
 
   @ApiProperty()

@@ -1,4 +1,4 @@
-import { ExecutionContext, ForbiddenException } from '@nestjs/common';
+import { ExecutionContext, ForbiddenException, Logger } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { Role } from '@prisma/client';
 import { ANY_AUTHENTICATED_KEY } from './any-authenticated.decorator';
@@ -24,6 +24,21 @@ describe('RolesGuard', () => {
     expect(build({ [ROLES_KEY]: [Role.OWNER, Role.MANAGER] }, { method: 'POST', user: owner })()).toBe(true);
     expect(build({ [ROLES_KEY]: [Role.OWNER, Role.MANAGER] }, { method: 'POST', user: viewer })()).toBe(false);
     expect(build({ [ROLES_KEY]: [Role.OWNER] }, { method: 'GET', user: viewer })()).toBe(false);
+  });
+
+  it('logs a refused role check with the user, the handler and the required roles (ASVS 7.2.2)', () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    try {
+      expect(build({ [ROLES_KEY]: [Role.OWNER] }, { method: 'POST', user: { ...viewer, id: 'u-1' } as never })()).toBe(false);
+      expect(warn).toHaveBeenCalledWith('Access denied for user u-1 (VIEWER) to TestController.handler: requires OWNER');
+      expect(build({ [ROLES_KEY]: [Role.OWNER] }, { method: 'POST' })()).toBe(false);
+      expect(warn).toHaveBeenCalledWith('Access denied for an anonymous request to TestController.handler: requires OWNER');
+      warn.mockClear();
+      expect(build({ [ROLES_KEY]: [Role.OWNER] }, { method: 'POST', user: owner })()).toBe(true);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('refuses a state-changing handler that declares no policy, whoever calls it', () => {

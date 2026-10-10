@@ -7,7 +7,7 @@ import { SkeletonBox } from '@/components/ui/Skeleton';
 import { useToast } from '@/components/ui/Toast';
 import { shiftsApi } from '@/lib/api-client';
 import type { Shift } from '@/types';
-import { extractApiError } from './api-errors';
+import { backgroundRetryDelayMs, extractApiError, isRetryableFailure } from './api-errors';
 import { money, signedMoney, timeOnly } from './format';
 
 interface ShiftBannerProps {
@@ -44,21 +44,39 @@ export function ShiftBanner({ onShiftChange, refreshToken = 0, className = '' }:
   // overtake an earlier request; only the newest request may publish, and
   // nothing is published after unmount.
   const requestSeq = useRef(0);
-  const load = useCallback(async () => {
+  // A failure the API can recover from (it restarting, the database away) is
+  // retried in the background with a backoff while the error stays on screen
+  // (roadmap 9.18: a POS opened during an API restart stayed on the error).
+  const retryTimer = useRef<number | null>(null);
+  const retryAttempt = useRef(0);
+  const loadRef = useRef<(background?: boolean) => Promise<void>>(async () => undefined);
+  const load = useCallback(async (background = false) => {
+    if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
+    retryTimer.current = null;
     const seq = ++requestSeq.current;
-    setLoading(true);
-    setError(null);
+    if (!background) {
+      retryAttempt.current = 0;
+      setLoading(true);
+      setError(null);
+    }
     try {
       const shift = await shiftsApi.current();
       if (seq !== requestSeq.current) return;
+      retryAttempt.current = 0;
+      setError(null);
       publish(shift);
     } catch (err) {
       if (seq !== requestSeq.current) return;
-      setError(extractApiError(err, 'Loading current shift (GET /shifts/current)').message);
+      const info = extractApiError(err, 'Loading current shift (GET /shifts/current)');
+      setError(info.message);
+      if (isRetryableFailure(info)) {
+        retryTimer.current = window.setTimeout(() => void loadRef.current(true), backgroundRetryDelayMs(retryAttempt.current++));
+      }
     } finally {
       if (seq === requestSeq.current) setLoading(false);
     }
   }, [publish]);
+  loadRef.current = load;
 
   useEffect(() => {
     void load();
@@ -66,6 +84,7 @@ export function ShiftBanner({ onShiftChange, refreshToken = 0, className = '' }:
 
   useEffect(() => () => {
     requestSeq.current += 1; // unmounted: every in-flight answer is stale
+    if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
   }, []);
 
   if (loading) {

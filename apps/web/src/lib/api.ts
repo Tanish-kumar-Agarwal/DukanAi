@@ -2,10 +2,8 @@ import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from 'ax
 import type { Session } from 'next-auth';
 import type { JWT } from 'next-auth/jwt';
 
-import { clientConfig, serverConfig } from '../config/env';
+import { publicApiUrl, serverConfig } from '../config/env';
 import { decodeJwtExpiryMs } from './jwt';
-
-const API_URL = clientConfig.NEXT_PUBLIC_API_URL;
 
 /**
  * Every request gives up after this long unless the call sets its own
@@ -15,7 +13,9 @@ const API_URL = clientConfig.NEXT_PUBLIC_API_URL;
 export const DEFAULT_API_TIMEOUT_MS = 15_000;
 
 const apiClient: AxiosInstance = axios.create({
-  baseURL: API_URL,
+  // Resolved at run time (roadmap 9.9); the request interceptor re-reads it
+  // so a module evaluated before <head> was parsed still reaches the right API.
+  baseURL: publicApiUrl(),
   timeout: DEFAULT_API_TIMEOUT_MS,
   headers: {
     'Content-Type': 'application/json',
@@ -121,6 +121,7 @@ async function resolveToken(): Promise<string | null> {
 // ---- Request interceptor — inject Bearer token; multipart bodies keep their boundary ----
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
+    config.baseURL = publicApiUrl();
     const token = await resolveToken();
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;

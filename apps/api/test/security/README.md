@@ -18,6 +18,27 @@ exercises the real guard (for example a VIEWER is refused on `POST /products`).
 
 Never delete or skip a failing test to get green. Fix the behaviour and flip it.
 
+## The exploit replay (roadmap 9.13)
+
+`test/certification/exploit-replay.ts` is the black-box sibling of this suite:
+it replays the same findings over HTTP against a running deployment (the
+certify stack or a staging URL) and asserts each is refused with its
+documented status and code. It is not a `.spec.ts`, so jest never runs it;
+`npm run certify:exploits` (with `EXPLOIT_TARGET`) runs it on demand, and the
+certify driver runs it as the `exploits` step. The in-process suite here is
+the source of truth for the assertions; the replay proves they hold on the
+wire.
+
+## Against a running image
+
+With `CERTIFY_API_URL=http://host:port` (roadmap 9.12, `scripts/certify`)
+every request of these specs goes over HTTP to that API instead of the
+in-process server: the booted module only creates the fixtures (shops,
+users, tokens through the real `AuthService`) on the same database and with
+the same `JWT_SECRET` as the target (`httpTarget` in
+`test/integration/pos-fixtures.ts`). The assertions are unchanged, so the
+suite certifies the release candidate image with the same findings.
+
 ## Coverage
 
 | Spec | Audit finding | Roadmap phase |
@@ -37,3 +58,4 @@ Never delete or skip a failing test to get green. Fix the behaviour and flip it.
 | `../integration/infrastructure.integration-spec.ts` | P2-17 the `/inventory` WebSocket namespace accepted unauthenticated connections; correlation ids were echoed raw | 2.13, 2.14 (fixed) |
 | `authentication.security-spec.ts` | P1-9 uploads buffered without a size limit | 5.1 (fixed: hard multer limits, declared-type filter and magic-byte check on every upload route; media and imports stream to disk, storage and OCR keep capped memory storage) |
 | `../integration/rate-limit.integration-spec.ts` | P1-3 rate limiting off (second/millisecond mix-up, no auth limits), P2-16 trust proxy | 2.1 (fixed) |
+| `../integration/password-policy.integration-spec.ts`, `../integration/asvs-controls.integration-spec.ts` | ASVS L2 opens (`docs/security/ASVS_L2.md`): 8-character passwords, no common-password check, no change-password route, no change notification, refused access not logged, answers cacheable | 9.15 (fixed: 12-character policy with a denylist on every password route, `POST /auth/change-password`, email on reset/change, `RolesGuard` warning, `Cache-Control: no-store`) |

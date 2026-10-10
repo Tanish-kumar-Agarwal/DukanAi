@@ -3,8 +3,15 @@ import { Prisma, Shift } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { BillingActor, isManager, money } from '../billing/billing.types';
 import { BillingHelpers } from '../billing/billing.helpers';
+import { Clock } from '../common/time/clock';
 import { CloseShiftDto, ListShiftsDto, OpenShiftDto } from './dto/shift.dto';
 import { pageArgs } from '../common/pagination';
+import { rethrowUniqueViolation } from '../common/db/unique-violation';
+import { withSerializationRetry } from '../common/db/serialization-retry';
+
+/** `Shift.openToken` while a shift is open; NULL once closed (roadmap 8.3). */
+export const OPEN_TOKEN = 'OPEN';
+const SHIFT_ALREADY_OPEN_MESSAGE = 'You already have an open shift. Close it before opening another.';
 
 const SHIFT_INCLUDE = {
   openedBy: { select: { id: true, name: true } },
@@ -20,7 +27,11 @@ export type ShiftView = Shift & { openedBy: { id: string; name: string }; closed
  */
 @Injectable()
 export class ShiftsService {
-  constructor(private readonly prisma: PrismaService, private readonly helpers: BillingHelpers) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly helpers: BillingHelpers,
+    private readonly clock: Clock,
+  ) {}
 
   private view(shift: Shift & { openedBy: { id: string; name: string }; closedBy: { id: string; name: string } | null }): ShiftView {
     return { ...shift, variance: shift.closingCash ? shift.closingCash.minus(shift.expectedCash) : null };
@@ -35,38 +46,59 @@ export class ShiftsService {
     return shift ? this.view(shift) : null;
   }
 
+  /**
+   * Opens the caller's shift. The pre-check gives the friendly answer; the
+   * unique key `(shopId, openedById, openToken)` is the guard (roadmap 8.3): two
+   * concurrent opens both pass the check, and the second insert fails on the
+   * key, which maps to the same 409. READ COMMITTED keeps the locking read
+   * from taking gap locks. It can still deadlock on MySQL 8: the locking read
+   * may run as an index merge (`Shift_shopId_status_idx` with the unique key),
+   * so two readers lock the same rows in different index orders while a losing
+   * insert holds its `status` entry and waits on the key (CI, eight concurrent
+   * opens). The victim is rolled back whole and runs again, and the rerun finds
+   * the winner's row: 409, never a raw deadlock error.
+   */
   async open(dto: OpenShiftDto, actor: BillingActor): Promise<ShiftView> {
-    const shift = await this.prisma.$transaction(async (tx) => {
-      const open = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT id FROM Shift WHERE shopId = ${actor.shopId} AND openedById = ${actor.userId} AND status = 'OPEN' AND isDeleted = false FOR UPDATE
-      `;
-      if (open.length > 0) {
-        throw new ConflictException({ message: 'You already have an open shift. Close it before opening another.', code: 'SHIFT_ALREADY_OPEN', details: { shiftId: open[0].id } });
-      }
-      const created = await tx.shift.create({
-        data: {
-          shopId: actor.shopId,
-          openedById: actor.userId,
-          openingCash: money(dto.openingCash),
-          expectedCash: money(dto.openingCash),
-          notes: dto.notes ?? null,
-          status: 'OPEN',
+    const shift = await withSerializationRetry(() =>
+      this.prisma.$transaction(
+        async (tx) => {
+          const open = await tx.$queryRaw<Array<{ id: string }>>`
+            SELECT id FROM Shift WHERE shopId = ${actor.shopId} AND openedById = ${actor.userId} AND status = 'OPEN' AND isDeleted = false FOR UPDATE
+          `;
+          if (open.length > 0) {
+            throw new ConflictException({ message: SHIFT_ALREADY_OPEN_MESSAGE, code: 'SHIFT_ALREADY_OPEN', details: { shiftId: open[0].id } });
+          }
+          const created = await tx.shift.create({
+            data: {
+              shopId: actor.shopId,
+              openedById: actor.userId,
+              openingCash: money(dto.openingCash),
+              expectedCash: money(dto.openingCash),
+              notes: dto.notes ?? null,
+              status: 'OPEN',
+              openToken: OPEN_TOKEN,
+              openedAt: this.clock.now(),
+            },
+            include: SHIFT_INCLUDE,
+          });
+          await tx.auditLog.create({
+            data: {
+              shopId: actor.shopId,
+              userId: actor.userId,
+              action: 'SHIFT_OPENED',
+              entity: 'Shift',
+              entityId: created.id,
+              ipAddress: actor.ipAddress ?? null,
+              afterData: { openingCash: created.openingCash.toFixed(2) },
+            },
+          });
+          return created;
         },
-        include: SHIFT_INCLUDE,
-      });
-      await tx.auditLog.create({
-        data: {
-          shopId: actor.shopId,
-          userId: actor.userId,
-          action: 'SHIFT_OPENED',
-          entity: 'Shift',
-          entityId: created.id,
-          ipAddress: actor.ipAddress ?? null,
-          afterData: { openingCash: created.openingCash.toFixed(2) },
-        },
-      });
-      return created;
-    });
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+      ),
+    ).catch((error: unknown) =>
+      rethrowUniqueViolation(error, [{ index: 'Shift_shopId_openedById_openToken_key', code: 'SHIFT_ALREADY_OPEN', message: SHIFT_ALREADY_OPEN_MESSAGE }]),
+    );
     return this.view(shift);
   }
 
@@ -88,7 +120,8 @@ export class ShiftsService {
         where: { id: rows[0].id },
         data: {
           status: 'CLOSED',
-          closedAt: new Date(),
+          openToken: null,
+          closedAt: this.clock.now(),
           closedById: actor.userId,
           closingCash,
           notes: dto.notes ? (before.notes ? `${before.notes} | ${dto.notes}` : dto.notes) : before.notes,

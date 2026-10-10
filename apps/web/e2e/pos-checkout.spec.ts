@@ -184,7 +184,7 @@ test.describe('POS checkout', () => {
     expect(result.receiptTotalText).toBe(money(Number(invoice.totalAmount)));
     expect(result.receiptChangeText).toBe(money(Number(invoice.changeAmount)));
     expect(Number(invoice.changeAmount)).toBeGreaterThan(0);
-    expect(page.getByTestId('receipt-invoice-number')).toHaveText(invoice.invoiceNumber);
+    await expect(page.getByTestId('receipt-invoice-number')).toHaveText(invoice.invoiceNumber);
 
     // Custom line: isCustom, no product, CUSTOM sku, priced as typed.
     const customLine = invoice.items.find((item) => item.productName === customName);
@@ -228,4 +228,100 @@ test.describe('POS checkout', () => {
     expect(invoice.items[0].productId).toBe(product.id);
     expect(Number(invoice.items[0].cessAmount)).toBeGreaterThan(0);
   });
+
+  test('a 503 or an empty 502 offers Retry with the same key, and the retry bills once (roadmap 9.18)', async ({ page, request }) => {
+    // What the failure drills met: the edge answers 502 with no body while the
+    // API restarts, the API answers 503 DATABASE_UNAVAILABLE while MySQL is
+    // away. Both used to show a dead end (no Retry button).
+    const product = await createServiceProduct(request);
+    await openPos(page);
+    await addProductViaSearch(page, product);
+
+    const keys: string[] = [];
+    let attempt = 0;
+    await page.route(/\/api\/billing\/invoice$/, async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      keys.push((route.request().postDataJSON() as { idempotencyKey: string }).idempotencyKey);
+      attempt += 1;
+      if (attempt === 1) {
+        return route.fulfill({ status: 503, contentType: 'application/json', headers: { 'retry-after': '5' }, body: JSON.stringify({ statusCode: 503, code: 'DATABASE_UNAVAILABLE', message: 'The database is unavailable at the moment. Please retry in a few seconds.' }) });
+      }
+      if (attempt === 2) return route.fulfill({ status: 502, body: '' });
+      return route.continue();
+    });
+
+    await page.getByTestId('pos-charge').click();
+    const grandTotal = parseMoney(await page.getByTestId('payment-amount-due').innerText());
+    await page.getByTestId('cash-tendered').fill(String(Math.ceil(grandTotal)));
+    await page.getByTestId('payment-confirm').click();
+
+    const retry = page.getByRole('button', { name: 'Retry' });
+    await expect(page.getByText('The database is unavailable at the moment.')).toBeVisible();
+    await expect(page.getByText('retrying will not create a duplicate bill', { exact: false })).toBeVisible();
+    await retry.click();
+    await expect(page.getByText('HTTP 502', { exact: false })).toBeVisible();
+    await retry.click();
+
+    const receipt = page.getByTestId('receipt-modal');
+    await expect(receipt).toBeVisible();
+    expect(keys).toHaveLength(3);
+    expect(new Set(keys).size).toBe(1);
+
+    // Exactly one bill exists for the key: the receipt's invoice, holding this product.
+    const invoice = await fetchInvoice(request, (await receipt.getAttribute('data-invoice-id')) as string);
+    expect(invoice.items.map((i) => i.productId)).toEqual([product.id]);
+  });
+
+  test('a POS opened while the API restarts loads its shop, shift and products on its own (roadmap 9.18)', async ({ page, request }) => {
+    // What the API-kill drill met: the page loaded during the restart kept its
+    // errors until a reload, and the shop (no Retry at all) never loaded, so
+    // the store stayed unscoped and GST previewed intra-state.
+    const product = await createServiceProduct(request);
+    await page.goto('/billing');
+    await expect(page.getByRole('heading', { name: 'Point of Sale' })).toBeVisible();
+    await page.evaluate(() => window.sessionStorage.clear());
+
+    // The API "restarts" under the next page load: for six seconds every load
+    // answers the edge's empty 502 (dev mode mounts twice, so the window is
+    // time-based rather than counted per request).
+    let restartUntil = 0;
+    const requests = new Map<string, number>();
+    await page.route(/\/api\/(shops\/me|shifts\/current|products|search)(\?.*)?$/, async (route) => {
+      if (route.request().method() !== 'GET') return route.continue();
+      const path = new URL(route.request().url()).pathname.replace(/^.*\/api/, '');
+      requests.set(path, (requests.get(path) ?? 0) + 1);
+      if (Date.now() < restartUntil) return route.fulfill({ status: 502, body: '' });
+      return route.continue();
+    });
+    restartUntil = Date.now() + 6_000;
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Point of Sale' })).toBeVisible();
+
+    const shopWarning = page.getByText('GST is being split as intra-state until the shop profile loads.', { exact: false });
+    const shiftError = page.getByText('Loading current shift (GET /shifts/current) failed', { exact: false });
+    const gridError = page.getByText('Loading products (GET /products) failed', { exact: false });
+    await expect(shopWarning).toBeVisible();
+    await expect(shiftError).toBeVisible();
+    await expect(gridError).toBeVisible();
+    // Nobody clicks anything: each load tries again on its own (1 s, 2 s, 4 s, ...) and the errors go.
+    await expect(shopWarning).toBeHidden({ timeout: 20_000 });
+    await expect(shiftError).toBeHidden({ timeout: 20_000 });
+    await expect(gridError).toBeHidden({ timeout: 20_000 });
+    for (const path of ['/shops/me', '/shifts/current', '/products']) expect(requests.get(path) ?? 0).toBeGreaterThan(1);
+
+    // A search that meets the restart shows its error, then its results, without Retry.
+    restartUntil = Date.now() + 3_000;
+    await page.getByTestId('pos-search').fill(product.name);
+    const searchError = page.getByText('Searching products (GET /search) failed', { exact: false });
+    await expect(searchError).toBeVisible();
+    const option = page.getByRole('option', { name: product.name }).first();
+    await expect(option).toBeVisible({ timeout: 20_000 });
+    await expect(searchError).toBeHidden();
+    await option.click();
+
+    const { invoiceId } = await checkoutWithCash(page, 0);
+    const invoice = await fetchInvoice(request, invoiceId);
+    expect(invoice.items.map((i) => i.productId)).toEqual([product.id]);
+  });
 });
+

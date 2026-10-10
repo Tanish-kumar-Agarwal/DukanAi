@@ -41,7 +41,12 @@ export class RolesGuard implements CanActivate {
 
     const request = context.switchToHttp().getRequest<RequestWithUser>();
     if (requiredRoles?.length) {
-      return Boolean(request.user && requiredRoles.includes(request.user.role));
+      if (request.user && requiredRoles.includes(request.user.role)) return true;
+      // ASVS 7.2.2: a refused access-control decision is logged with who, what and why.
+      this.logger.warn(
+        `Access denied for ${request.user ? `user ${request.user.id} (${request.user.role})` : 'an anonymous request'} to ${context.getClass().name}.${context.getHandler().name}: requires ${requiredRoles.join(' | ')}`,
+      );
+      return false;
     }
     if (this.reflector.getAllAndOverride<boolean>(ANY_AUTHENTICATED_KEY, targets)) {
       return Boolean(request.user);

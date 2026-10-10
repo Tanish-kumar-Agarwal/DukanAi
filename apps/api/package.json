@@ -1,6 +1,6 @@
 {
   "name": "api",
-  "version": "0.0.1",
+  "version": "1.0.0-rc3",
   "description": "",
   "author": "",
   "private": true,
@@ -17,14 +17,20 @@
     "start:debug": "cross-env NODE_ENV=development nest start --debug --watch",
     "start:prod": "NODE_ENV=production node dist/main",
     "type-check": "tsc --noEmit --incremental false",
-    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\"",
+    "clean": "node -e \"for (const d of process.argv.slice(1)) require('fs').rmSync(d, { recursive: true, force: true })\" dist coverage",
+    "lint": "eslint \"{src,apps,libs,test,scripts}/**/*.ts\"",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
-    "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
+    "test:debug": "cross-env NODE_OPTIONS=--inspect-brk jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:integration": "jest --config ./test/jest-integration.json --runInBand",
     "test:security": "jest --config ./test/jest-integration.json --runInBand --testRegex '\\.security-spec\\.ts$'",
+    "storage:migrate-legacy": "ts-node scripts/migrate-storage.ts",
+    "reconcile": "ts-node scripts/reconcile.ts",
+    "sessions:revoke-all": "ts-node scripts/revoke-all-sessions.ts",
+    "certify:exploits": "ts-node test/certification/exploit-replay.ts",
+    "load:business-day": "bash load/business-day.sh",
     "postinstall": "prisma generate"
   },
   "dependencies": {
@@ -48,7 +54,7 @@
     "@nestjs/websockets": "^11.1.21",
     "@prisma/client": "6.19.3",
     "@sentry/node": "^11.4.0",
-    "archiver": "^8.0.0",
+    "archiver": "^7.0.1",
     "axios": "^1.20.0",
     "bcrypt": "^6.0.0",
     "bullmq": "^5.78.0",
@@ -111,6 +117,7 @@
     "eslint-plugin-prettier": "^5.2.2",
     "globals": "^17.0.0",
     "jest": "^30.0.0",
+    "js-yaml": "^4.3.2",
     "mysql2": "^3.24.5",
     "prettier": "^3.4.2",
     "socket.io-client": "^4.8.3",
@@ -119,7 +126,6 @@
     "ts-jest": "^29.2.5",
     "ts-loader": "^9.5.2",
     "ts-node": "^10.9.2",
-    "tsconfig-paths": "^4.2.0",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.20.0"
   },
@@ -143,9 +149,6 @@
     "testEnvironment": "node",
     "setupFilesAfterEnv": [
       "<rootDir>/test/jest-unit.setup.ts"
-    ],
-    "moduleNameMapper": {
-      "^archiver$": "<rootDir>/test/stubs/archiver.stub.js"
-    }
+    ]
   }
 }

@@ -14,16 +14,22 @@ import { useToast } from '@/components/ui/Toast';
 import type { Customer } from '@/types';
 import { useRouter } from 'next/navigation';
 import { PENDING_SCAN_KEY } from '@/lib/smart-capture';
+import { DOCUMENT_PHOTO_MAX_EDGE, fitWithin } from '@/lib/photo';
 
 const JPEG_QUALITY = 0.9;
 
-/** A JPEG data URL from a captured frame; the storage route accepts JPEG and PNG only. */
+/**
+ * A JPEG data URL from a picked photo, its long edge at most
+ * DOCUMENT_PHOTO_MAX_EDGE: a 50 MP gallery photo was 29 MB here, past the
+ * 10 MiB storage limit (roadmap 9.19). The storage route accepts JPEG and PNG only.
+ */
 async function blobToJpegDataUrl(file: Blob): Promise<string> {
   const bitmap = await createImageBitmap(file);
+  const size = fitWithin(bitmap.width, bitmap.height, DOCUMENT_PHOTO_MAX_EDGE);
   const canvas = document.createElement('canvas');
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-  canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
+  canvas.width = size.width;
+  canvas.height = size.height;
+  canvas.getContext('2d')?.drawImage(bitmap, 0, 0, size.width, size.height);
   bitmap.close();
   return canvas.toDataURL('image/jpeg', JPEG_QUALITY);
 }

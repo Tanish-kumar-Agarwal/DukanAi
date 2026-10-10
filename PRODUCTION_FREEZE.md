@@ -1,5 +1,11 @@
 # Sprint 1 Production Freeze Declaration
 
+> **Historical.** This declared v1.0.0-rc2 (June 2026, never tagged in git)
+> ready for staging. The release process is now `RELEASE.md`, what each
+> release contains is `CHANGELOG.md`, and a release candidate is certified
+> against its images by the release workflow (`scripts/certify/certify.sh`).
+
+
 This document certifies the completion status of Sprint 1 (Epic 1) Production Hardening.
 
 ---

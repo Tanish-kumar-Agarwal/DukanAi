@@ -20,12 +20,6 @@ export class CacheConfig {
   @IsInt()
   @Min(0)
   @IntegerFromEnv()
-  @EnvVariable('CACHE_MAX_ITEMS')
-  maxItems: number = 1000;
-
-  @IsInt()
-  @Min(0)
-  @IntegerFromEnv()
   @EnvVariable('CACHE_VENDOR_BILL_TTL_MS')
   vendorBillTtlMs: number = 60000;
 
@@ -82,12 +76,6 @@ export class CacheConfig {
   @IntegerFromEnv()
   @EnvVariable('CACHE_ANALYTICS_TREND_TTL_MS')
   analyticsTrendTtlMs: number = 3600000;
-
-  @IsInt()
-  @Min(0)
-  @IntegerFromEnv()
-  @EnvVariable('CACHE_SEARCH_ENGINE_TTL_MS')
-  searchEngineTtlMs: number = 300000;
 
   @IsInt()
   @Min(0)

@@ -7,6 +7,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test, TestingModuleBuilder } from '@nestjs/testing';
 import { Prisma, Role } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import request from 'supertest';
 import { AppModule } from '../../src/app.module';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { TenantContextService } from '../../src/iam/tenant-context/tenant-context.service';
@@ -48,6 +49,19 @@ export async function bootApp(
   await app.init();
   await waitForQueueConnections(app);
   return app;
+}
+
+/**
+ * Where a suite sends its HTTP requests: the in-process server, or, when
+ * CERTIFY_API_URL names a running API (the release candidate image under
+ * scripts/certify, roadmap 9.12), that origin. In the second mode the booted
+ * module is only the fixture factory (shops, users, tokens, direct reads)
+ * on the same database and JWT_SECRET; every assertion still goes over HTTP
+ * to the image.
+ */
+export function httpTarget(app: INestApplication): Parameters<typeof request>[0] {
+  const url = process.env.CERTIFY_API_URL;
+  return url ? url.replace(/\/$/, '') : app.getHttpServer();
 }
 
 /** Runs `fn` with the query awaited inside the tenant AsyncLocalStorage scope (Prisma promises are lazy). */

@@ -17,7 +17,8 @@ export interface ClaimedOutboxRow {
 }
 
 /** OutboxEvent.error is a plain Prisma String, i.e. VARCHAR(191) on MySQL. */
-const MAX_ERROR_LENGTH = 191;
+/** `OutboxEvent.error` is TEXT (roadmap 8.1); the cap keeps a runaway stack trace out of the row. */
+const MAX_ERROR_LENGTH = 4000;
 
 /** Statuses a relay may have left a row in without finishing it (PROCESSING is the pre-4.7 claim). */
 export const OUTBOX_CLAIMED_STATUSES = ['CLAIMED', 'PROCESSING'] as const;
@@ -69,13 +70,16 @@ export class OutboxClaimService {
    * Returns the rows now CLAIMED by this call.
    */
   async claim(typePredicate: Prisma.Sql, batchSize: number = this.eventsConfig.outboxProcessorBatchSize): Promise<ClaimedOutboxRow[]> {
+    // The application clock decides what is due and stamps the claim (roadmap 8.2):
+    // `nextAttemptAt` was written from it, so comparing it with the database clock would mix clocks.
+    const now = new Date();
     return this.prisma.$transaction(
       async (tx) => {
         const rows = await tx.$queryRaw<ClaimedOutboxRow[]>`
           SELECT id, shopId, tenantId, type, payload, correlationId, actorId, entityId, retryCount
           FROM OutboxEvent
           WHERE status = 'PENDING'
-            AND (nextAttemptAt IS NULL OR nextAttemptAt <= NOW(3))
+            AND (nextAttemptAt IS NULL OR nextAttemptAt <= ${now})
             AND ${typePredicate}
           ORDER BY createdAt ASC
           LIMIT ${batchSize}
@@ -84,7 +88,7 @@ export class OutboxClaimService {
         if (rows.length === 0) return rows;
         await tx.$executeRaw`
           UPDATE OutboxEvent
-          SET status = 'CLAIMED', claimedAt = NOW(3), error = NULL
+          SET status = 'CLAIMED', claimedAt = ${now}, error = NULL
           WHERE id IN (${Prisma.join(rows.map((r) => r.id))}) AND status = 'PENDING'
         `;
         return rows;
@@ -137,8 +141,8 @@ export class OutboxClaimService {
   }
 
   /** Operator recovery: a FAILED row goes back to PENDING under a fresh job id. */
-  async retryFailed(shopId: string, id: string): Promise<boolean> {
-    const updated = await this.prisma.outboxEvent.updateMany({
+  async retryFailed(shopId: string, id: string, db: Pick<PrismaService, 'outboxEvent'> = this.prisma): Promise<boolean> {
+    const updated = await db.outboxEvent.updateMany({
       where: { id, shopId, status: 'FAILED' },
       data: { status: 'PENDING', claimedAt: null, nextAttemptAt: null, error: null, retryCount: { increment: 1 } },
     });

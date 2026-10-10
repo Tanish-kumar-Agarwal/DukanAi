@@ -5,7 +5,7 @@
 #   docker build -f apps/api/Dockerfile -t dukaanai-api .
 #
 # The same image runs the release step and the server:
-#   migrate: docker run --rm -e DATABASE_URL=... dukaanai-api npx prisma migrate deploy
+#   migrate: docker run --rm -e DATABASE_URL=... dukaanai-api /app/node_modules/.bin/prisma migrate deploy
 #   serve:   docker run -e NODE_ENV=production -e DATABASE_URL=... -e REDIS_URL=... \
 #              -e JWT_SECRET=... -e FRONTEND_URL=... -p 3002:3002 dukaanai-api
 #
@@ -13,11 +13,21 @@
 # bump it here and in .nvmrc together. Debian slim rather than Alpine: the
 # Prisma engines, sharp and bcrypt ship glibc builds, and Prisma needs
 # OpenSSL at runtime.
+#
+# Supply chain (roadmap 9.14, the release Trivy gate): the base stage takes
+# Debian's security updates at build time (`apt-get upgrade`), because the
+# Node base image lags them, and the runtime stage deletes the npm, npx and
+# corepack that the Node image bundles: they are build tools whose own
+# dependencies (tar, brace-expansion, sigstore, ...) carry fixable advisories,
+# and nothing in the running image calls them. The Prisma CLI, the one tool
+# the image runs besides the server (the release step), is the production
+# dependency itself: /app/node_modules/.bin/prisma, also on PATH.
 ARG NODE_VERSION=22.22.2
 
 FROM node:${NODE_VERSION}-bookworm-slim AS base
 ENV NPM_CONFIG_UPDATE_NOTIFIER=false NPM_CONFIG_FUND=false NPM_CONFIG_AUDIT=false
 RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
   && apt-get install -y --no-install-recommends openssl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
@@ -54,10 +64,22 @@ RUN cd apps/api && npx prisma generate
 # ---- runtime: compiled output, production node_modules, Prisma schema and
 # migrations (for `prisma migrate deploy`), no sources, non-root ----
 FROM base AS runtime
-ENV NODE_ENV=production PORT=3002
-# The storage root and the multipart temp directory are volumes in compose;
-# both default paths exist and belong to the runtime user.
-RUN mkdir -p /var/lib/dukaanai/storage /app/apps/api/uploads/tmp \
+# The release the image is (roadmap 9.21): the version tag or sha-<commit>,
+# passed by .github/workflows/release.yml; GET /api/health and the build_info
+# metric report it, and the OCI labels let `docker inspect` say what it is.
+ARG APP_RELEASE=
+ARG APP_REVISION=
+LABEL org.opencontainers.image.title="dukaanai-api" \
+      org.opencontainers.image.source="https://github.com/shoryabansalgithub/DukanAi-real" \
+      org.opencontainers.image.version="${APP_RELEASE}" \
+      org.opencontainers.image.revision="${APP_REVISION}"
+ENV NODE_ENV=production PORT=3002 APP_RELEASE=${APP_RELEASE} PATH=/app/node_modules/.bin:$PATH
+# No package manager at run time (see the header). The storage root and the
+# multipart temp directory are volumes in compose; both default paths exist
+# and belong to the runtime user.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+  && mkdir -p /var/lib/dukaanai/storage /app/apps/api/uploads/tmp \
   && chown -R node:node /var/lib/dukaanai /app
 COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=prod-deps --chown=node:node /app/apps/api/node_modules ./apps/api/node_modules

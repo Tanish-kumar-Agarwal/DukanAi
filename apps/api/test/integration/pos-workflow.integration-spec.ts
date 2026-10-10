@@ -537,6 +537,22 @@ describe('EXEC-006C POS workflow (integration)', () => {
     expect(scanned.id).toBe(products.soap);
     expect(scanned.currentStock).toBe(await productStock(products.soap));
     await expect(asOwner(() => search.findByBarcode(shopId, 'does-not-exist'))).rejects.toMatchObject({ response: { code: 'BARCODE_NOT_FOUND' } });
+
+    // The soap's code as an alternate barcode of the rice (an import or a supplier relabel): the
+    // POS picker gets both products whole, price and stock included, and sells the one picked (9.19).
+    const alternate = await asSystem(() => prisma.productBarcode.create({ data: { productId: products.rice, shopId, barcode: `SOAP${suffix}`, type: 'EAN13' } }));
+    try {
+      const ambiguous = await asOwner(() => search.findByBarcode(shopId, `SOAP${suffix}`)).catch((err: { response?: unknown }) => err.response);
+      const { code, details } = ambiguous as { code: string; details: { candidates: Array<Record<string, unknown>> } };
+      expect(code).toBe('BARCODE_AMBIGUOUS');
+      expect(details.candidates.map((c) => c.id).sort()).toEqual([products.rice, products.soap].sort());
+      for (const candidate of details.candidates) {
+        expect(candidate).toEqual(expect.objectContaining({ sellingPrice: expect.any(Number), currentStock: expect.any(Number), gstRate: expect.any(String), type: expect.any(String), isActive: true }));
+        expect(candidate.currentStock).toBe(await productStock(candidate.id as string));
+      }
+    } finally {
+      await asSystem(() => prisma.productBarcode.delete({ where: { id: alternate.id } }));
+    }
     const special = await asOwner(() => search.search(shopId, 'te+a -"x" (y)'));
     expect(Array.isArray(special)).toBe(true);
   });

@@ -1,6 +1,6 @@
 {
   "name": "dukaanai-web",
-  "version": "0.1.0",
+  "version": "1.0.0-rc3",
   "private": true,
   "engines": {
     "node": ">=22.12"
@@ -11,8 +11,10 @@
     "start": "next start",
     "lint": "eslint .",
     "type-check": "tsc --noEmit --incremental false",
+    "clean": "node -e \"for (const d of process.argv.slice(1)) require('fs').rmSync(d, { recursive: true, force: true })\" .next",
     "test:e2e": "playwright test",
-    "test:e2e:auth": "playwright test --config playwright.auth.config.ts"
+    "test:e2e:auth": "playwright test --config playwright.auth.config.ts",
+    "test:business-day": "playwright test --config playwright.business-day.config.ts"
   },
   "dependencies": {
     "@dukaanai/invoice-math": "*",

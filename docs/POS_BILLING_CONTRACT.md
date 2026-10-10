@@ -13,9 +13,30 @@ Conventions
   `{ statusCode, message, error, code?, details?, correlationId, timestamp }`.
   `code` is a stable machine string (see per-route lists). Clients branch on
   `code`, never on `message`.
+- Outages (roadmap 9.18 failure drills), on every route: `503
+  DATABASE_UNAVAILABLE` with `Retry-After: 5` while the database cannot be
+  reached (it used to be a 500 "Internal server error"), and `507
+  STORAGE_FULL` when a document write meets a full volume (nothing partial is
+  kept). The edge answers `502` with an empty body while the API restarts.
+  A 5xx is retry-safe for every keyed write (sale, return, repayment): the
+  POS and the return dialog offer Retry with the same `idempotencyKey`, which
+  either finds the document a lost answer was about (`200`) or creates it
+  once (`201`). Reads are retried by the POS itself: the shop, the current
+  shift and the product grid and search try again in the background (1 s,
+  2 s, 4 s, 8 s, then every 10 s) after a network failure or a 5xx, so a
+  POS opened while the API restarts recovers without a reload.
 - Business day and financial year are computed in the shop timezone
   (`ShopSettings.timezone`, default `Asia/Kolkata`). Financial year runs
   April to March.
+- Removed surface (roadmap 4.5, 4.7): the parallel stacks that once answered
+  `/invoices/generate`, `/returns/initiate`, `/payments/capture`,
+  `/sales/orders`, `/sales/workflow`, `/pricing/simulate`, `/events/replay`
+  and the duplicate `/events/webhooks` are detached from the application and
+  answer 404, and the `sales-events` / `sales-webhooks` queues are gone.
+  `/billing/*` is the only sale, return and cancellation path,
+  `POST /customers/:id/payments` the only repayment path, and `/webhooks` +
+  `/events` (product events) the only webhook path. `GET /sales/events` (§7)
+  is the operator view of the outbox and the one route left under `/sales`.
 
 ## 1. Shared math engine (`@dukaanai/invoice-math`)
 
@@ -234,7 +255,7 @@ its number. Codes: `INVOICE_NOT_CANCELLABLE`.
 
 ## 3. Shifts
 
-- `POST /shifts/open { openingCash }` returns the shift; `409 SHIFT_ALREADY_OPEN`.
+- `POST /shifts/open { openingCash }` returns the shift; `409 SHIFT_ALREADY_OPEN`. One open shift per cashier is enforced by the database (unique key on `Shift.openToken`, roadmap 8.3), so two concurrent opens never both succeed.
 - `GET /shifts/current` returns the caller's OPEN shift or `null`.
 - `POST /shifts/current/close { closingCash, notes? }` closes it; response
   includes `expectedCash`, `closingCash`, `variance`.
@@ -274,6 +295,16 @@ totalReceipts, openedBy: { id, name }, closedBy }`.
 - `POST /customers/search { query, skip?, take? }` returns an array.
 - `DELETE /customers/:id` soft-deletes; `409 CUSTOMER_HAS_BALANCE` when the
   outstanding balance is not zero.
+- Opening udhar (roadmap 9.20, written by the customer import of §13 through
+  `CustomersService.recordOpeningBalance`): what the customer owed
+  (positive) or had paid in advance (negative) on the shop's first day. One
+  `ADJUSTMENT` ledger row with `reference` "Opening balance" and
+  `idempotencyKey` `OPENING:<customerId>`, `balanceBefore` 0, no invoice, no
+  shift; MANAGER+. Once per customer: the same amount again is UNCHANGED,
+  another is `409 OPENING_BALANCE_EXISTS`, and a customer whose udhar already
+  moved (any ledger row, or a balance from before) is
+  `409 OPENING_BALANCE_AFTER_ACTIVITY`: a difference is a repayment or a
+  credit sale.
 
 Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
 `MANAGER`+.
@@ -293,15 +324,24 @@ Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
 - `GET /search?q&limit` returns lean results `{ id, name, sku, barcode,
   sellingPrice, mrp, gstRate, cessRate, unit, currentStock, type, isActive,
   imageUrl, categoryName }` ranked by relevance (exact barcode/SKU first,
-  then name). `q` (here, on `/search/suggestions` and on `/products`) is
+  then name). Products whose name, SKU or alias holds the whole query are
+  ranked before any product that shares only a word with it, so a product
+  typed in full is found however many others share its words (roadmap
+  9.19). `q` (here, on `/search/suggestions` and on `/products`) is
   normalised and cut to 100 characters, never rejected for length; a
   repeated `q` reads as its first value. Search history is recorded up to
   `SEARCH_HISTORY_MAX_PER_MINUTE` searches per shop and minute; a search past
   that budget is answered but not recorded.
-- `GET /search/barcode/:code` returns exactly one product or
-  `404 BARCODE_NOT_FOUND`; `409 BARCODE_AMBIGUOUS` with `details.candidates`.
+- `GET /search/barcode/:code` returns exactly one product (the lean shape
+  above, plus `variantId` for a variant's barcode) or
+  `404 BARCODE_NOT_FOUND`; `409 BARCODE_AMBIGUOUS` with `details.candidates`,
+  one lean product per match (price and stock included, so the POS picker
+  can sell the chosen one). Ambiguity comes from an alternate barcode
+  (`ProductBarcode`) or a variant carrying another product's code.
 - Barcodes are unique per shop: `409 BARCODE_IN_USE` on create/update.
-- `POST /products` / `PATCH /products/:id` accept `cessRate` (percent, 0-100).
+- `POST /products` / `PATCH /products/:id` accept `cessRate` (percent, 0-100)
+  and `reorderPoint` (the low-stock level in the product unit, >= 0; 10 when
+  absent).
 - Price changes on `PATCH /products/:id` (selling/cost/MRP/wholesale price,
   GST slab or cess) write an `AuditLog` row (`PRODUCT_PRICE_CHANGED`,
   before/after).
@@ -383,6 +423,21 @@ All payloads carry `eventId`, `correlationId`, `shopId`, `userId`, `createdAt`.
 - `INVOICE_CANCELLED`: `{ invoiceId, invoiceNumber, amount, items: [...] }`
 - `CUSTOMER_PAYMENT_RECORDED`: `{ customerId, transactionId, amount, tender }`
 
+Lifecycle (roadmap 4.7): a row is staged `PENDING` inside the business
+transaction. After the commit the system-events relay claims a batch
+(`CLAIMED`, one `READ COMMITTED` transaction with `FOR UPDATE SKIP LOCKED`),
+enqueues it, and the `system-events` worker ends it: `DONE`, or `PENDING`
+again with an exponential backoff (`EVENTS_OUTBOX_RETRY_BACKOFF_MS`, capped by
+`EVENTS_OUTBOX_RETRY_BACKOFF_MAX_MS`) until `EVENTS_OUTBOX_MAX_RETRIES`
+attempts are spent, then `FAILED`. A claim no worker finished within
+`EVENTS_OUTBOX_STALE_CLAIM_MS` is reaped back to `PENDING`.
+
+Operator routes: `GET /sales/events?status=` lists the shop's rows, newest
+first (`SALES_RECENT_EVENTS_LIMIT`); `GET /sales/events/:id` returns one
+(`404 OUTBOX_EVENT_NOT_FOUND`); `POST /sales/events/retry { eventId }`
+(`MANAGER`+) resets a `FAILED` row to `PENDING` under a fresh job id, and is
+`409 OUTBOX_EVENT_NOT_FAILED` for any other status.
+
 ## 8. Shop
 
 `GET /shops/me` returns `{ id, name, address, city, state, pincode, phone,
@@ -398,13 +453,14 @@ its business source, `(shopId, sourceType, sourceId)` with a unique index:
 `SALE` / `RETURN` / `CANCELLATION` (invoice id), `CUSTOMER_PAYMENT` (udhar
 transaction id), `GRN`, `PURCHASE_RETURN`, `ADJUSTMENT_REQUEST`,
 `STOCK_ADJUSTMENT` (their document ids), `SUPPLIER_PAYMENT` (SupplierPayment
-id). A replay of an already-posted
+id), `OPENING_BALANCE` (the opening udhar's UdharTransaction id). A replay of an already-posted
 source posts nothing; a concurrent duplicate fails on the index and its
 transaction rolls back. Every `LedgerTransaction` row carries the header's
 `postingId`. Debit-normal accounts: `CASH`, `BANK`,
 `ACCOUNTS_RECEIVABLE`, `UDHAR_RECEIVABLE`, `COST_OF_GOODS`, `INVENTORY`,
 `INVENTORY_ADJUSTMENT`. Credit-normal: `SALES_REVENUE`, `GST_PAYABLE`,
-`ACCOUNTS_PAYABLE`.
+`ACCOUNTS_PAYABLE`, `OPENING_BALANCE_EQUITY` (the shop's capital on its
+first day: the contra of every opening balance, roadmap 9.20).
 
 | Event | Debit | Credit |
 |---|---|---|
@@ -415,7 +471,9 @@ transaction rolls back. Every `LedgerTransaction` row carries the header's
 | Goods receipt (GRN accepted) | INVENTORY (Σ unitPrice × acceptedQuantity) | ACCOUNTS_PAYABLE |
 | Purchase return | ACCOUNTS_PAYABLE | INVENTORY |
 | Supplier payment / vendor-bill payment | ACCOUNTS_PAYABLE | CASH (tender `CASH`) / BANK (other tenders) |
-| Stock adjustment, damage, loss, expiry, opening balance | delta > 0: INVENTORY / INVENTORY_ADJUSTMENT; delta < 0: INVENTORY_ADJUSTMENT / INVENTORY, at `Product.costPrice` | |
+| Stock adjustment, damage, loss, expiry | delta > 0: INVENTORY / INVENTORY_ADJUSTMENT; delta < 0: INVENTORY_ADJUSTMENT / INVENTORY, at `Product.costPrice` | |
+| Opening stock (adjustment reason `OPENING_BALANCE`, manual or imported) | INVENTORY | OPENING_BALANCE_EQUITY, at `Product.costPrice` (a negative opening the other way round) |
+| Opening udhar (source `OPENING_BALANCE`) | ACCOUNTS_RECEIVABLE (owed) / OPENING_BALANCE_EQUITY (advance) | OPENING_BALANCE_EQUITY (owed) / ACCOUNTS_RECEIVABLE (advance) |
 
 `Supplier.pendingPayables` is the per-supplier view of `ACCOUNTS_PAYABLE`,
 maintained in the same transaction as each posting (receipt adds, purchase
@@ -426,6 +484,10 @@ than is owed is `409 PAYABLES_INSUFFICIENT`). `POST /suppliers/:id/payments
 idempotencyKey? }` both record a `SupplierPayment` (the ledger source,
 replayed per idempotency key). `SupplierPayablesService.payablesFromLedger`
 rebuilds the balance from `openingPayables` and the postings.
+
+Every posting is reconciled against its document nightly and on demand
+(§11): the entries above are the ones the reconciliation expects, and the
+cost-of-goods entries are expected only for the lines whose stock moved.
 
 `SERVICE`, `DIGITAL` and custom lines never move `INVENTORY` or
 `COST_OF_GOODS`. Valuation basis: receipts and supplier returns post at the
@@ -455,10 +517,17 @@ costing layer.
   several hundred checkouts.
 - Redis stock keys are advisory. The sale path may pre-decrement them, the
   database decides, and every rejected or failed request restores its
-  decrement. Redis being down or wrong never blocks or corrupts a sale.
-- Outbox rows are staged inside the business transaction and relayed to
-  BullMQ afterwards; the processor is idempotent per event id (audit marker
-  inside its own transaction), so a duplicate delivery is a no-op.
+  decrement. Redis being down or wrong never blocks or corrupts a sale, and
+  never stalls one: every Redis client on the request path fails fast while
+  Redis is unreachable (the shared client has no offline queue; the cache
+  store's offline queue is off since the 5-minute Redis drill of roadmap
+  9.18 found each sale waiting on its post-commit cache invalidation until
+  Redis returned).
+- Outbox rows are staged inside the business transaction and claimed by the
+  relay after the commit (§7); the `system-events` worker is idempotent per
+  event id (audit marker inside its own transaction), so a duplicate
+  delivery is a no-op, and a row is never marked `DONE` before the worker
+  has finished it.
 - Post-commit work (Redis sync, websockets, low-stock notifications) is
   best-effort and never changes money or stock.
 - `BillingCheckpoints` names sixteen points inside these transactions
@@ -474,3 +543,131 @@ costing layer.
   unique indexes; the default warehouse/bin bootstrap of a shop runs under
   the `Shop` row lock for the same reason.
 
+## 11. Financial reconciliation (roadmap 9.5)
+
+The books of a business day are proven to the paisa by
+`ReconciliationService` (`apps/api/src/reconciliation`), nightly for every
+shop (`CRON_RECONCILIATION`, the shop's previous business day in its own
+timezone, under the `cron:reconciliation` lock) and on demand. Every run,
+clean or not, is a `ReconciliationRun` row (`businessDate`, `timeZone`,
+`trigger` CRON / MANUAL / CLI, `status` CLEAN / DRIFT / FAILED,
+`driftCount`, `checks`, `summary`, `error`). Nothing is corrected: a drift
+names the check, the document or row and the two figures that disagree, for
+a person to explain or fix with a recorded adjustment.
+
+The seven checks (`reconciliation-engine.ts`, pure over a Prisma client, so
+the cron, the route and the CLI run identical code):
+
+| Check | Identity |
+|---|---|
+| `documents` | every sale and return of the day: `taxable + tax + round-off = total`, `Σ tender rows + credit = total`, `paid = Σ tender rows`; every repayment: `balance before − amount = balance after` |
+| `postings` | every sale, return, cancellation and repayment of the day has exactly the posting of §9 that its stored amounts imply: CASH / BANK by tender row, ACCOUNTS_RECEIVABLE by credit, SALES_REVENUE / GST_PAYABLE by `splitRevenue`, COST_OF_GOODS / INVENTORY from the stock movements the document caused (`StockLedgerEntry` by reference, so a service product or a custom line expects none); every posting created in the window balances, and a POS posting points at a real document of its kind |
+| `tenders` | the day's CASH, BANK and ACCOUNTS_RECEIVABLE movement in the matched postings equals the documents by tender |
+| `dashboard` | `GET /dashboard/summary`'s figures for the day (the shared SQL of `RevenueEngine.totals`: gross sales, returns, orders, return count) equal the documents, and net sales equal the ledger's revenue + GST movement (a same-day cancellation is excluded by the dashboard and nets to zero in the ledger) |
+| `shifts` | every shift open at any point of the day, rebuilt from its documents: `expectedCash = openingCash + cash sales − cash refunds (returns and cancellations, repaid credit included) + cash repayments`, and `totalSales`, `cashSales`, `upiSales`, `cardSales`, `udharSales`, `totalReceipts` likewise |
+| `stock` | every live `InventoryItem.onHand` equals its stock ledger (a `StockSnapshot`, when one exists, plus the entries after it) and every product's `currentStock` equals the sum of its items |
+| `ledger` | every `LedgerAccountBalance` equals the sum of its transactions (debit-normal accounts grow with debits) and the last transaction's `balanceAfter` |
+
+Two facts the shift check needs are stored on the documents (migration
+`20261005090000_reconciliation_runs`): `Invoice.cancelledShiftId`, the drawer
+a cancellation refunded (the sale's own shift while it is open, else the
+actor's; NULL when no drawer was involved, e.g. a non-cash refund with no
+open shift), and `UdharTransaction.shiftId`, the drawer a repayment was taken
+on. Rows written before that migration carry NULL although they did move a
+drawer; a shift they overlap is reported `INCONCLUSIVE` (with a note), never
+as drift.
+
+Routes (`OWNER` / `ADMIN` / `SUPER_ADMIN`; `VIEWER` and the counter roles are
+403; every id is the caller's shop, a foreign one is 404):
+
+- `GET /reconciliation/latest`: the newest run, `404 RECONCILIATION_NOT_RUN`
+  before the first.
+- `GET /reconciliation/runs` (paged, §5.6 headers; `checks` and `summary`
+  omitted) and `GET /reconciliation/runs/:id` (the whole run).
+- `POST /reconciliation/run { date? }` (201): reconciles the given business
+  day, today in the shop's timezone by default; `400
+  RECONCILIATION_INVALID_DATE` for a day that does not exist, `400
+  RECONCILIATION_FUTURE_DATE` for one that has not started.
+
+From the API container: `node dist/cli/reconcile --shop <id> [--date <day>]
+[--json]`, or `--all-shops [--date <day>]` for every shop the nightly run
+visits, each on its previous business day unless a day is named (the
+catch-up after a missed night); from a checkout `npm run reconcile -- ...`
+is the same command (`apps/api/src/cli/reconcile.ts`, exit 0 clean, 1
+drift, 2 usage or a failed run). Each run is recorded with trigger `CLI`. Metrics and alerts:
+`docs/OBSERVABILITY.md` (`reconciliation_*`, `DukaanAiReconciliationDrift`,
+`DukaanAiReconciliationStale`). Evidence:
+`test/integration/reconciliation.integration-spec.ts` (a mixed day with a
+closed shift at zero drift, every summary figure against an independent
+read, a corrupted row in each area detected and named, the sweep under the
+lock, the routes, the metrics, the CLI) and
+`financial-year-rollover.integration-spec.ts` (both days of the rollover
+reconcile, roadmap 9.6).
+
+## 12. The application clock (roadmap 9.6)
+
+`Clock` (`apps/api/src/common/time/clock.ts`, global) is the one source of
+"now" for every instant a POS document carries: the sale, return and
+cancellation transactions take one `now` from it for the document's
+financial-year tag (`financialYearLabel`), its `createdAt` (set explicitly;
+Prisma's `@default(now())` is the query engine's clock) and its stock
+movements; shifts open and close on it; repayments stamp it; the dashboard's
+business day is read from it. Production reads the system clock. The
+financial-year rollover spec replaces the provider with a settable clock and
+bills on 31 March 23:59 and 1 April 00:01 (Asia/Kolkata): `INV-2026-27-000003`
+is followed by `INV-2027-28-000001`, the return sequence restarts the same
+way, the old year's sequence rows and numbers are untouched (the unique key
+is `(shopId, financialYear, invoiceNumber)`), the same-day cancellation
+window flips with the business day, and the dashboard's `businessDate` and
+`GET /billing/invoices?from&to` agree with the FY tags.
+
+## 13. Onboarding imports (roadmap 9.20)
+
+A shop's day-one data arrives as three CSV (or JSON array) files, imported in
+this order: products, opening stock, customers. The procedure is
+`docs/ONBOARDING.md`; the templates are `docs/onboarding/*.csv` and
+`GET /imports/templates/{products|customers|opening-stock}` (the same bytes,
+`import-columns.spec.ts`).
+
+- `POST /imports/{products|customers|opening-stock}/upload` (multipart:
+  `file`, `mode?` = `UPSERT` (default) | `CREATE_ONLY` | `UPDATE_ONLY`,
+  `dryRun?` = `"true"` | `"false"`; MANAGER+) stores the file and queues a
+  job: `201 { jobId, kind, dryRun }`. `MERGE` / `REPLACE` are 400. The
+  worker runs the job as the uploading user, who must still be an active
+  manager of the shop (else the job is FAILED with the reason in row 0).
+- A dry run validates and plans every row against the shop's data and writes
+  only the report; `POST /imports/jobs/:id/apply` (MANAGER+) runs a finished
+  dry run (COMPLETED or PARTIAL_SUCCESS) for real as a new job on the same
+  file (`409 IMPORT_NOT_A_DRY_RUN`, `409 IMPORT_DRY_RUN_NOT_APPLICABLE`).
+- `GET /imports/jobs` (paged, newest first), `GET /imports/jobs/:id` (status
+  and counters: `totalRows`, `validRows`, `errorRows`, `createdCount`,
+  `updatedCount`, `unchangedCount`, `skippedCount`), `GET
+  /imports/jobs/:id/rows?status=SUCCESS|ERROR|SKIPPED&skip&take` (paged, file
+  order; row 0 is the file itself: unread columns, a missing required column,
+  an unreadable file), `GET /imports/jobs/:id/errors`, `GET
+  /imports/jobs/:id/report` (the whole report as CSV, the row's own cells
+  under the template headers). A row is `{ rowNumber, status, actionTaken,
+  changes, errors, rawData }`; `actionTaken` is `CREATED` / `UPDATED` /
+  `UNCHANGED` / `SKIPPED`, `WOULD_CREATE` / `WOULD_UPDATE` in a dry run;
+  `errors` holds every issue with its `field` and `severity` (a warning never
+  refuses a row). Row numbers are spreadsheet lines (the header is line 1).
+- Every row is written through the service the screens use: products through
+  `ProductsService.create/update` (matched by SKU, case-insensitive),
+  customers through `CustomersService.create/update` (matched by the national
+  phone number) and `recordOpeningBalance` (§4), opening stock through
+  `InventoryDomainService.recordOpeningStock` (§9). A blank cell never clears
+  a stored value; a row that names an existing record with nothing to change
+  is UNCHANGED, so the same file imported twice changes nothing. A refused
+  write (409 from a concurrent change) is that row's error and the run goes
+  on.
+- Rules beyond the create DTOs: MRP >= selling price, also against the
+  stored MRP when the file leaves it blank; GST slab 0/5/12/18/28 (blank: 18
+  on a new product, with a warning); unit by the POS rule (KG, GM, LTR, ML
+  in decimals, the rest whole); a customer's state is an Indian state or
+  union territory (`apps/api/src/common/india/states.ts`, the web picker's
+  list): it decides CGST/SGST against IGST; a code a spreadsheet turned into
+  scientific notation (`8.90123E+12`) is refused; the same SKU, barcode,
+  phone or product twice in one file is refused on the later row; opening
+  stock is refused for a product that already moved or carries stock from
+  before the stock ledger, for SERVICE / DIGITAL products, and when another
+  quantity is already recorded; a 0 quantity is SKIPPED.

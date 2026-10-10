@@ -7,11 +7,11 @@ import {
   ScanLine, Bot, Sparkles, Layers, Edit3, FileDown, CheckSquare, XCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import axios from 'axios';
 import { useToast } from '@/components/ui/Toast';
 import { useRouter } from 'next/navigation';
 import { ocrApi, type OcrDocumentType, type OcrMatchedItem, type OcrScanResult } from '@/lib/api-client';
-import { describeApiError } from '@/lib/api-error';
+import { describeApiError, getApiErrorCode, getApiErrorDetails } from '@/lib/api-error';
+import { OCR_PHOTO_MAX_EDGE, photoForUpload } from '@/lib/photo';
 import { PENDING_SCAN_KEY } from '@/lib/smart-capture';
 import { dataUrlToBlob } from '@/lib/data-url';
 
@@ -22,6 +22,33 @@ const ACCEPTED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 interface Failure {
   title: string;
   detail: string;
+}
+
+/**
+ * What a failed scan tells the user, by the API's error code (never by the
+ * HTTP status alone: a 502 is also a refused key, an exhausted quota or a
+ * timeout, and none of those is fixed by a better photo).
+ */
+function scanFailure(err: unknown): Failure {
+  const operation = 'Scanning the bill (POST /ocr/scan-bill)';
+  switch (getApiErrorCode(err)) {
+    case 'OCR_NOT_CONFIGURED':
+      return { title: 'OCR is not configured on this server', detail: 'Bill scanning needs a Gemini API key on the API server (GEMINI_API_KEY). Until it is set, store the bill from Smart Capture and enter the lines by hand.' };
+    case 'OCR_UNREADABLE_RESPONSE':
+      return { title: 'The scanner could not read this document', detail: 'The model answered with something that is not a bill. Try a sharper, better-lit photo with the bill filling the frame.' };
+    case 'OCR_MODEL_ERROR': {
+      const status = getApiErrorDetails(err)?.status;
+      return {
+        title: 'The OCR service refused the request',
+        detail: `${describeApiError(err, operation)} The photo is not the problem: the server's OCR account (API key, quota or model${typeof status === 'number' ? `, HTTP ${status}` : ''}) refused it. Ask whoever runs the server to check GEMINI_API_KEY and OCR_MODEL.`,
+      };
+    }
+    case 'OCR_TIMEOUT':
+    case 'OCR_UNREACHABLE':
+      return { title: 'The OCR service did not answer', detail: `${describeApiError(err, operation)} The photo is fine: try again in a minute.` };
+    default:
+      return { title: 'Scan failed', detail: describeApiError(err, operation) };
+  }
 }
 
 function money(value: number | null | undefined): string {
@@ -77,22 +104,16 @@ export default function AiScannerPage() {
     setProgress(0);
     setScanState('UPLOADING');
     try {
-      const outcome = await ocrApi.scanBill(file, documentType, (fraction) => {
+      // A phone photo goes up at the size the model reads (a 50 MP original is past the 10 MiB limit).
+      const upload = await photoForUpload(file, OCR_PHOTO_MAX_EDGE);
+      const outcome = await ocrApi.scanBill(upload, documentType, (fraction) => {
         setProgress(Math.round(fraction * 100));
         if (fraction >= 1) setScanState('SCANNING');
       });
       setResult(outcome);
       setScanState('SUCCESS');
     } catch (err) {
-      const status = axios.isAxiosError(err) ? err.response?.status : undefined;
-      const code = axios.isAxiosError(err) ? (err.response?.data as { error?: string } | undefined)?.error : undefined;
-      if (status === 503 || code === 'OCR_NOT_CONFIGURED') {
-        setFailure({ title: 'OCR is not configured on this server', detail: 'Bill scanning needs a Gemini API key on the API server (GEMINI_API_KEY). Until it is set, store the bill from Smart Capture and enter the lines by hand.' });
-      } else if (status === 502 || code === 'OCR_UNREADABLE_RESPONSE') {
-        setFailure({ title: 'The scanner could not read this document', detail: 'The model answered with something that is not a bill. Try a sharper, better-lit photo with the bill filling the frame.' });
-      } else {
-        setFailure({ title: 'Scan failed', detail: describeApiError(err, 'Scanning the bill (POST /ocr/scan-bill)') });
-      }
+      setFailure(scanFailure(err));
       setScanState('FAILED');
     }
   };

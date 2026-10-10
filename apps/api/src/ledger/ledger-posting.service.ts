@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LedgerAccount, LedgerEntryType, Prisma } from '@prisma/client';
-import { ledgerPostingFailuresTotal } from '../common/observability/metrics';
+import { ledgerPostingFailuresTotal, zeroSeries } from '../common/observability/metrics';
 
 export interface LedgerEntryInput {
   account: LedgerAccount;
@@ -10,16 +10,23 @@ export interface LedgerEntryInput {
 }
 
 /** Business events that post to the ledger; with `sourceId` they form the posting's unique key. */
-export type LedgerSourceType =
-  | 'SALE'
-  | 'RETURN'
-  | 'CANCELLATION'
-  | 'CUSTOMER_PAYMENT'
-  | 'GRN'
-  | 'PURCHASE_RETURN'
-  | 'ADJUSTMENT_REQUEST'
-  | 'STOCK_ADJUSTMENT'
-  | 'SUPPLIER_PAYMENT';
+export const LEDGER_SOURCE_TYPES = [
+  'SALE',
+  'RETURN',
+  'CANCELLATION',
+  'CUSTOMER_PAYMENT',
+  'GRN',
+  'PURCHASE_RETURN',
+  'ADJUSTMENT_REQUEST',
+  'STOCK_ADJUSTMENT',
+  'SUPPLIER_PAYMENT',
+  /** A customer's opening udhar (roadmap 9.20): the UdharTransaction id. */
+  'OPENING_BALANCE',
+] as const;
+export type LedgerSourceType = (typeof LEDGER_SOURCE_TYPES)[number];
+
+// The first failure of each source must show in increase() (DukaanAiLedgerPostingFailures).
+zeroSeries(ledgerPostingFailuresTotal, LEDGER_SOURCE_TYPES.map((source) => ({ source })));
 
 export interface LedgerPosting {
   shopId: string;
@@ -36,8 +43,12 @@ export interface LedgerPostingResult {
   postingId: string | null;
 }
 
-/** Accounts whose balance grows with debits (assets / expenses). */
-const DEBIT_NORMAL: ReadonlySet<LedgerAccount> = new Set<LedgerAccount>([
+/**
+ * Accounts whose balance grows with debits (assets / expenses). Every other
+ * account is credit-normal: revenue, GST and payables (liabilities), and
+ * OPENING_BALANCE_EQUITY (the shop's capital on day one, roadmap 9.20).
+ */
+export const DEBIT_NORMAL: ReadonlySet<LedgerAccount> = new Set<LedgerAccount>([
   LedgerAccount.CASH,
   LedgerAccount.BANK,
   LedgerAccount.ACCOUNTS_RECEIVABLE,
@@ -92,7 +103,8 @@ export class LedgerPostingService {
     const header = await tx.ledgerPosting.create({ data: { ...key, description: posting.description }, select: { id: true } });
 
     const sorted = [...entries].sort((a, b) => a.account.localeCompare(b.account));
-    const balances = await this.lockBalances(tx, posting.shopId, sorted.map((e) => e.account));
+    const now = new Date(); // application clock, UTC (roadmap 8.2)
+    const balances = await this.lockBalances(tx, posting.shopId, sorted.map((e) => e.account), now);
 
     for (const entry of sorted) {
       const current = balances.get(entry.account)!;
@@ -101,7 +113,7 @@ export class LedgerPostingService {
       balances.set(entry.account, next);
 
       await tx.$executeRaw`
-        UPDATE LedgerAccountBalance SET balance = ${next.toFixed(2)}, updatedAt = NOW(3)
+        UPDATE LedgerAccountBalance SET balance = ${next.toFixed(2)}, updatedAt = ${now}
         WHERE shopId = ${posting.shopId} AND account = ${entry.account}
       `;
       await tx.ledgerTransaction.create({
@@ -120,12 +132,12 @@ export class LedgerPostingService {
     return { posted: true, postingId: header.id };
   }
 
-  private async lockBalances(tx: Prisma.TransactionClient, shopId: string, accounts: LedgerAccount[]): Promise<Map<LedgerAccount, Prisma.Decimal>> {
+  private async lockBalances(tx: Prisma.TransactionClient, shopId: string, accounts: LedgerAccount[], now: Date): Promise<Map<LedgerAccount, Prisma.Decimal>> {
     const unique = Array.from(new Set(accounts)).sort();
     for (const account of unique) {
       await tx.$executeRaw`
         INSERT INTO LedgerAccountBalance (id, shopId, account, balance, updatedAt)
-        VALUES (${`${shopId}:${account}`.slice(0, 191)}, ${shopId}, ${account}, 0, NOW(3))
+        VALUES (${`${shopId}:${account}`.slice(0, 191)}, ${shopId}, ${account}, 0, ${now})
         ON DUPLICATE KEY UPDATE balance = balance
       `;
     }

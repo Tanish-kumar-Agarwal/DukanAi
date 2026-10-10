@@ -61,6 +61,13 @@ export class CreateProductDto {
   @IsOptional()
   hsnCode?: string;
 
+  /** Low-stock alert level in the product unit (10 when absent; `Decimal(10, 3)`). */
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  @Max(9_999_999.999)
+  @IsOptional()
+  reorderPoint?: number;
+
   @IsString()
   @IsOptional()
   categoryId?: string;

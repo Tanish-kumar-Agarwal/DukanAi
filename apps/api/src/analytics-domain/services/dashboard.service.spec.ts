@@ -49,6 +49,7 @@ function setup() {
     {} as never,
     cache as never,
     shopTimezone as never,
+    { now: () => new Date() } as never,
   );
   return { service, prisma, revenueEngine, cache, queryRaw };
 }
