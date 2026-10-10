@@ -60,10 +60,10 @@ jobs:
       extra: ${{ steps.meta.outputs.extra }}
       release: ${{ steps.meta.outputs.release }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # the release check reads every tag and origin/main
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
       # Roadmap 9.21: nothing is built for a tag that is not a release.
@@ -164,7 +164,7 @@ jobs:
           for image in api web db-ops; do
             bash scripts/certify/trivy-scan.sh sbom "$REG/dukaanai-$image:$SHA" "$RUNNER_TEMP/sbom/sbom-dukaanai-$image.cdx.json"
           done
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom-${{ steps.meta.outputs.sha }}
           path: ${{ runner.temp }}/sbom
@@ -195,8 +195,8 @@ jobs:
       LABEL: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || needs.images.outputs.sha }}
       RELEASE: ${{ needs.images.outputs.release }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -222,7 +222,7 @@ jobs:
         if: always()
         run: |
           if [ -f "$RUNNER_TEMP/certification/SUMMARY.md" ]; then cat "$RUNNER_TEMP/certification/SUMMARY.md" >> "$GITHUB_STEP_SUMMARY"; else echo "no SUMMARY.md was written" >> "$GITHUB_STEP_SUMMARY"; fi
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: certification-${{ env.LABEL }}
