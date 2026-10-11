@@ -2,6 +2,7 @@ import { Controller, Get, Post, Param, Body, Query } from '@nestjs/common';
 import { ListQueryDto, PagedList } from '../common/pagination';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
+import { SafeUserDto } from '../users/dto/safe-user.dto';
 import { WorkflowRepository } from './repositories/workflow.repository';
 import { WorkflowDelegationService } from './services/workflow-delegation.service';
 import type { Request } from 'express';
@@ -25,14 +26,14 @@ export class ProcurementWorkflowController {
 
   @Roles(...MANAGEMENT_ROLES)
   @Post('tasks/:taskId/approve')
-  async approveTask(@CurrentShop() shopId: string, @Param('taskId') taskId: string, @CurrentUser('id') actorId: string, @Body() body: ApprovalDecisionDto) {
-    return this.repository.processTaskDecision(shopId, taskId, actorId, 'APPROVE', body.comments, body.signature);
+  async approveTask(@CurrentShop() shopId: string, @Param('taskId') taskId: string, @CurrentUser() user: SafeUserDto, @Body() body: ApprovalDecisionDto) {
+    return this.repository.processTaskDecision(shopId, taskId, { id: user.id, role: user.role }, 'APPROVE', body.comments, body.signature);
   }
 
   @Roles(...MANAGEMENT_ROLES)
   @Post('tasks/:taskId/reject')
-  async rejectTask(@CurrentShop() shopId: string, @Param('taskId') taskId: string, @CurrentUser('id') actorId: string, @Body() body: ApprovalDecisionDto) {
-    return this.repository.processTaskDecision(shopId, taskId, actorId, 'REJECT', body.comments);
+  async rejectTask(@CurrentShop() shopId: string, @Param('taskId') taskId: string, @CurrentUser() user: SafeUserDto, @Body() body: ApprovalDecisionDto) {
+    return this.repository.processTaskDecision(shopId, taskId, { id: user.id, role: user.role }, 'REJECT', body.comments);
   }
 
   @Roles(...MANAGEMENT_ROLES)

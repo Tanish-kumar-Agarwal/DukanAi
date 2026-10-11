@@ -1,4 +1,4 @@
-import { IsEmail, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { IsEmail, IsOptional, IsString, Matches, MaxLength, ValidateIf } from 'class-validator';
 
 /**
  * The only fields `PATCH /shops/me` accepts. `ValidationPipe` rejects any
@@ -36,10 +36,15 @@ export class UpdateShopProfileDto {
   @MaxLength(20)
   phone?: string;
 
+  /**
+   * The shop's contact address. An empty string (or null) clears it: a new
+   * shop has none, and the settings page sends the field as typed (audit W3).
+   */
   @IsOptional()
+  @ValidateIf((dto: UpdateShopProfileDto) => dto.email !== '')
   @IsEmail()
   @MaxLength(191)
-  email?: string;
+  email?: string | null;
 
   /** GSTIN as printed on invoices; an empty string clears it. */
   @IsOptional()

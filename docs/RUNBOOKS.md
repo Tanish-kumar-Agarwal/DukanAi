@@ -209,8 +209,12 @@ after it clears if their cause remains).
   (the restart policy starts everything); the database is managed and was
   not on this host.
 - *Scrape path* (API alive): `dc ps prometheus`, Prometheus › Status ›
-  Targets for the scrape error. A `401` means `METRICS_TOKEN` differs
-  between the API and `deploy/prometheus`'s bearer file; a timeout with
+  Targets for the scrape error. A `404` means `METRICS_TOKEN` is blank: a
+  production API hides the route without one (audit R13); set it in `.env`
+  and recreate both as below. A `401` means the token Prometheus sends
+  differs from the API's `METRICS_TOKEN`: both come from `.env`, and
+  `render.sh` writes Prometheus's copy at start, so after changing it run
+  `dc --profile ops up -d --force-recreate prometheus api`; a timeout with
   `dependency_up` missing means a source hangs (finding 4 of
   `docs/DRILLS.md`).
 
@@ -705,9 +709,16 @@ resolved within a scrape.
 ### DukaanAiBackupNeverRecorded
 
 **Warning · SEV3.** There is no `backup_last_success_timestamp_seconds`
-series for a backup kind, for 30 minutes: as far as monitoring knows, that
-job has never succeeded. On a new stack it fires until the first nightly
-run; on a running stack it means the job, or the stamp, is gone.
+series for a backup kind the deployment runs, for 30 minutes: as far as
+monitoring knows, that job has never succeeded. On a new stack it fires
+until the first nightly run; on a running stack it means the job, or the
+stamp, is gone. The kinds expected come from the topology
+(`deploy/prometheus/topology/*.rules.yml`, series `dukaanai:backup_expected`):
+dump, binlog, documents and offsite on the reference stack; dump, documents
+and offsite in production, which has no binary-log archiver. Kind
+`no-topology-rules` means Prometheus runs without a topology file
+(`PROMETHEUS_TOPOLOGY` and `render.sh` in compose; the rule file next to
+`alerts.yml` on a Prometheus of your own).
 
 **First checks**
 
@@ -717,9 +728,15 @@ run; on a running stack it means the job, or the stamp, is gone.
 3. Can the API read the stamps? `BACKUP_STATUS_DIR` on the API and the
    jobs must name the same directory, and the `db-backups` volume is
    mounted into the API read-only (`dc exec api sh -c 'ls -l "$BACKUP_STATUS_DIR"'`).
+4. Kind `no-topology-rules`, or a kind this deployment does not run (binlog
+   in production): Prometheus › Status › Rule health lists
+   `dukaanai-topology`; `dc --profile ops logs prometheus | grep render.sh`
+   names the topology it loaded.
 
 **Fix.** Schedule the job, or align `BACKUP_STATUS_DIR` / the mount, then
-run the job once by hand (as in **DukaanAiBackupStale**).
+run the job once by hand (as in **DukaanAiBackupStale**). A wrong or
+missing topology: set `PROMETHEUS_TOPOLOGY` (the production compose file
+sets `production`) and `dc --profile ops up -d --force-recreate prometheus`.
 
 **Verify.** The series exists (Prometheus:
 `backup_last_success_timestamp_seconds`); the alert resolved.
@@ -794,7 +811,7 @@ hours: the nightly job is not running. Drift, if any, goes unseen.
 **First checks**
 
 1. When it should have run: `CRON_RECONCILIATION` (default `30 1 * * *`,
-   the container's clock, UTC: 07:00 in India) and whether an instance
+   read in `CRON_TIMEZONE`, default Asia/Kolkata) and whether an instance
    carries `CRON_ENABLED=false` (`dc exec api printenv CRON_ENABLED`; empty
    is on; the boot line `Reconciliation schedule not registered` says off).
 2. The API's log around that time, in Loki: `{service="api"} |~

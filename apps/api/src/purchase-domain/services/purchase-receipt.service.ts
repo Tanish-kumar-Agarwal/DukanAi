@@ -8,6 +8,9 @@ export interface OrderedLine {
   variantId: string | null;
   quantity: Prisma.Decimal;
   unitCost: Prisma.Decimal;
+  /** Taxable value of the line: quantity × unitCost − discount, GST excluded (the net cost a receipt values stock at). */
+  price: Prisma.Decimal;
+  discount: Prisma.Decimal | null;
   unit: string | null;
   /** Accepted so far by other receipts of this order line. */
   acceptedElsewhere: Prisma.Decimal;
@@ -34,7 +37,7 @@ export class PurchaseReceiptService {
     if (!PurchaseLifecycleService.RECEIVABLE.includes(po.status as never)) {
       throw new BadRequestException({ message: `Goods cannot be received against a ${po.status} purchase order.`, code: 'PURCHASE_ORDER_NOT_RECEIVABLE', details: { status: po.status } });
     }
-    const items = await tx.purchaseOrderItem.findMany({ where: { purchaseOrderId, shopId, isDeleted: false }, select: { id: true, productId: true, variantId: true, quantity: true, unitCost: true, unit: true } });
+    const items = await tx.purchaseOrderItem.findMany({ where: { purchaseOrderId, shopId, isDeleted: false }, select: { id: true, productId: true, variantId: true, quantity: true, unitCost: true, price: true, discount: true, unit: true } });
     const accepted = await tx.goodsReceiptLine.groupBy({
       by: ['purchaseOrderItemId'],
       where: { shopId, purchaseOrderItemId: { in: items.map((i) => i.id) }, isDeleted: false, goodsReceipt: { status: { in: ['ACCEPTED', 'COMPLETED', 'CLOSED'] }, isDeleted: false, ...(excludeReceiptId ? { id: { not: excludeReceiptId } } : {}) } },

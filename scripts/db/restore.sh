@@ -16,6 +16,9 @@
 #                          else <backup dir>/binlog)
 #   --replay-database NAME replay the events logged under NAME instead of the dump's database
 #                          (the restore drill replays a scratch copy's events)
+#   --allow-short          with --to: accept an archive whose last event is before TIME and
+#                          restore to the end of the archive (otherwise refused: the events
+#                          between the archive's end and TIME are not there to replay)
 #
 # The dump drops and re-creates every table it contains, so the target is
 # replaced, not merged: stop the API (or restore into a fresh database and
@@ -33,7 +36,7 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-[ $# -ge 1 ] || { sed -n '2,32p' "$0"; exit 2; }
+[ $# -ge 1 ] || { sed -n '2,35p' "$0"; exit 2; }
 BACKUP="$1"; shift
 TARGET_DB=""
 CREATE=0
@@ -41,6 +44,7 @@ YES=0
 TO=""
 BINLOGS=""
 REPLAY_DB=""
+ALLOW_SHORT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --database) TARGET_DB="$2"; shift 2 ;;
@@ -49,7 +53,8 @@ while [ $# -gt 0 ]; do
     --to) TO="$2"; shift 2 ;;
     --binlogs) BINLOGS="$2"; shift 2 ;;
     --replay-database) REPLAY_DB="$2"; shift 2 ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    --allow-short) ALLOW_SHORT=1; shift ;;
+    -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -122,6 +127,30 @@ if [ -n "$TO" ]; then
     expect=$((expect + 1))
   done < <(ls -1 "$BINLOGS"/"$prefix".[0-9]* 2>/dev/null | grep -E "/$prefix\.[0-9]+\$" | sort)
   [ "${#files[@]}" -gt 0 ] || die "no binary log to replay in $BINLOGS"
+  # Does the archive reach TO (audit F6)? The newest event of the last
+  # archived log (its closing Rotate event when the archiver flushed) is how
+  # far the archive goes; a target after it would silently restore to the
+  # archive's end and report it as TO.
+  last_file="${files[${#files[@]}-1]}"
+  # Event headers read "#YYMMDD HH:MM:SS server id ..." in mysqlbinlog's zone (TZ=UTC); a
+  # zero timestamp (#700101, an artificial event) is no time at all.
+  archive_end="$(TZ=UTC "$MYSQLBINLOG_BIN" "$last_file" 2>/dev/null | awk '
+    /^#[0-9][0-9][0-9][0-9][0-9][0-9] +[0-9]+:[0-9][0-9]:[0-9][0-9] +server id/ && $1 != "#700101" {
+      d = substr($1, 2); split($2, t, ":")
+      s = sprintf("20%s-%s-%s %02d:%s:%s", substr(d, 1, 2), substr(d, 3, 2), substr(d, 5, 2), t[1], t[2], t[3])
+      if (s > max) max = s
+    }
+    END { print max }' || true)"
+  [ -n "$archive_end" ] || die "cannot read the events of $(basename "$last_file") with $MYSQLBINLOG_BIN (a MariaDB mysqlbinlog cannot read MySQL 8 logs: MYSQLBINLOG_BIN)"
+  if [ "$(utc_epoch "$archive_end")" -lt "$(utc_epoch "$TO")" ]; then
+    if [ "$ALLOW_SHORT" = 1 ]; then
+      printf 'WARNING: the archive ends at %s UTC, before --to %s UTC: restoring to the end of the archive (--allow-short); the events after it are lost\n' "$archive_end" "$TO" >&2
+    else
+      die "the binary-log archive ends at $archive_end UTC ($(basename "$last_file")), before --to $TO UTC: the events in between are not archived. Archive the newest logs first (binlog-archive.sh --flush), or pass --allow-short to restore to the end of the archive"
+    fi
+  else
+    printf '  the archive reaches %s UTC (%s)\n' "$archive_end" "$(basename "$last_file")"
+  fi
   if [ "$REPLAY_DB" = "$TARGET_DB" ]; then
     printf '  then replay %s binary log(s) %s..%s from position %s up to %s UTC: the events of %s\n' "${#files[@]}" "$(basename "${files[0]}")" "$(basename "${files[${#files[@]}-1]}")" "$BL_POS" "$TO" "$REPLAY_DB"
   else

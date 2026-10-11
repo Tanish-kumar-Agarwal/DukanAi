@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { LedgerAccount, LedgerEntryType, Prisma, TenderType } from '@prisma/client';
-import { LedgerPostingService } from './ledger-posting.service';
+import { LedgerPosting, LedgerPostingResult, LedgerPostingService } from './ledger-posting.service';
+import { applyCashPayout, lockShiftForCashPayout } from '../shifts/cash-payout';
 
 export interface SupplierPaymentInput {
   shopId: string;
@@ -15,63 +16,112 @@ export interface SupplierPaymentInput {
 }
 
 export interface SupplierPaymentOutcome {
-  payment: { id: string; amount: Prisma.Decimal; tender: TenderType; supplierId: string; vendorBillId: string | null; createdAt: Date };
+  payment: { id: string; amount: Prisma.Decimal; tender: TenderType; supplierId: string; vendorBillId: string | null; shiftId: string | null; createdAt: Date };
   pendingPayables: Prisma.Decimal;
   replayed: boolean;
 }
 
+export interface LockedSupplier {
+  id: string;
+  pendingPayables: Prisma.Decimal;
+  isDeleted: boolean;
+}
+
 /**
- * Accounts payable per supplier (roadmap 3.11, audit P2-24). The ledger's
- * ACCOUNTS_PAYABLE account is the authority; `Supplier.pendingPayables` is
- * the per-supplier running balance maintained in the same transaction as
- * every posting that moves it:
- *   goods receipt      CR ACCOUNTS_PAYABLE   pendingPayables += value
- *   purchase return    DR ACCOUNTS_PAYABLE   pendingPayables -= value (floored at 0)
- *   supplier payment   DR ACCOUNTS_PAYABLE / CR CASH|BANK   pendingPayables -= amount (guarded)
- * A payment is a `SupplierPayment` row (the ledger source, idempotent per
- * (shopId, idempotencyKey)); the guarded decrement rejects paying more than
- * is owed instead of clamping it away silently. `payablesFromLedger` rebuilds
- * the balance from the postings so the denormalised column can be verified.
+ * Accounts payable per supplier (roadmap 3.11, audit P2-24, release audit
+ * S3/S11/S17). The ledger's ACCOUNTS_PAYABLE account is the authority;
+ * `Supplier.pendingPayables` is the per-supplier running balance maintained
+ * in the same transaction as every posting that moves it:
+ *   opening balance    DR OPENING_BALANCE_EQUITY / CR AP   pendingPayables = opening
+ *   goods receipt      DR INVENTORY / CR AP                 pendingPayables += net value
+ *   vendor bill posted DR INPUT_GST (+ DR/CR INVENTORY price difference) / CR AP   += tax + difference
+ *   purchase return    DR AP / CR INVENTORY                 pendingPayables -= value
+ *   credit note issued DR AP / CR INVENTORY, INPUT_GST      pendingPayables -= value
+ *   supplier payment   DR AP / CR CASH|BANK                 pendingPayables -= amount (guarded)
+ * A balance below zero is a supplier advance (goods returned after they were
+ * paid for): it is kept, never floored, so the column always equals the
+ * ledger. Lock order (AGENTS.md): Shift, then Supplier, then the ledger
+ * balances; every writer here locks the supplier row before it posts.
  */
 @Injectable()
 export class SupplierPayablesService {
   constructor(private readonly ledger: LedgerPostingService) {}
 
-  /** Goods received on credit: the supplier is owed `value` more. */
+  /** Locks the supplier row (`FOR UPDATE`); 404 when it is not this shop's (or deleted, unless `allowDeleted`). */
+  async lockSupplier(tx: Prisma.TransactionClient, shopId: string, supplierId: string, options: { allowDeleted?: boolean } = {}): Promise<LockedSupplier> {
+    const rows = await tx.$queryRaw<Array<{ id: string; pendingPayables: unknown; isDeleted: number | boolean }>>`
+      SELECT id, pendingPayables, isDeleted FROM Supplier WHERE id = ${supplierId} AND shopId = ${shopId} FOR UPDATE
+    `;
+    const row = rows[0];
+    if (!row || (Boolean(row.isDeleted) && !options.allowDeleted)) throw new NotFoundException({ message: 'Supplier not found.', code: 'SUPPLIER_NOT_FOUND' });
+    return { id: row.id, pendingPayables: new Prisma.Decimal(String(row.pendingPayables)), isDeleted: Boolean(row.isDeleted) };
+  }
+
+  /**
+   * One posting that moves a supplier's payable: the supplier row is locked
+   * first, then the posting is written, then `pendingPayables` moves by
+   * `payableDelta` (the posting's net CREDIT to ACCOUNTS_PAYABLE; negative
+   * for a debit). A replayed source posts nothing and moves nothing.
+   * Documents of a supplier that was deleted later (a receipt accepted after
+   * the supplier left) still settle: `allowDeleted`.
+   */
+  async postWithPayable(
+    tx: Prisma.TransactionClient,
+    supplierId: string | null | undefined,
+    posting: LedgerPosting,
+    payableDelta: Prisma.Decimal,
+  ): Promise<LedgerPostingResult> {
+    if (supplierId) await this.lockSupplier(tx, posting.shopId, supplierId, { allowDeleted: true });
+    const result = await this.ledger.post(tx, posting);
+    if (result.posted && supplierId && !payableDelta.isZero()) await this.movePayable(tx, posting.shopId, supplierId, payableDelta);
+    return result;
+  }
+
+  /** Goods received on credit: the supplier is owed `value` more (caller holds the supplier lock). */
   async addPayable(tx: Prisma.TransactionClient, shopId: string, supplierId: string | null | undefined, value: Prisma.Decimal): Promise<void> {
     if (!supplierId || value.lessThanOrEqualTo(0)) return;
-    await tx.supplier.updateMany({ where: { id: supplierId, shopId }, data: { pendingPayables: { increment: value } } });
+    await this.movePayable(tx, shopId, supplierId, value);
   }
 
-  /** Goods sent back: the supplier is owed `value` less, never below zero. */
+  /** Goods sent back: the supplier is owed `value` less; below zero is an advance, never floored. */
   async reducePayable(tx: Prisma.TransactionClient, shopId: string, supplierId: string | null | undefined, value: Prisma.Decimal): Promise<void> {
     if (!supplierId || value.lessThanOrEqualTo(0)) return;
-    const now = new Date(); // application clock, UTC (roadmap 8.2)
-    await tx.$executeRaw`
-      UPDATE Supplier SET pendingPayables = GREATEST(pendingPayables - ${value.toFixed(2)}, 0), updatedAt = ${now}
-      WHERE id = ${supplierId} AND shopId = ${shopId}
-    `;
+    await this.movePayable(tx, shopId, supplierId, value.negated());
   }
 
-  /** Records a payment, settles it against the payable and posts it, all inside `tx`. */
+  private async movePayable(tx: Prisma.TransactionClient, shopId: string, supplierId: string, delta: Prisma.Decimal): Promise<void> {
+    await tx.supplier.updateMany({ where: { id: supplierId, shopId }, data: { pendingPayables: { increment: delta.toDecimalPlaces(2) } } });
+  }
+
+  /**
+   * Records a payment, settles it against the payable and posts it, all
+   * inside `tx` (which should be READ COMMITTED: the replay lookup runs after
+   * the supplier lock and must see a twin request's committed payment). A
+   * CASH payment by someone with an open shift leaves that drawer
+   * (`Shift.cashPayouts`, `SupplierPayment.shiftId`).
+   */
   async pay(tx: Prisma.TransactionClient, input: SupplierPaymentInput): Promise<SupplierPaymentOutcome> {
     const amount = new Prisma.Decimal(input.amount.toString()).toDecimalPlaces(2);
     if (amount.lessThanOrEqualTo(0)) throw new ConflictException({ message: 'A payment must be greater than zero.', code: 'PAYMENT_INVALID' });
     const tender = input.tender ?? TenderType.CASH;
 
+    // Canonical lock order: the drawer, then the supplier, then (in ledger.post) the account balances.
+    const shiftId = tender === TenderType.CASH && input.recordedById ? await lockShiftForCashPayout(tx, input.shopId, input.recordedById) : null;
+    const supplier = await this.lockSupplier(tx, input.shopId, input.supplierId);
+
     if (input.idempotencyKey) {
+      // After the supplier lock: two requests with one key queue on the row, and the second sees the first's payment.
       const existing = await tx.supplierPayment.findFirst({ where: { shopId: input.shopId, idempotencyKey: input.idempotencyKey } });
       if (existing) {
-        const supplier = await tx.supplier.findFirstOrThrow({ where: { id: input.supplierId, shopId: input.shopId }, select: { pendingPayables: true } });
+        const sameRequest = existing.supplierId === input.supplierId && existing.amount.equals(amount) && (existing.vendorBillId ?? null) === (input.vendorBillId ?? null);
+        if (!sameRequest) {
+          throw new ConflictException({ message: 'This idempotency key was already used for a different payment.', code: 'IDEMPOTENCY_KEY_REUSED', details: { paymentId: existing.id } });
+        }
         return { payment: existing, pendingPayables: supplier.pendingPayables, replayed: true };
       }
     }
 
     // Guarded decrement: the row is locked and the balance must cover the payment.
-    const rows = await tx.$queryRaw<Array<{ id: string; pendingPayables: unknown; isDeleted: number | boolean }>>`
-      SELECT id, pendingPayables, isDeleted FROM Supplier WHERE id = ${input.supplierId} AND shopId = ${input.shopId} FOR UPDATE
-    `;
-    if (rows.length === 0 || Boolean(rows[0].isDeleted)) throw new NotFoundException({ message: 'Supplier not found.', code: 'SUPPLIER_NOT_FOUND' });
     const now = new Date(); // application clock, UTC (roadmap 8.2)
     const settled = await tx.$executeRaw`
       UPDATE Supplier SET pendingPayables = pendingPayables - ${amount.toFixed(2)}, updatedAt = ${now}
@@ -81,7 +131,7 @@ export class SupplierPayablesService {
       throw new ConflictException({
         message: 'The payment exceeds what is owed to this supplier.',
         code: 'PAYABLES_INSUFFICIENT',
-        details: { pendingPayables: Number(String(rows[0].pendingPayables)), requested: amount.toNumber() },
+        details: { pendingPayables: supplier.pendingPayables.toFixed(2), requested: amount.toFixed(2) },
       });
     }
 
@@ -96,8 +146,10 @@ export class SupplierPayablesService {
         idempotencyKey: input.idempotencyKey ?? null,
         notes: input.notes ?? null,
         recordedById: input.recordedById ?? null,
+        shiftId,
       },
     });
+    await applyCashPayout(tx, shiftId, amount);
     await this.ledger.post(tx, {
       shopId: input.shopId,
       source: { type: 'SUPPLIER_PAYMENT', id: payment.id },
@@ -108,39 +160,34 @@ export class SupplierPayablesService {
         { account: tender === TenderType.CASH ? LedgerAccount.CASH : LedgerAccount.BANK, type: LedgerEntryType.CREDIT, amount },
       ],
     });
-    const supplier = await tx.supplier.findFirstOrThrow({ where: { id: input.supplierId }, select: { pendingPayables: true } });
-    return { payment, pendingPayables: supplier.pendingPayables, replayed: false };
+    const after = await tx.supplier.findFirstOrThrow({ where: { id: input.supplierId, shopId: input.shopId }, select: { pendingPayables: true } });
+    return { payment, pendingPayables: after.pendingPayables, replayed: false };
   }
 
   /**
-   * The balance the ledger implies for one supplier: opening balance, plus
-   * every posted goods receipt, minus every posted purchase return and every
-   * posted payment. Equals `Supplier.pendingPayables` when the books are
+   * The balance the ledger implies for one supplier: `openingPayables` (the
+   * column is the authority for the opening part: suppliers created before
+   * the opening balance was posted have no posting, newer ones have one with
+   * the same amount, which is therefore not counted again) plus the net
+   * ACCOUNTS_PAYABLE credit of every posting whose source document belongs to
+   * the supplier: goods receipts, vendor bills, purchase returns, credit
+   * notes and payments. Equals `Supplier.pendingPayables` when the books are
    * consistent; a mismatch points at a write that bypassed this service.
    */
   async payablesFromLedger(db: Prisma.TransactionClient, shopId: string, supplierId: string): Promise<Prisma.Decimal> {
     const supplier = await db.supplier.findFirstOrThrow({ where: { id: supplierId, shopId }, select: { openingPayables: true } });
-    const [receipts, returns, payments] = await Promise.all([
-      db.$queryRaw<Array<{ total: unknown }>>`
-        SELECT COALESCE(SUM(t.amount), 0) AS total FROM LedgerTransaction t
-        JOIN LedgerPosting p ON p.id = t.postingId AND p.sourceType = 'GRN'
-        JOIN GoodsReceipt g ON g.id = p.sourceId AND g.supplierId = ${supplierId}
-        WHERE t.shopId = ${shopId} AND t.account = 'ACCOUNTS_PAYABLE' AND t.type = 'CREDIT'
-      `,
-      db.$queryRaw<Array<{ total: unknown }>>`
-        SELECT COALESCE(SUM(t.amount), 0) AS total FROM LedgerTransaction t
-        JOIN LedgerPosting p ON p.id = t.postingId AND p.sourceType = 'PURCHASE_RETURN'
-        JOIN PurchaseReturn r ON r.id = p.sourceId AND r.supplierId = ${supplierId}
-        WHERE t.shopId = ${shopId} AND t.account = 'ACCOUNTS_PAYABLE' AND t.type = 'DEBIT'
-      `,
-      db.$queryRaw<Array<{ total: unknown }>>`
-        SELECT COALESCE(SUM(t.amount), 0) AS total FROM LedgerTransaction t
-        JOIN LedgerPosting p ON p.id = t.postingId AND p.sourceType = 'SUPPLIER_PAYMENT'
-        JOIN SupplierPayment s ON s.id = p.sourceId AND s.supplierId = ${supplierId}
-        WHERE t.shopId = ${shopId} AND t.account = 'ACCOUNTS_PAYABLE' AND t.type = 'DEBIT'
-      `,
-    ]);
-    const dec = (rows: Array<{ total: unknown }>) => new Prisma.Decimal(String(rows[0]?.total ?? 0));
-    return supplier.openingPayables.plus(dec(receipts)).minus(dec(returns)).minus(dec(payments)).toDecimalPlaces(2);
+    const rows = await db.$queryRaw<Array<{ total: unknown }>>`
+      SELECT COALESCE(SUM(CASE WHEN t.type = 'CREDIT' THEN t.amount ELSE -t.amount END), 0) AS total
+      FROM LedgerTransaction t
+      JOIN LedgerPosting p ON p.id = t.postingId
+      WHERE t.shopId = ${shopId} AND t.account = 'ACCOUNTS_PAYABLE' AND (
+        (p.sourceType = 'GRN' AND p.sourceId IN (SELECT id FROM GoodsReceipt WHERE shopId = ${shopId} AND supplierId = ${supplierId}))
+        OR (p.sourceType = 'VENDOR_BILL' AND p.sourceId IN (SELECT id FROM VendorBill WHERE shopId = ${shopId} AND supplierId = ${supplierId}))
+        OR (p.sourceType = 'PURCHASE_RETURN' AND p.sourceId IN (SELECT id FROM PurchaseReturn WHERE shopId = ${shopId} AND supplierId = ${supplierId}))
+        OR (p.sourceType = 'SUPPLIER_CREDIT_NOTE' AND p.sourceId IN (SELECT id FROM SupplierCreditNote WHERE shopId = ${shopId} AND supplierId = ${supplierId}))
+        OR (p.sourceType = 'SUPPLIER_PAYMENT' AND p.sourceId IN (SELECT id FROM SupplierPayment WHERE shopId = ${shopId} AND supplierId = ${supplierId}))
+      )
+    `;
+    return supplier.openingPayables.plus(new Prisma.Decimal(String(rows[0]?.total ?? 0))).toDecimalPlaces(2);
   }
 }

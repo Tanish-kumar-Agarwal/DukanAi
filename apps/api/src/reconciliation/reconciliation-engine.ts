@@ -1,8 +1,10 @@
-import { InvoiceStatus, InvoiceType, LedgerAccount, LedgerEntryType, Prisma, TenderType, UdharTransaction, UdharTransactionType } from '@prisma/client';
+import { Expense, InvoiceStatus, InvoiceType, LedgerAccount, LedgerEntryType, Prisma, PrismaClient, TenderType, UdharTransaction, UdharTransactionType } from '@prisma/client';
 import { completedInvoiceFilter, IS_RETURN, IS_SALE, toDecimal } from '../analytics-domain/engines/invoice-sql';
 import { splitRevenue } from '../billing/billing.types';
+import { costOfGoodsSlice } from '../billing/utils/invoice-math.engine';
 import { businessDateString, endOfBusinessDay, parseBusinessDate, startOfBusinessDay } from '../common/time/business-day';
-import { DEBIT_NORMAL } from '../ledger/ledger-posting.service';
+import { EXPENSE_SOURCES, expenseCashOut, expenseIdOfSource, expenseLedgerState } from '../expenses/expense-books';
+import { DEBIT_NORMAL, LEDGER_SOURCE_TYPES } from '../ledger/ledger-posting.service';
 
 /**
  * Financial reconciliation of one shop's business day, to the paisa
@@ -12,35 +14,48 @@ import { DEBIT_NORMAL } from '../ledger/ledger-posting.service';
  * the same under a tenant context (where the extension narrows it again) and
  * on a bare client.
  *
- * Seven checks, each with its figures and a list of drifts (a drift names the
+ * Nine checks, each with its figures and a list of drifts (a drift names the
  * document or row, the two figures and their difference):
  *
  *  - documents: every invoice of the day is internally consistent
- *    (`taxable + tax + round-off = total`, tenders + credit = total) and
- *    every repayment moved the customer balance by its amount;
+ *    (`taxable + tax + round-off = total`, `Σ line totals + round-off =
+ *    total`, tenders + credit = total), every credit sale has its CREDIT
+ *    udhar row, and every repayment moved the customer balance by its amount;
  *  - postings: every sale, return, cancellation and repayment of the day has
  *    exactly the ledger posting its stored amounts imply (cash and bank by
  *    tender, receivable by credit, revenue and GST by `splitRevenue`, cost of
- *    goods from the stock movements the document caused), every posting of
- *    the day balances, and no posting points at a document that does not
- *    exist;
+ *    goods from the stock movements the document caused), every expense
+ *    touched in the day is in the books exactly as it now stands (the sum of
+ *    its `EXPENSE` / `EXPENSE_ADJUSTMENT` postings), every posting of the day
+ *    balances, and no posting points at a document that does not exist;
  *  - tenders: the day's cash, bank and receivable movements in the ledger
  *    equal the day's documents by tender;
  *  - dashboard: the figure `GET /dashboard/summary` shows for the day (the
  *    shared SQL of `RevenueEngine.totals`) equals the documents and the
  *    ledger's net revenue + GST;
  *  - shifts: every shift open during the day is rebuilt from its documents
- *    (opening cash + cash sales − cash refunds + cash repayments = expected
- *    cash, and the sales / receipts counters likewise);
+ *    (opening cash + cash sales − cash refunds + cash repayments − cash
+ *    payouts = expected cash, the payouts being its cash expenses and cash
+ *    supplier payments, and the sales / receipts / payouts counters likewise);
  *  - stock: every inventory item's `onHand` equals its stock ledger, and
  *    every product's `currentStock` equals the sum of its items;
  *  - ledger: every account balance equals the sum of its transactions and the
- *    last transaction's running balance.
+ *    last transaction's running balance;
+ *  - receivables: every customer's `outstandingBalance` equals its last udhar
+ *    row and the sum of its udhar movements, and the customers' balances add
+ *    up to the ledger's receivables;
+ *  - payables: every supplier's `pendingPayables` equals its opening balance
+ *    plus its documents' ACCOUNTS_PAYABLE postings, and the suppliers add up
+ *    to the ledger's payables.
+ *
+ * Every read of a run sees one database snapshot: the callers open it with
+ * `inReadSnapshot` (one REPEATABLE READ transaction), so a sale committing
+ * while the engine reads cannot show in one figure and not in another.
  *
  * Nothing is corrected: a drift is reported for a person to explain or fix.
  */
 
-export type ReconciliationCheckName = 'documents' | 'postings' | 'tenders' | 'dashboard' | 'shifts' | 'stock' | 'ledger';
+export type ReconciliationCheckName = 'documents' | 'postings' | 'tenders' | 'dashboard' | 'shifts' | 'stock' | 'ledger' | 'receivables' | 'payables';
 export type ReconciliationCheckStatus = 'CLEAN' | 'DRIFT' | 'INCONCLUSIVE';
 
 export interface ReconciliationDrift {
@@ -93,16 +108,42 @@ export interface ReconciliationReport {
   summary: ReconciliationSummary;
 }
 
+/** Points between the engine's reads where `ReconcileOptions.probe` is awaited (the snapshot test commits a sale there). */
+export type ReconciliationProbePoint = 'documents-read' | 'stock-items-read' | 'ledger-sums-read';
+
 export interface ReconcileOptions {
   shopId: string;
   timeZone: string;
   /** `YYYY-MM-DD` in `timeZone`. */
   businessDate: string;
   now?: Date;
+  /** Awaited between reads; a no-op in production (`ReconciliationCheckpoints`). */
+  probe?: (point: ReconciliationProbePoint) => Promise<void>;
 }
 
 /** The slice of the Prisma client the engine reads; a transaction client and the bare client both fit. */
 export type ReconciliationDb = Prisma.TransactionClient;
+
+/** How long one run may hold its snapshot open, and wait for a connection to open it on. */
+export const RECONCILIATION_SNAPSHOT_TIMEOUT_MS = 120_000;
+export const RECONCILIATION_SNAPSHOT_MAX_WAIT_MS = 15_000;
+
+/**
+ * Runs `work` inside one REPEATABLE READ transaction, so every read of it sees
+ * the same InnoDB snapshot (taken at its first read). The engine issues
+ * dozens of separate reads (documents, then stock items, then their ledger,
+ * then the account sums, then the balances); on a bare client a sale that
+ * commits between two of them shows in one and not the other, and the run
+ * reports a drift that does not exist (and pages). The work only reads; the
+ * caller records the run after the snapshot is closed.
+ */
+export function inReadSnapshot<T>(db: Pick<PrismaClient, '$transaction'>, work: (tx: ReconciliationDb) => Promise<T>): Promise<T> {
+  return db.$transaction((tx) => work(tx), {
+    isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    timeout: RECONCILIATION_SNAPSHOT_TIMEOUT_MS,
+    maxWait: RECONCILIATION_SNAPSHOT_MAX_WAIT_MS,
+  });
+}
 
 type D = Prisma.Decimal;
 const D = Prisma.Decimal;
@@ -117,6 +158,22 @@ const sum = (values: Iterable<D>): D => {
 };
 
 const POS_SOURCES = new Set(['SALE', 'RETURN', 'CANCELLATION', 'CUSTOMER_PAYMENT']);
+const EXPENSE_FAMILY = new Set<string>([EXPENSE_SOURCES.posted, EXPENSE_SOURCES.adjusted]);
+const KNOWN_SOURCES = new Set<string>(LEDGER_SOURCE_TYPES);
+/** The receivable accounts the customers' udhar balances add up to. */
+const RECEIVABLE_ACCOUNTS: LedgerAccount[] = [LedgerAccount.ACCOUNTS_RECEIVABLE, LedgerAccount.UDHAR_RECEIVABLE];
+/** Ledger sources that move a supplier's payable: [source type, document table, its supplier column]. */
+const SUPPLIER_DOCUMENTS: ReadonlyArray<readonly [string, string, string]> = [
+  ['GRN', 'GoodsReceipt', 'supplierId'],
+  ['VENDOR_BILL', 'VendorBill', 'supplierId'],
+  ['PURCHASE_RETURN', 'PurchaseReturn', 'supplierId'],
+  ['SUPPLIER_CREDIT_NOTE', 'SupplierCreditNote', 'supplierId'],
+  ['SUPPLIER_PAYMENT', 'SupplierPayment', 'supplierId'],
+  ['SUPPLIER_OPENING_BALANCE', 'Supplier', 'id'],
+];
+/** Migrations whose finish marks when a fact started being recorded (`migrationFinishedAt`). */
+const DRAWER_ATTRIBUTION_MIGRATION = '20261005090000_reconciliation_runs';
+const EXPENSE_BOOKS_MIGRATION = '20261012090000_audit_fixes';
 const BANK_TENDERS: ReadonlySet<TenderType> = new Set<TenderType>([TenderType.UPI, TenderType.CARD, TenderType.BANK_TRANSFER]);
 
 type InvoiceRow = Prisma.InvoiceGetPayload<{ include: { items: true; payments: true } }>;
@@ -253,13 +310,38 @@ export async function reconcileBusinessDay(db: ReconciliationDb, options: Reconc
       moved.set(key, (moved.get(key) ?? ZERO).plus(m.quantity.abs()));
     }
   }
+  // Units of each sale line earlier returns of the same sale took back: the
+  // billing transactions book cost of goods per line as a cumulative slice
+  // (`costOfGoodsSlice`: a sale from 0, a return after the line's earlier
+  // returns), so a line's returns add up to exactly its sale (audit B16).
+  const returnedBefore = new Map<string, D>(); // `${returnId}:${productId}` -> quantity returned before it
+  const originalIds = [...new Set(invoices.filter((i) => i.type === InvoiceType.SALES_RETURN && i.originalId).map((i) => i.originalId!))];
+  if (originalIds.length > 0) {
+    const siblings = await db.invoice.findMany({
+      where: { shopId, isDeleted: false, type: InvoiceType.SALES_RETURN, status: InvoiceStatus.COMPLETED, originalId: { in: originalIds } },
+      select: { id: true, originalId: true, items: { where: { isDeleted: false }, select: { productId: true, quantity: true } } },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    const running = new Map<string, D>(); // `${originalId}:${productId}`
+    for (const r of siblings) {
+      for (const item of r.items) {
+        if (!item.productId) continue;
+        const line = `${r.originalId}:${item.productId}`;
+        returnedBefore.set(`${r.id}:${item.productId}`, running.get(line) ?? ZERO);
+        running.set(line, (running.get(line) ?? ZERO).plus(item.quantity));
+      }
+    }
+  }
   const costOfGoods = (invoice: InvoiceRow, movement: 'SALE' | 'RETURN'): D =>
-    money(
-      sum(
-        invoice.items
-          .filter((item) => item.productId && !item.isCustom)
-          .map((item) => item.costPrice.mul(moved.get(`${invoice.id}:${movement}:${item.productId}`) ?? ZERO)),
-      ),
+    sum(
+      invoice.items
+        .filter((item) => item.productId && !item.isCustom)
+        .map((item) => {
+          const quantity = moved.get(`${invoice.id}:${movement}:${item.productId}`) ?? ZERO;
+          if (quantity.isZero()) return ZERO;
+          const before = movement === 'RETURN' ? (returnedBefore.get(`${invoice.id}:${item.productId}`) ?? ZERO) : ZERO;
+          return new D(costOfGoodsSlice(item.costPrice.toString(), before.toString(), quantity.toString()).toString());
+        }),
     );
 
   // Every posting of the day's documents, plus every posting created in the window (any source).
@@ -270,6 +352,18 @@ export async function reconcileBusinessDay(db: ReconciliationDb, options: Reconc
   const postingByKey = new Map<string, PostingRow>(postings.map((p) => [`${p.sourceType}:${p.sourceId}`, p]));
 
   const saleInDay = (i: InvoiceRow) => i.type === InvoiceType.SALE && inWindow(i.createdAt, start, end);
+
+  // The CREDIT udhar rows that carried the day's credit sales to their customers.
+  const creditSaleIds = invoices.filter((i) => saleInDay(i) && i.udharAmount.greaterThan(0)).map((i) => i.id);
+  const creditBySale = new Map<string, D>();
+  if (creditSaleIds.length > 0) {
+    const rows = await db.udharTransaction.findMany({
+      where: { shopId, type: UdharTransactionType.CREDIT, invoiceId: { in: creditSaleIds } },
+      select: { invoiceId: true, amount: true },
+    });
+    for (const r of rows) creditBySale.set(r.invoiceId!, (creditBySale.get(r.invoiceId!) ?? ZERO).plus(r.amount));
+  }
+  await options.probe?.('documents-read');
   const returnInDay = (i: InvoiceRow) => i.type === InvoiceType.SALES_RETURN && i.status === InvoiceStatus.COMPLETED && inWindow(i.createdAt, start, end);
   const cancelInDay = (i: InvoiceRow) => i.status === InvoiceStatus.CANCELLED && inWindow(i.cancelledAt, start, end);
 
@@ -284,6 +378,12 @@ export async function reconcileBusinessDay(db: ReconciliationDb, options: Reconc
       count++;
       const label = invoice.invoiceNumber;
       amountsDiffer(c, label, 'taxable + tax + round-off = total', invoice.taxableAmount.plus(invoice.taxAmount).plus(invoice.roundOffAmount), invoice.totalAmount);
+      if (invoice.items.length > 0) amountsDiffer(c, label, 'Σ line totals + round-off = total', sum(invoice.items.map((item) => item.totalAmount)).plus(invoice.roundOffAmount), invoice.totalAmount);
+      if (saleInDay(invoice) && invoice.udharAmount.greaterThan(0)) {
+        const carried = creditBySale.get(invoice.id);
+        if (!carried) drift(c, label, 'credit sale has its CREDIT udhar row', `CREDIT row of ${fmt2(money(invoice.udharAmount))}`, 'none');
+        else amountsDiffer(c, label, 'CREDIT udhar row = credit', invoice.udharAmount, carried);
+      }
       const tendered = invoice.payments.length > 0 ? sum(invoice.payments.map((p) => p.amount)) : invoice.paidAmount;
       amountsDiffer(c, label, 'tenders + credit = total', tendered.plus(invoice.udharAmount), invoice.totalAmount);
       if (invoice.payments.length > 0) amountsDiffer(c, label, 'paid = Σ tender rows', sum(invoice.payments.map((p) => p.amount)), invoice.paidAmount);
@@ -395,6 +495,7 @@ export async function reconcileBusinessDay(db: ReconciliationDb, options: Reconc
       const label = `${posting.sourceType}:${posting.sourceId}`;
       if (posting.transactions.length === 0) drift(c, label, 'posting rows', 'balanced entries', 'no LedgerTransaction rows');
       else if (!debits.equals(credits)) drift(c, label, 'debits = credits', debits, credits);
+      if (!KNOWN_SOURCES.has(posting.sourceType)) drift(c, label, 'source type', 'a known ledger source', posting.sourceType);
       if (!POS_SOURCES.has(posting.sourceType) || matchedPostings.has(label)) continue;
       // A POS posting created in the window for a document outside the day's
       // set: it must at least point at a real document of the right kind.
@@ -411,7 +512,45 @@ export async function reconcileBusinessDay(db: ReconciliationDb, options: Reconc
         else if (posting.sourceType === 'CANCELLATION' && row.status !== InvoiceStatus.CANCELLED) drift(c, label, 'source document', 'a CANCELLED invoice', `a ${row.status} invoice`);
       }
     }
-    c.figures = { postingsCompared: matchedPostings.size, postingsInWindow: postings.length };
+
+    // Every expense touched in the day (created, edited, deleted, or posted):
+    // the sum of all its postings is what the expense now implies
+    // (`expenseLedgerState`), whatever edits lie behind it. A posting of the
+    // family must point at a real expense.
+    const postedExpenseIds = new Set(postings.filter((p) => EXPENSE_FAMILY.has(p.sourceType)).map((p) => expenseIdOfSource(p.sourceId)));
+    const touched = await db.expense.findMany({
+      where: { shopId, OR: [{ createdAt: { gte: start, lt: end } }, { updatedAt: { gte: start, lt: end } }, { id: { in: [...postedExpenseIds] } }] },
+    });
+    const expenseById = new Map(touched.map((e) => [e.id, e]));
+    const expenseIds = [...new Set([...postedExpenseIds, ...expenseById.keys()])].sort();
+    let expensesChecked = 0;
+    if (expenseIds.length > 0) {
+      const family = await expensePostings(db, shopId, expenseIds);
+      const booksSince = await migrationFinishedAt(db, EXPENSE_BOOKS_MIGRATION);
+      for (const id of expenseIds) {
+        const label = `expense ${id}`;
+        const expense = expenseById.get(id);
+        if (!expense) {
+          drift(c, label, 'source document', 'an Expense', 'missing');
+          continue;
+        }
+        const posted = family.get(id) ?? [];
+        const expected = expenseLedgerState(expense);
+        if (posted.length === 0 && expected.size > 0 && booksSince && expense.createdAt < booksSince) {
+          c.notes.push(`${label}: recorded before expenses were posted to the ledger, not edited since; not compared`);
+          continue;
+        }
+        expensesChecked++;
+        const actual = new Map<LedgerAccount, D>();
+        for (const t of posted.flatMap((p) => p.transactions)) {
+          actual.set(t.account, (actual.get(t.account) ?? ZERO).plus(t.type === LedgerEntryType.DEBIT ? t.amount : t.amount.neg()));
+        }
+        for (const account of [...new Set([...expected.keys(), ...actual.keys()])].sort()) {
+          amountsDiffer(c, label, `${account} debit − credit = the expense as it stands`, expected.get(account) ?? ZERO, actual.get(account) ?? ZERO);
+        }
+      }
+    }
+    c.figures = { postingsCompared: matchedPostings.size, postingsInWindow: postings.length, expensesChecked };
   }
 
   {
@@ -497,6 +636,15 @@ export async function reconcileBusinessDay(db: ReconciliationDb, options: Reconc
       // have touched cannot be rebuilt and is reported inconclusive, not as drift.
       const attributionSince = await attributionBoundary(db);
 
+      // Cash that left the drawers: expenses paid from them (every row that
+      // names the shift, whatever it says now) and cash supplier payments.
+      const shiftExpenses = await db.expense.findMany({ where: { shopId, shiftId: { in: shiftIds } } });
+      const shiftSupplierPayments = await db.supplierPayment.findMany({
+        where: { shopId, shiftId: { in: shiftIds }, tender: TenderType.CASH },
+        select: { id: true, shiftId: true, amount: true },
+      });
+      const expenseAudits = await expenseAuditTrail(db, shopId, shiftExpenses.map((e) => e.id));
+
       for (const shift of shifts) {
         const label = `shift ${shift.id}`;
         const closedAt = shift.closedAt ?? end;
@@ -555,7 +703,27 @@ export async function reconcileBusinessDay(db: ReconciliationDb, options: Reconc
           totalReceipts = totalReceipts.plus(r.amount);
           if (r.tender === TenderType.CASH) expectedCash = expectedCash.plus(r.amount);
         }
-        amountsDiffer(c, label, 'expectedCash = opening + cash sales − cash refunds + cash repayments', expectedCash, shift.expectedCash);
+        let cashPayouts = ZERO;
+        let payoutsKnown = true;
+        for (const expense of shiftExpenses) {
+          if (expense.shiftId !== shift.id) continue;
+          const out = expenseCashOutOnShift(expense, shift.closedAt, expenseAudits.get(expense.id) ?? []);
+          if (out === null) {
+            payoutsKnown = false;
+            c.notes.push(`${label}: expense ${expense.id} changed after the shift closed and its state at the close is not in the audit log; payouts not rebuilt`);
+            continue;
+          }
+          cashPayouts = cashPayouts.plus(out);
+        }
+        for (const p of shiftSupplierPayments) if (p.shiftId === shift.id) cashPayouts = cashPayouts.plus(p.amount);
+        expectedCash = expectedCash.minus(cashPayouts);
+        if (payoutsKnown) {
+          amountsDiffer(c, label, 'expectedCash = opening + cash sales − cash refunds + cash repayments − cash payouts', expectedCash, shift.expectedCash);
+          amountsDiffer(c, label, 'cashPayouts = cash expenses + cash supplier payments', cashPayouts, shift.cashPayouts);
+        } else if (c.status !== 'DRIFT') {
+          // The drawer's cash cannot be rebuilt; its sales and receipts still can.
+          c.status = 'INCONCLUSIVE';
+        }
         amountsDiffer(c, label, 'totalSales', totalSales, shift.totalSales);
         amountsDiffer(c, label, 'cashSales', cashSales, shift.cashSales);
         amountsDiffer(c, label, 'upiSales', upiSales, shift.upiSales);
@@ -564,6 +732,7 @@ export async function reconcileBusinessDay(db: ReconciliationDb, options: Reconc
         amountsDiffer(c, label, 'totalReceipts', totalReceipts, shift.totalReceipts);
         c.figures[`${label}:status`] = shift.status;
         c.figures[`${label}:expectedCash`] = fmt2(expectedCash);
+        if (cashPayouts.greaterThan(0)) c.figures[`${label}:cashPayouts`] = fmt2(cashPayouts);
         if (shift.closingCash) c.figures[`${label}:variance`] = fmt2(shift.closingCash.minus(shift.expectedCash));
       }
     }
@@ -583,6 +752,7 @@ export async function reconcileBusinessDay(db: ReconciliationDb, options: Reconc
       orderBy: { id: 'asc' },
     });
     itemsChecked = items.length;
+    await options.probe?.('stock-items-read');
     if (items.length > 0) {
       const sums = await db.stockLedgerEntry.groupBy({ by: ['inventoryItemId'], where: { shopId }, _sum: { quantity: true } });
       const ledgerByItem = new Map(sums.map((s) => [s.inventoryItemId, s._sum.quantity ?? ZERO]));
@@ -618,15 +788,18 @@ export async function reconcileBusinessDay(db: ReconciliationDb, options: Reconc
   // ---------------------------------------------------------------------------
   // 7. ledger
   // ---------------------------------------------------------------------------
+  // Every account's balance as the sum of its transactions (debit-normal
+  // accounts grow with debits); receivables and payables compare with it too.
+  const expectedBalances = new Map<LedgerAccount, D>();
   {
     const c = check('ledger');
     const sums = await db.ledgerTransaction.groupBy({ by: ['account', 'type'], where: { shopId }, _sum: { amount: true } });
-    const expectedBalances = new Map<LedgerAccount, D>();
     for (const row of sums) {
       const amount = row._sum.amount ?? ZERO;
       const grows = DEBIT_NORMAL.has(row.account) ? row.type === LedgerEntryType.DEBIT : row.type === LedgerEntryType.CREDIT;
       expectedBalances.set(row.account, (expectedBalances.get(row.account) ?? ZERO).plus(grows ? amount : amount.neg()));
     }
+    await options.probe?.('ledger-sums-read');
     const balances = await db.ledgerAccountBalance.findMany({ where: { shopId } });
     const accounts = new Set<LedgerAccount>([...expectedBalances.keys(), ...balances.map((b) => b.account)]);
     for (const account of accounts) {
@@ -642,6 +815,89 @@ export async function reconcileBusinessDay(db: ReconciliationDb, options: Reconc
       if (last) amountsDiffer(c, account, 'last balanceAfter = balance', last.balanceAfter, stored);
     }
     c.figures.accounts = accounts.size;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 8. receivables
+  // ---------------------------------------------------------------------------
+  {
+    const c = check('receivables');
+    const customers = await db.customer.findMany({ where: { shopId }, select: { id: true, outstandingBalance: true }, orderBy: { id: 'asc' } });
+    const movements = await db.udharTransaction.groupBy({ by: ['customerId'], where: { shopId }, _sum: { balanceAfter: true, balanceBefore: true }, _count: { _all: true } });
+    const movedBy = new Map(movements.map((m) => [m.customerId, (m._sum.balanceAfter ?? ZERO).minus(m._sum.balanceBefore ?? ZERO)]));
+    // The newest row of each customer (rows written in the same millisecond all count as the newest).
+    const lastRows = await db.$queryRaw<Array<{ customerId: string; balanceAfter: unknown }>>`
+      SELECT u.customerId, u.balanceAfter
+      FROM UdharTransaction u
+      JOIN (SELECT customerId, MAX(createdAt) AS createdAt FROM UdharTransaction WHERE shopId = ${shopId} GROUP BY customerId) newest
+        ON newest.customerId = u.customerId AND newest.createdAt = u.createdAt
+      WHERE u.shopId = ${shopId}
+    `;
+    const lastBalances = new Map<string, D[]>();
+    for (const row of lastRows) lastBalances.set(row.customerId, [...(lastBalances.get(row.customerId) ?? []), money(toDecimal(row.balanceAfter))]);
+    let receivable = ZERO;
+    let advances = ZERO;
+    for (const customer of customers) {
+      const balance = money(customer.outstandingBalance);
+      if (balance.greaterThan(0)) receivable = receivable.plus(balance);
+      else advances = advances.plus(balance.neg());
+      const label = `customer ${customer.id}`;
+      amountsDiffer(c, label, 'outstandingBalance = Σ udhar movements', movedBy.get(customer.id) ?? ZERO, balance);
+      const last = lastBalances.get(customer.id);
+      if (last && !last.some((b) => b.equals(balance))) drift(c, label, 'outstandingBalance = last udhar row balance', last[0], balance);
+    }
+    const ledgerReceivable = money(sum(RECEIVABLE_ACCOUNTS.map((a) => expectedBalances.get(a) ?? ZERO)));
+    const net = receivable.minus(advances);
+    amountsDiffer(c, 'ACCOUNTS_RECEIVABLE', 'Σ customer balances = ledger receivables', net, ledgerReceivable);
+    c.figures = { customers: customers.length, receivable: fmt2(receivable), advances: fmt2(advances), net: fmt2(net), ledger: fmt2(ledgerReceivable) };
+  }
+
+  // ---------------------------------------------------------------------------
+  // 9. payables
+  // ---------------------------------------------------------------------------
+  {
+    const c = check('payables');
+    const suppliers = await db.supplier.findMany({ where: { shopId }, select: { id: true, pendingPayables: true, openingPayables: true }, orderBy: { id: 'asc' } });
+    const openingPosted = new Set(
+      (await db.ledgerPosting.findMany({ where: { shopId, sourceType: 'SUPPLIER_OPENING_BALANCE' }, select: { sourceId: true } })).map((p) => p.sourceId),
+    );
+    // The net ACCOUNTS_PAYABLE credit of each supplier's documents (receipts,
+    // bills, returns, credit notes, payments and the posted opening balance).
+    const netBy = new Map<string, D>();
+    for (const [sourceType, table, supplierColumn] of SUPPLIER_DOCUMENTS) {
+      const rows = await db.$queryRaw<Array<{ supplierId: string; net: unknown }>>`
+        SELECT d.${Prisma.raw(supplierColumn)} AS supplierId, COALESCE(SUM(CASE WHEN t.type = 'CREDIT' THEN t.amount ELSE -t.amount END), 0) AS net
+        FROM LedgerTransaction t
+        JOIN LedgerPosting p ON p.id = t.postingId
+        JOIN ${Prisma.raw(table)} d ON d.id = p.sourceId AND d.shopId = p.shopId
+        WHERE t.shopId = ${shopId} AND t.account = 'ACCOUNTS_PAYABLE' AND p.sourceType = ${sourceType}
+        GROUP BY d.${Prisma.raw(supplierColumn)}
+      `;
+      for (const r of rows) netBy.set(r.supplierId, (netBy.get(r.supplierId) ?? ZERO).plus(money(toDecimal(r.net))));
+    }
+    // Suppliers created before their opening balance was posted (SUPPLIER_OPENING_BALANCE):
+    // the ledger never saw that part, so the totals cannot agree and are not compared.
+    const unposted = suppliers.filter((s) => !s.openingPayables.isZero() && !openingPosted.has(s.id));
+    let pending = ZERO;
+    for (const supplier of suppliers) {
+      pending = pending.plus(supplier.pendingPayables);
+      const legacy = unposted.includes(supplier);
+      const expected = (legacy ? supplier.openingPayables : ZERO).plus(netBy.get(supplier.id) ?? ZERO);
+      if (money(expected).equals(money(supplier.pendingPayables))) continue;
+      if (legacy) c.notes.push(`supplier ${supplier.id}: opening balance not in the ledger; pendingPayables ${fmt2(money(supplier.pendingPayables))}, opening + documents ${fmt2(money(expected))}`);
+      else drift(c, `supplier ${supplier.id}`, 'pendingPayables = opening + Σ its ACCOUNTS_PAYABLE postings', expected, supplier.pendingPayables);
+    }
+    const ledgerPayable = money(expectedBalances.get(LedgerAccount.ACCOUNTS_PAYABLE) ?? ZERO);
+    const unpostedOpening = money(sum(unposted.map((s) => s.openingPayables)));
+    if (unposted.length > 0) {
+      c.status = c.status === 'DRIFT' ? 'DRIFT' : 'INCONCLUSIVE';
+      c.notes.push(
+        `${unposted.length} supplier(s) carry an opening balance of ${fmt2(unpostedOpening)} recorded before it was posted to the ledger; Σ pendingPayables ${fmt2(money(pending))} vs ledger ${fmt2(ledgerPayable)} not compared`,
+      );
+    } else {
+      amountsDiffer(c, 'ACCOUNTS_PAYABLE', 'Σ supplier pendingPayables = ledger payables', pending, ledgerPayable);
+    }
+    c.figures = { suppliers: suppliers.length, pendingPayables: fmt2(money(pending)), ledger: fmt2(ledgerPayable), unpostedOpenings: unposted.length };
   }
 
   const driftCount = checks.reduce((n, c) => n + c.drifts.length, 0);
@@ -677,15 +933,82 @@ export async function reconcileBusinessDay(db: ReconciliationDb, options: Reconc
  * database not built by `migrate deploy`) every NULL is read as "no drawer".
  */
 async function attributionBoundary(db: ReconciliationDb): Promise<Date> {
+  return (await migrationFinishedAt(db, DRAWER_ATTRIBUTION_MIGRATION)) ?? new Date(0);
+}
+
+/**
+ * When the named migration finished on this database (`_prisma_migrations`),
+ * or null without the row (a database not built by `migrate deploy`).
+ */
+async function migrationFinishedAt(db: ReconciliationDb, name: string): Promise<Date | null> {
   try {
     const rows = await db.$queryRaw<Array<{ finished_at: Date | null }>>`
-      SELECT finished_at FROM _prisma_migrations WHERE migration_name = '20261005090000_reconciliation_runs' LIMIT 1
+      SELECT finished_at FROM _prisma_migrations WHERE migration_name = ${name} LIMIT 1
     `;
     const finished = rows[0]?.finished_at ? new Date(rows[0].finished_at) : null;
-    return finished && Number.isFinite(finished.getTime()) ? finished : new Date(0);
+    return finished && Number.isFinite(finished.getTime()) ? finished : null;
   } catch {
-    return new Date(0);
+    return null;
   }
+}
+
+type ExpenseAudit = { createdAt: Date; afterData: Prisma.JsonValue };
+
+/** The audit rows of the given expenses (create, update, delete), oldest first, by expense id. */
+async function expenseAuditTrail(db: ReconciliationDb, shopId: string, expenseIds: string[]): Promise<Map<string, ExpenseAudit[]>> {
+  const byExpense = new Map<string, ExpenseAudit[]>();
+  if (expenseIds.length === 0) return byExpense;
+  const rows = await db.auditLog.findMany({
+    where: { shopId, entity: 'Expense', entityId: { in: expenseIds } },
+    select: { entityId: true, createdAt: true, afterData: true },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  for (const row of rows) byExpense.set(row.entityId, [...(byExpense.get(row.entityId) ?? []), { createdAt: row.createdAt, afterData: row.afterData }]);
+  return byExpense;
+}
+
+/**
+ * The cash an expense took out of its shift's drawer as the drawer stands:
+ * the expense as it is now while the shift is open or when it has not changed
+ * since the close (an edit while the shift is open moves the drawer with it);
+ * after a later edit, the expense as the audit log recorded it at the close
+ * (a closed drawer is never touched again). Null when that state is unknown.
+ */
+function expenseCashOutOnShift(expense: Expense, closedAt: Date | null, audits: ExpenseAudit[]): D | null {
+  if (!closedAt || !audits.some((a) => a.createdAt > closedAt)) return expenseCashOut(expense);
+  const atClose = [...audits].reverse().find((a) => a.createdAt <= closedAt)?.afterData;
+  if (!atClose || typeof atClose !== 'object' || Array.isArray(atClose)) return null;
+  const state = atClose as Record<string, unknown>;
+  if (typeof state.amount !== 'string' || typeof state.isPaid !== 'boolean') return null;
+  return expenseCashOut({
+    amount: new D(state.amount),
+    isPaid: state.isPaid,
+    paymentMode: typeof state.paymentMode === 'string' ? state.paymentMode : null,
+    isDeleted: state.isDeleted === true,
+  });
+}
+
+/** Every `EXPENSE` / `EXPENSE_ADJUSTMENT` posting of the given expenses, by expense id. */
+async function expensePostings(db: ReconciliationDb, shopId: string, expenseIds: string[]): Promise<Map<string, PostingRow[]>> {
+  const byExpense = new Map<string, PostingRow[]>();
+  for (let i = 0; i < expenseIds.length; i += 100) {
+    const ids = expenseIds.slice(i, i + 100);
+    const rows: PostingRow[] = await db.ledgerPosting.findMany({
+      where: {
+        shopId,
+        OR: [
+          { sourceType: EXPENSE_SOURCES.posted, sourceId: { in: ids } },
+          ...ids.map((id) => ({ sourceType: EXPENSE_SOURCES.adjusted, sourceId: { startsWith: `${id}:` } })),
+        ],
+      },
+      include: { transactions: true },
+    });
+    for (const row of rows) {
+      const id = expenseIdOfSource(row.sourceId);
+      byExpense.set(id, [...(byExpense.get(id) ?? []), row]);
+    }
+  }
+  return byExpense;
 }
 
 /** The business day before the one containing `now` in `timeZone`: the day the nightly run reconciles. */

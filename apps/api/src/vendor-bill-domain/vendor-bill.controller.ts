@@ -47,6 +47,20 @@ export class VendorBillController {
     return this.repository.approveVendorBill(shopId, id, actorId, req.ip, body.comments, body.signature);
   }
 
+  /** PENDING_APPROVAL -> REJECTED by a manager other than the creator or submitter. */
+  @Roles(...MANAGEMENT_ROLES)
+  @Post(':id/reject')
+  async rejectBill(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Body() body: ApprovalDecisionDto) {
+    return this.repository.rejectVendorBill(shopId, id, actorId, body.comments);
+  }
+
+  /** DRAFT / SUBMITTED / PENDING_APPROVAL -> CANCELLED. */
+  @Roles(...MANAGEMENT_ROLES)
+  @Post(':id/cancel')
+  async cancelBill(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Body() body: ApprovalDecisionDto) {
+    return this.repository.cancelVendorBill(shopId, id, actorId, body.comments);
+  }
+
   @Roles(...MANAGEMENT_ROLES)
   @Post(':id/post')
   async postBill(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Req() req: Request) {

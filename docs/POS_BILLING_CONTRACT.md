@@ -87,7 +87,8 @@ Rules
   `ERR_ZERO_SUBTOTAL_DISCOUNT`, `ERR_INVALID_QUANTITY`, `ERR_INVALID_PAYMENT`,
   `ERR_NEGATIVE_PAYMENT`, `ERR_NEGATIVE_UDHAR`, `ERR_PAYMENT_MISMATCH`,
   `ERR_CHANGE_NOT_ALLOWED`, `ERR_UNKNOWN_TENDER`, `ERR_DUPLICATE_LINE`,
-  `ERR_INVALID_PRICE`, `ERR_INVALID_LINE_DISCOUNT`, `ERR_AMOUNT_TOO_LARGE`.
+  `ERR_INVALID_PRICE`, `ERR_INVALID_LINE_DISCOUNT`, `ERR_AMOUNT_TOO_LARGE`,
+  `ERR_INVALID_CESS` (a cess outside 0..100, audit B13).
 - Limits mirror the invoice columns (`Decimal(10,2)` money, `Decimal(10,3)`
   quantity): quantity `<= 9999999.999`, unit price, every line subtotal, the
   subtotal, the final total and every tender `<= 99999999.99`
@@ -98,6 +99,12 @@ Rules
   `ERR_DUPLICATE_LINE`.
 - Cess: `cessRate` (percent, from `Product.cessRate`) is part of every line's
   tax. Search results carry it so the web preview equals the server.
+- Helpers the API and the web share (no money arithmetic anywhere else):
+  `inclusiveUnitPrice(price, gstRate, cessPercent)` (one unit's price with
+  GST and cess, the MRP floor, audit P1-2), `discountLimitAmounts(result,
+  limitPercent)` (what a discount limit yields under the engine's rounding,
+  audit B4) and `costOfGoodsSlice(unitCost, before, quantity)` (the
+  cumulative cost of goods of a sale or return line, audit B16).
 - The magic preview value `amountPaid = 99999999` no longer exists.
 
 ```ts
@@ -106,8 +113,9 @@ InvoiceMathEngine.calculateReturn(input: ReturnMathInput): ReturnCalculationResu
 
 Proportional return math for partial returns. Each line carries the original
 stored amounts and the quantity being returned; the result has per-line
-amounts scaled by `quantity / originalQuantity` (2 dp, half-up) and invoice
-totals with a fresh round-off.
+amounts scaled by `quantity / originalQuantity` (2 dp, half-up) as
+cumulative slices (`CALCULATION_SPEC.md`), each line's `lineSubtotal` is its
+taxable amount plus its discount, and the totals settle against the sale.
 
 ## 2. Billing
 
@@ -116,10 +124,14 @@ Roles: `CASHIER`, `MANAGER`, `ADMIN`, `OWNER`, `SUPER_ADMIN` unless noted.
 ### `POST /billing/calculate`
 
 Body: `{ items: [{ productId, quantity, discountPercent? }], customerId?,
-discountAmount?, discountPercentage?, discountType?, discountReason? }`.
-The server resolves prices, GST rate and `isInterState` (shop state vs
-customer state). Response: the engine result (payment `null`) plus
-`{ isInterState, shopState, customerState }`.
+placeOfSupply?, discountAmount?, discountPercentage?, discountType?,
+discountReason? }`. The server resolves prices, GST rate and `isInterState`
+(the shop's state against `placeOfSupply`, see "Place of supply" below; the
+customer's state never decides). Response: the engine result (payment
+`null`) plus `{ isInterState, shopState, customerState, placeOfSupply }`.
+The MRP rule, the discount and custom-line authority of `POST
+/billing/invoice` apply (`409 PRICE_ABOVE_MRP`, `403
+DISCOUNT_REQUIRES_APPROVAL`, `403 CUSTOM_LINE_REQUIRES_APPROVAL`).
 
 ### `POST /billing/invoice`
 
@@ -131,6 +143,7 @@ Body
   items: [{ productId?, quantity, discountPercent?,
             custom?: { name (1..120), unitPrice (> 0), gstRate: 'ZERO'|'FIVE'|'TWELVE'|'EIGHTEEN'|'TWENTYEIGHT', unit?: ProductUnit } }],
   customerId?, notes?, shiftId?,
+  placeOfSupply?: string (an Indian state or union territory; omitted = over the counter),
   discountAmount?, discountPercentage?, discountType?, discountReason?,
   payments: [{ tender: 'CASH' | 'UPI' | 'CARD' | 'BANK_TRANSFER', amount, tenderedAmount?, reference? }],
   udharAmount?
@@ -147,7 +160,8 @@ Behaviour
   from `custom.unitPrice`, taxed by `custom.gstRate`, carry no cess, are never
   merged, never touch inventory, post no cost of goods and are persisted with
   `isCustom: true`, `productId: null`, `productSku: 'CUSTOM'`, `costPrice: 0`,
-  `mrp = unitPrice`. The `stock` array of the response excludes them.
+  `mrp` = one unit's price with GST. The `stock` array of the response
+  excludes them.
 - Duplicate `productId` lines with the same `discountPercent` are merged;
   different discounts on the same product are rejected (`ERR_DUPLICATE_LINE`).
 - Validation (engine limits, discounts, settlement, discount authority) runs
@@ -160,31 +174,69 @@ Behaviour
   The POS sells product-level stock only (no variant pricing or variant stock,
   no price override: the server always re-reads `Product.sellingPrice`).
 - Pricing is tax-exclusive only; there is no tax-inclusive mode and no coupon
-  mechanism.
+  mechanism. `Product.sellingPrice` is before GST; `Product.mrp` is the
+  printed, tax-inclusive MRP (Legal Metrology, audit P1-2). A catalogue line
+  whose product would sell above its MRP, one unit with GST and cess
+  (`inclusiveUnitPrice`: what the engine bills for one undiscounted unit,
+  the higher of the CGST + SGST and the IGST split), is refused before
+  anything is written (`409 PRICE_ABOVE_MRP`, details `{ productId,
+  productName, mrp, inclusivePrice, sellingPrice }`); an MRP of 0 means none
+  is printed and is not checked. The products API keeps new rows inside the
+  rule (§5); this catches older rows and imports.
+- **Place of supply** (audit P1-3; IGST Act s.10(1)(c)): goods sold over the
+  counter are supplied where the shop is, so a sale is intra-state (CGST +
+  SGST) whatever state the customer's profile names. Only an explicit
+  `placeOfSupply` (a delivery, a registered buyer's state) that differs from
+  the shop's state makes it inter-state (IGST). Any spelling
+  `canonicalState` knows ("New Delhi", "Orissa", any case and spacing) is
+  read as the canonical state; anything else is 400. A shop without a state
+  never bills IGST. The POS sends no place of supply. Returns and
+  cancellations keep the sale's own `isInterState`.
 - **Discount authority**: a `CASHIER` may apply at most
-  `BILLING_CASHIER_MAX_DISCOUNT_PERCENT` (default 10) percent, measured three
-  ways and all three must pass: the highest line discount (custom lines
-  included), the invoice discount as a percentage of the post-line-discount
-  subtotal, and the combined effective discount (`totalDiscount / subtotal`),
-  so a 10 % line discount cannot be stacked with a 10 % invoice discount.
-  Above that a `MANAGER`+ must bill the invoice (`403
-  DISCOUNT_REQUIRES_APPROVAL`, details `{ maxPercent, requestedPercent }`).
+  `BILLING_CASHIER_MAX_DISCOUNT_PERCENT` (default 10) percent. Percentages
+  the cashier typed are compared as typed: every line discount (custom lines
+  included) and an invoice `PERCENTAGE`. Amounts are compared with what the
+  limit itself yields under the engine's rounding
+  (`discountLimitAmounts`, audit B4): the invoice discount with the limit of
+  the post-line-discount subtotal, and the combined discount (line +
+  invoice) with the larger of the limit applied once to the subtotal or on
+  every line, so a 10 % line discount cannot be stacked with a 10 % invoice
+  discount while 10 % of ₹10.05 (₹1.01, i.e. 10.05 %) passes. Above that a
+  `MANAGER`+ must bill the invoice (`403 DISCOUNT_REQUIRES_APPROVAL`, details
+  `{ maxPercent, requestedPercent }`).
   A cashier's custom line is capped at `BILLING_CASHIER_MAX_CUSTOM_LINE_AMOUNT`
-  rupees per line (default 500; 0 means cashiers cannot add custom lines):
-  above it a `MANAGER`+ must bill the invoice (`403
-  CUSTOM_LINE_REQUIRES_APPROVAL`, details `{ maxAmount, lineAmount, name }`). Whenever any line or invoice discount is applied, the
+  rupees per line (default 500; 0 means cashiers cannot add custom lines),
+  and the sum of a cashier's custom lines on one invoice at
+  `BILLING_CASHIER_MAX_CUSTOM_TOTAL_AMOUNT` (default 1000, audit B5): above
+  either a `MANAGER`+ must bill the invoice (`403
+  CUSTOM_LINE_REQUIRES_APPROVAL`, details `{ maxAmount, lineAmount, name }`
+  or `{ maxTotal, customTotal }`). The invoice stores the invoice-level
+  discount as the engine applied it (audit B15): `discountType`
+  `PERCENTAGE` with its `discountPercentage`, or `FIXED_AMOUNT` with
+  `discountPercentage` null, both null when no invoice-level discount
+  applied; `discountAmount` is the total discount (lines + invoice). Whenever any line or invoice discount is applied, the
   billing user is stamped as `approvedBy` / `approvalTimestamp` and the audit
   row records the amounts. The engine's hard limit is 100% and never more
   than the subtotal.
 - Credit sales require a customer and are checked against `creditLimit`
   under a row lock. Managers and above may override the limit
-  (server-side role check). Inactive customers cannot be billed or take
+  (server-side role check), but never past the largest balance the column
+  holds: a balance above 99,999,999.99 is `409 OUTSTANDING_BALANCE_TOO_LARGE`
+  (audit B14). Inactive customers cannot be billed or take
   payments (`409 CUSTOMER_INACTIVE`); their existing invoices can still be
   returned and cancelled.
 - Everything (invoice, items, payments, stock, udhar, shift, ledger, audit,
   outbox) commits in one transaction or nothing does.
-- Same key + same payload returns the existing invoice with `200`. Same key +
-  different payload returns `422 IDEMPOTENCY_KEY_REUSED`.
+- Same key + same bill returns the existing invoice with `200`. The same
+  bill is the same lines, customer, discount, place of supply, tender
+  amounts and credit: `tenderedAmount` (the cash handed over) is not part of
+  it (audit P1-4), so a retry after a lost answer replays even when the
+  cashier typed another note. Same key + a different bill returns `422
+  IDEMPOTENCY_KEY_REUSED` with details `{ invoiceId, invoiceNumber }` of the
+  bill the key already saved, including when two requests race for the key;
+  the POS then shows that bill instead of billing the cart again. A key
+  stored before this rule (its hash included the cash tendered) still
+  replays the identical request.
 
 Response `201`: `{ invoice, stock: [{ productId, balanceAfter }], shiftId }` where
 `invoice` includes `items`, `payments`, `customer`.
@@ -194,9 +246,14 @@ Error codes: `PRODUCT_NOT_FOUND` (404), `INSUFFICIENT_STOCK` (409, details
 `CREDIT_LIMIT_EXCEEDED` (409, details `{ creditLimit, currentBalance,
 requestedAmount, projectedBalance }`), `CUSTOMER_REQUIRED` (400),
 `CUSTOMER_INACTIVE` (409), `CUSTOM_ITEM_INVALID` (400),
-`DISCOUNT_REQUIRES_APPROVAL` (403), `SHIFT_INVALID` (409),
-`SHIFT_FORBIDDEN` (403), `IDEMPOTENCY_KEY_REUSED` (422), engine codes above
-(400), `MAX_RETRIES_EXCEEDED` (409).
+`DISCOUNT_REQUIRES_APPROVAL` (403), `CUSTOM_LINE_REQUIRES_APPROVAL` (403),
+`PRICE_ABOVE_MRP` (409), `OUTSTANDING_BALANCE_TOO_LARGE` (409),
+`SHIFT_INVALID` (409), `SHIFT_FORBIDDEN` (403), `IDEMPOTENCY_KEY_REUSED`
+(422, details `{ invoiceId, invoiceNumber }`), engine codes above (400,
+including `ERR_INVALID_CESS` for a cess outside 0..100 and
+`ERR_PAYMENT_MISMATCH` when a price changed since the client's preview: the
+POS re-reads the cart's prices and says which changed),
+`MAX_RETRIES_EXCEEDED` (409).
 
 ### `GET /billing/invoices`
 
@@ -227,10 +284,35 @@ reason?, notes?, refund?: { tender?: 'CASH' | 'UPI' | 'CARD' | 'BANK_TRANSFER',
 reference? } }`. Omitting `items` returns everything still returnable.
 Custom lines can be returned (money only; no stock is restored).
 Refund order: the original credit portion is reversed on the customer first,
-the remainder is refunded through `refund.tender` (default `CASH`). A cash
+the remainder is refunded through `refund.tender`; without one, through the
+sale's own tender when it was paid by a single tender with no credit, else
+`CASH` (audit B6). A cash
 refund requires an OPEN shift: the refund posts to the sale's own shift while
 it is open and usable by the caller (its cashier, or a `MANAGER`+), otherwise
 to the caller's own open shift.
+
+- **Cashier authority** (audit B6): a `CASHIER` takes a return on their own
+  up to `BILLING_CASHIER_MAX_REFUND_AMOUNT` (default 2000) rupees per return
+  document, against a sale at most `BILLING_CASHIER_RETURN_WINDOW_DAYS`
+  (default 7) business days old; beyond either it is `403
+  RETURN_REQUIRES_APPROVAL` (details `{ maxRefund, refund, windowDays,
+  saleAgeDays }`) and a `MANAGER`+ takes it.
+- **Goods that cannot be resold** (audit B7): a return with `reason`
+  `DAMAGED` or `EXPIRED` is refunded but not restocked, and its cost stays
+  in cost of goods (no `INVENTORY` / `COST_OF_GOODS` reversal); every other
+  reason restocks. The reconciliation (§11) expects exactly that, since it
+  rebuilds cost of goods from the stock movements.
+- **GST credit-note time limit** (CGST s.34(2), audit B8): no return after
+  30 November following the end of the financial year of the sale, in the
+  shop's time zone and on the application clock: `409
+  RETURN_PAST_GST_DEADLINE` (details `{ invoiceId, invoiceNumber, deadline }`);
+  the shop refunds outside the app, since the output tax can no longer be
+  reduced.
+- **Cost of goods** (audit B16): a sale books each line's cost rounded per
+  line, and a return books the cumulative slice of its line,
+  `round2(cost × (returned before + quantity)) − round2(cost × returned
+  before)` (`costOfGoodsSlice`), so the returns of a line give back exactly
+  what its sale booked; the reconciliation expects the same slices.
 
 Return math is cumulative (roadmap 3.1; `CALCULATION_SPEC.md`): each line
 refunds `cum(returnedQuantity + quantity) − cum(returnedQuantity)` of its
@@ -238,13 +320,20 @@ stored amounts, the document is not rounded to the rupee on its own, and its
 total is settled against the sale: never more than
 `invoiceTotal − Σ earlier returns`, and exactly that remainder when the
 return completes the sale (that is where the sale's round-off is refunded).
+A line with nothing left to refund (a free item) never keeps a sale from
+completing (audit B11). Each return row adds up: its `subtotal` is its
+taxable amount plus its discount (audit B10).
 So the returns of a sale add up to its `totalAmount`, whatever the split.
 Returns and cancellations work on soft-deleted products and customers; only
 new sales are refused.
 
-Response `201`: return invoice (type `SALES_RETURN`) with items and payments.
+Response `201`: return invoice (type `SALES_RETURN`) with items and payments;
+`200` with the stored return for the same key and request, also when two
+requests race for the key (never `409 DB_P2002`).
 Codes: `INVOICE_NOT_FOUND`, `INVOICE_NOT_RETURNABLE`, `RETURN_QTY_EXCEEDS`,
-`SHIFT_REQUIRED`, `IDEMPOTENCY_KEY_REUSED`.
+`SHIFT_REQUIRED`, `RETURN_REQUIRES_APPROVAL` (403),
+`RETURN_PAST_GST_DEADLINE` (409), `IDEMPOTENCY_KEY_REUSED` (422, details `{
+invoiceId, invoiceNumber }` of the return the key already recorded).
 
 ### `POST /billing/invoices/:id/cancel`
 
@@ -275,7 +364,14 @@ totalReceipts, openedBy: { id, name }, closedBy }`.
 - `PATCH /customers/:id { name?, phone?, email?, address?, city?, state?, creditLimit?, notes?, isActive? }`.
 - `creditLimit` (create or update) is accepted from `MANAGER`+ only
   (`403 CREDIT_LIMIT_REQUIRES_MANAGER`); a change writes an `AuditLog` row
-  `CUSTOMER_CREDIT_LIMIT_CHANGED` in the same transaction.
+  `CUSTOMER_CREDIT_LIMIT_CHANGED` in the same transaction. Without one, a
+  customer a `MANAGER`+ creates gets `SALES_DEFAULT_CREDIT_LIMIT` and one a
+  `CASHIER` creates gets 0 (audit B9). `creditLimit` and a payment `amount`
+  are at most 99,999,999.99 (the column, audit B14; 400 above).
+- `state` is an Indian state or union territory, stored in its canonical
+  spelling (`canonicalState`: "orissa" → "Odisha", "New Delhi" → "Delhi");
+  anything else is 400, `''` clears it (audit B3). It is part of the
+  address: it never decides IGST (§2 "Place of supply").
 - `phone` is unique among the shop's live customers (unique index
   `(shopId, phone, deletedToken)`; `409 CUSTOMER_PHONE_IN_USE`, also under
   concurrent creates). A soft-deleted customer frees its phone number.
@@ -290,8 +386,13 @@ totalReceipts, openedBy: { id, name }, closedBy }`.
 - `POST /customers/:id/payments { idempotencyKey, amount, tender, reference?,
   notes?, allowAdvance? }` records a repayment. Without `allowAdvance`,
   `amount > outstandingBalance` is `409 PAYMENT_EXCEEDS_OUTSTANDING`. With it,
-  the balance may go negative (advance / store credit). Inactive customers are
-  rejected (`409 CUSTOMER_INACTIVE`). Response `{ customer, transaction }`.
+  the balance may go negative (advance / store credit), never below
+  −99,999,999.99 (`409 OUTSTANDING_BALANCE_TOO_LARGE`). Inactive customers are
+  rejected (`409 CUSTOMER_INACTIVE`). Response `{ customer, transaction }`;
+  the same key with the same payment replays it, a different one is `422
+  IDEMPOTENCY_KEY_REUSED` with details `{ transactionId, customerId, amount,
+  tender }` of what was recorded. The ledger and invoice lists are newest
+  first, ties broken by id.
 - `POST /customers/search { query, skip?, take? }` returns an array.
 - `DELETE /customers/:id` soft-deletes; `409 CUSTOMER_HAS_BALANCE` when the
   outstanding balance is not zero.
@@ -319,8 +420,21 @@ Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
   product's reorder point) or `in`; services and digital goods are never
   `out` or `low`. A `limit`/`offset`/`stock` outside its range is 400.
 - `POST /products`: `sku` is optional; without one the API numbers it
-  `SKU-000001`… per shop (`NumberSequence`, entity `PRODUCT_SKU`). A client
-  never invents a SKU or a cost price.
+  `SKU-000001`… per shop (`NumberSequence`, entity `PRODUCT_SKU`), drawing
+  past any number a live product already holds (typed, imported or edited
+  in) inside the same transaction, up to 1000 draws (`409
+  SKU_SEQUENCE_EXHAUSTED`), so one such product never blocks later creates
+  (audit P1-6). A client never invents a SKU or a cost price.
+  `wholesalePrice` defaults to the selling price.
+- `sellingPrice` is before GST; `mrp` is the tax-inclusive MRP and must be at
+  least one unit's price with GST and cess (`inclusiveUnitPrice`), else `400
+  PRICE_ABOVE_MRP` (details `{ mrp, inclusivePrice, sellingPrice }`).
+  Omitted on create (or `null` on update) it is that inclusive price. A
+  `PATCH` that changes the selling price, GST slab, cess or MRP re-checks the
+  pair; one that changes none of them leaves an older product as it is.
+  Prices are 0..99,999,999.99 (audit P1-2).
+- `categoryId`, `supplierId` and `brandId` on create and update must name a
+  live row of the caller's shop (`assertOwned`, 404 otherwise; audit P1-1).
 - `GET /search?q&limit` returns lean results `{ id, name, sku, barcode,
   sellingPrice, mrp, gstRate, cessRate, unit, currentStock, type, isActive,
   imageUrl, categoryName }` ranked by relevance (exact barcode/SKU first,
@@ -350,10 +464,14 @@ Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
 
 - `GET /dashboard/summary` returns
   `{ businessDate, timezone, failedSections, todayGrossSales, todayReturns,
-  todaySales (net), todayProfit (gross profit: taxable value minus cost of
-  goods, sales minus returns), todayOrders, todayReturnCount, totalRevenue
-  (net, all time), totalOrders, totalCustomers, totalProducts,
-  outstandingUdhar, lowStockCount, outOfStockCount, lowStockItems (at most 5),
+  todaySales (net), todayProfit (gross profit: taxable value minus the cost
+  of goods the ledger booked, i.e. only lines whose stock moved: SERVICE,
+  DIGITAL and custom lines carry none; sales minus returns), todayOrders,
+  todayReturnCount, totalRevenue (net, all time), totalOrders,
+  totalCustomers, totalProducts, outstandingUdhar (the sum of the positive
+  customer balances: an advance never offsets another customer's due),
+  customerAdvances (the sum of the negative balances, as a positive figure),
+  lowStockCount, outOfStockCount, lowStockItems (at most 5),
   inventoryValue, recentInvoices: [{ id, invoiceNumber, type, status,
   totalAmount, paymentMode, createdAt, customer }] (last 10, all time,
   COMPLETED and CANCELLED), paymentModes: [{ mode, amount }] (today, sale
@@ -393,12 +511,24 @@ Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
   fail).
 - `GET /dashboard/analytics?range` and `GET /dashboard/trends?days` keep their
   shapes with the same SALE/RETURN/CANCELLED rules and business-day ranges.
+  The analytics `kpis` carry `grossProfit` (as `todayProfit`, over the
+  range), `expenses` (live expenses whose `expenseDate` falls in the range,
+  paid or pending), `netProfit = grossProfit − expenses` (the "Net Profit"
+  tile), `udharOutstanding` and `customerAdvances` (as the summary).
 - `GET /dashboard/export/invoices.csv?from&to`,
   `GET /dashboard/export/invoice-items.csv?from&to`,
-  `GET /dashboard/export/gst-summary.csv?from&to` stream `text/csv`. The
-  exports carry the same population as the dashboards: `COMPLETED` `SALE` and
-  `SALES_RETURN` invoices only, so a total summed from a file equals the
-  dashboard net revenue for the same range.
+  `GET /dashboard/export/gst-summary.csv?from&to` stream `text/csv`.
+  `invoices.csv` lists the `SALE` and `SALES_RETURN` documents created in the
+  range that are `COMPLETED` or `CANCELLED`, with `status` and `cancelledAt`
+  (a cancelled sale keeps the GST serial number it used); its `COMPLETED`
+  rows sum to the dashboard net revenue for the same range. Both document
+  files carry `cessAmount` (an invoice's is the sum of its lines'; it is part
+  of `taxAmount`). `invoice-items.csv` and the GST summary cover `COMPLETED`
+  documents only. Cells a spreadsheet would run as a formula (a leading `=`,
+  `+`, `-`, `@`, tab or CR, a plain number excepted) are prefixed with an
+  apostrophe, the rule of the import reports. `from` / `to` must be calendar
+  days (`400 INVALID_DATE` for `2026-02-30`; the invoice list's `from` / `to`
+  too).
 
 Analytics cache keys, dropped right after every committed sale, return and
 cancellation (`BillingHelpers.afterStockChange`) and again by the event
@@ -441,8 +571,10 @@ first (`SALES_RECENT_EVENTS_LIMIT`); `GET /sales/events/:id` returns one
 ## 8. Shop
 
 `GET /shops/me` returns `{ id, name, address, city, state, pincode, phone,
-email, logoUrl, settings: { gstin, currency, timezone } }`. The POS uses
-`state` to decide inter-state GST for a selected customer.
+email, logoUrl, settings: { gstin, currency, timezone } }`. `state` is the
+shop's place of supply: a sale is inter-state only when an explicit
+`placeOfSupply` differs from it (§2), and a shop without a state never bills
+IGST.
 
 ## 9. Accounting model
 
@@ -452,13 +584,16 @@ Every money or stock-value movement posts through `LedgerPostingService`
 its business source, `(shopId, sourceType, sourceId)` with a unique index:
 `SALE` / `RETURN` / `CANCELLATION` (invoice id), `CUSTOMER_PAYMENT` (udhar
 transaction id), `GRN`, `PURCHASE_RETURN`, `ADJUSTMENT_REQUEST`,
-`STOCK_ADJUSTMENT` (their document ids), `SUPPLIER_PAYMENT` (SupplierPayment
-id), `OPENING_BALANCE` (the opening udhar's UdharTransaction id). A replay of an already-posted
+`STOCK_ADJUSTMENT`, `VENDOR_BILL`, `SUPPLIER_CREDIT_NOTE` (their document
+ids), `SUPPLIER_PAYMENT` (SupplierPayment id), `SUPPLIER_OPENING_BALANCE`
+(the Supplier id), `OPENING_BALANCE` (the opening udhar's UdharTransaction id), `EXPENSE`
+(the Expense id) and `EXPENSE_ADJUSTMENT` (`<Expense id>:<n>`, each later
+change of a posted expense). A replay of an already-posted
 source posts nothing; a concurrent duplicate fails on the index and its
 transaction rolls back. Every `LedgerTransaction` row carries the header's
 `postingId`. Debit-normal accounts: `CASH`, `BANK`,
 `ACCOUNTS_RECEIVABLE`, `UDHAR_RECEIVABLE`, `COST_OF_GOODS`, `INVENTORY`,
-`INVENTORY_ADJUSTMENT`. Credit-normal: `SALES_REVENUE`, `GST_PAYABLE`,
+`INVENTORY_ADJUSTMENT`, `INPUT_GST` (GST paid on purchases), `EXPENSES`. Credit-normal: `SALES_REVENUE`, `GST_PAYABLE`,
 `ACCOUNTS_PAYABLE`, `OPENING_BALANCE_EQUITY` (the shop's capital on its
 first day: the contra of every opening balance, roadmap 9.20).
 
@@ -468,22 +603,94 @@ first day: the contra of every opening balance, roadmap 9.20).
 | Sale under ₹0.50 (rounds to ₹0) | as above | the negative round-off exceeds the taxable amount, so revenue posts 0 and the shortfall comes off GST_PAYABLE (`splitRevenue`); both entries stay >= 0 |
 | Return / cancellation | the exact reverse of the sale, cost of goods only for lines that physically came back | |
 | Customer repayment | CASH / BANK | ACCOUNTS_RECEIVABLE |
-| Goods receipt (GRN accepted) | INVENTORY (Σ unitPrice × acceptedQuantity) | ACCOUNTS_PAYABLE |
+| Goods receipt (GRN accepted) | INVENTORY (Σ unitPrice × acceptedQuantity; `unitPrice` is the order line's net cost: after its discount, GST excluded) | ACCOUNTS_PAYABLE |
+| Vendor bill posted (source `VENDOR_BILL`) | INPUT_GST (the bill's tax); INVENTORY (bill base − receipt value of the billed lines, billed qty × receipt unit cost, when positive); EXPENSES (base of SERVICE / DIGITAL lines) | INVENTORY (that difference when negative); ACCOUNTS_PAYABLE (the net: after the bill the supplier is owed exactly the bill's total) |
 | Purchase return | ACCOUNTS_PAYABLE | INVENTORY |
+| Supplier credit note issued, not backed by a return (source `SUPPLIER_CREDIT_NOTE`) | ACCOUNTS_PAYABLE (the note) | INPUT_GST (its tax), INVENTORY (the rest: the credit lowers what the goods cost) |
+| Supplier credit note issued for a COMPLETED purchase return | ACCOUNTS_PAYABLE (the part of the return's notes above the return's posted value: its GST) | INPUT_GST |
+| Supplier opening balance (source `SUPPLIER_OPENING_BALANCE`) | OPENING_BALANCE_EQUITY | ACCOUNTS_PAYABLE |
 | Supplier payment / vendor-bill payment | ACCOUNTS_PAYABLE | CASH (tender `CASH`) / BANK (other tenders) |
+| Stock transfer between locations | nothing: the stock keeps its value | |
 | Stock adjustment, damage, loss, expiry | delta > 0: INVENTORY / INVENTORY_ADJUSTMENT; delta < 0: INVENTORY_ADJUSTMENT / INVENTORY, at `Product.costPrice` | |
 | Opening stock (adjustment reason `OPENING_BALANCE`, manual or imported) | INVENTORY | OPENING_BALANCE_EQUITY, at `Product.costPrice` (a negative opening the other way round) |
 | Opening udhar (source `OPENING_BALANCE`) | ACCOUNTS_RECEIVABLE (owed) / OPENING_BALANCE_EQUITY (advance) | OPENING_BALANCE_EQUITY (owed) / ACCOUNTS_RECEIVABLE (advance) |
+| Expense paid (created paid, or marked paid; source `EXPENSE`) | EXPENSES | CASH (mode Cash) / BANK (UPI, Card, Bank Transfer) |
+| Expense edited or deleted (source `EXPENSE_ADJUSTMENT`) | the difference between what the expense's postings hold and what it now implies (a delete or a switch to pending reverses it all) | |
 
 `Supplier.pendingPayables` is the per-supplier view of `ACCOUNTS_PAYABLE`,
-maintained in the same transaction as each posting (receipt adds, purchase
-return subtracts down to zero, payment subtracts under a guard: paying more
-than is owed is `409 PAYABLES_INSUFFICIENT`). `POST /suppliers/:id/payments
-{ amount, tender?, reference?, idempotencyKey?, notes? }` and
-`POST /vendor-bills/:id/pay { paymentAmount, tender?, reference?,
+maintained in the same transaction as each posting through
+`SupplierPayablesService` (opening balance, receipt and posted bill add;
+purchase return and issued credit note subtract; payment subtracts under a
+guard: paying more than is owed is `409 PAYABLES_INSUFFICIENT`). A balance
+below zero is an advance the supplier holds (goods returned after they were
+paid for); it is kept, never floored, and the web shows it as "advance". A
+supplier with a balance either way cannot be deleted (`409
+SUPPLIER_HAS_BALANCE`); a deleted supplier takes no new purchase order,
+receipt, return, bill or credit note (404). `POST /suppliers/:id/payments
+{ amount, tender?, reference?, idempotencyKey, notes? }` (the key is
+required; the web makes one per payment dialog and reuses it on a retry)
+and `POST /vendor-bills/:id/pay { paymentAmount, tender?, reference?,
 idempotencyKey? }` both record a `SupplierPayment` (the ledger source,
-replayed per idempotency key). `SupplierPayablesService.payablesFromLedger`
-rebuilds the balance from `openingPayables` and the postings.
+replayed per idempotency key; the same key for another payment is 409
+`IDEMPOTENCY_KEY_REUSED`). A `CASH` payment by someone with an open shift
+leaves that drawer (`SupplierPayment.shiftId`, `Shift.cashPayouts`, lower
+`expectedCash`). Lock order of every payable writer: the document (bill,
+note, return), `Shift`, `Supplier`, then `LedgerAccountBalance`; a payment
+transaction is READ COMMITTED with the deadlock retry.
+`GET /suppliers/summary` answers `{ totalPayables, count, activeCount }`
+over every live supplier (`totalPayables` a decimal string).
+`SupplierPayablesService.payablesFromLedger` rebuilds the balance from
+`openingPayables` (the authority for the opening part, posted or not) and
+the net ACCOUNTS_PAYABLE credit of the supplier's receipts, bills, returns,
+credit notes and payments.
+
+Procurement documents (purchase orders, goods receipts, vendor bills,
+purchase returns, credit notes) change state under a row lock with a
+compare-and-set on the status (`409 <DOC>_STATE_CONFLICT` for the loser). A
+receipt values its lines at the order line's net cost; without a
+`warehouseId` it lands in the warehouse of the POS sale location (a shop
+with other warehouses must name one: `400 GRN_WAREHOUSE_REQUIRED`). A
+vendor bill is three-way matched: every line names its order line and its
+receipt line, which must agree with each other, the product and the bill's
+supplier / order / receipt; the receipt must be ACCEPTED, COMPLETED or
+CLOSED; the unit price before GST must equal the order line's net cost
+within `PURCHASE_BILL_PRICE_TOLERANCE_PERCENT` (default 0, `400
+VENDOR_BILL_PRICE_MISMATCH`), and the quantity billed over every live bill
+of a receipt line never exceeds what it accepted. A purchase return takes
+the variant and the warehouse from the receipt line it returns. A credit
+note for a purchase return needs the return COMPLETED, and the live notes of
+one return never exceed its value. `POST .../:id/reject` (a manager other
+than the creator or submitter) and `POST .../:id/cancel` exist for
+purchase returns, vendor bills and credit notes (pending decision → REJECTED;
+DRAFT / SUBMITTED / PENDING_APPROVAL → CANCELLED) and for goods receipts
+before acceptance (RECEIVING / PARTIALLY_RECEIVED / QUALITY_INSPECTION →
+REJECTED; DRAFT … QUALITY_INSPECTION → CANCELLED). A purchase-order draft is
+totalled by the server, and whoever edited it cannot approve it.
+
+Stock moves between locations with `POST /inventory-domain/transfer
+{ productId, variantId?, fromLocationId, toLocationId, quantity,
+idempotencyKey }` (MANAGER+): one transaction, the product row locked, a
+TRANSFER_OUT at the source (`409 INSUFFICIENT_STOCK` when it does not hold
+the quantity) and a TRANSFER_IN at the destination, keyed for replay. This
+is how goods received into a back warehouse reach the sale location the POS
+sells from. Legacy stock (`Product.currentStock` without an inventory row)
+opens only at the sale location, whichever location moves first.
+
+`POST /inventory-domain/:id/adjust { reason, quantityChange, notes?,
+correlationId?, idempotencyKey? }` (MANAGER+): `quantityChange` is non-zero,
+3 decimals, at most ±999,999,999.999; a keyed request replays (the same key
+for another item or quantity is 409 `IDEMPOTENCY_KEY_REUSED`); an
+`OPENING_BALANCE` is positive and once per item (`409 OPENING_STOCK_EXISTS`);
+a MANAGER moves at most `INVENTORY_MANAGER_MAX_ADJUST_VALUE` (default ₹5000,
+|quantity| × cost price) directly, more is `403
+ADJUSTMENT_REQUIRES_APPROVAL` (an owner, or a stock-count adjustment approved
+by another manager). A stock count snapshots `onHand` when its session
+starts (the rows read under a shared lock, `startedAt` taken after the
+read); a counted item's variance is counted − (snapshot + the item's stock
+movements between the snapshot and `countedAt`), recomputed when the
+adjustment is approved, so a sale during the count is never subtracted
+twice; a count item carries at most one live adjustment request (`409
+ADJUSTMENT_ALREADY_REQUESTED`).
 
 Every posting is reconciled against its document nightly and on demand
 (§11): the entries above are the ones the reconciliation expects, and the
@@ -491,11 +698,16 @@ cost-of-goods entries are expected only for the lines whose stock moved.
 
 `SERVICE`, `DIGITAL` and custom lines never move `INVENTORY` or
 `COST_OF_GOODS`. Valuation basis: receipts and supplier returns post at the
-document `unitPrice`; sales, customer returns and adjustments post at the
-product's current `costPrice`. `INVENTORY` therefore carries stock at
-purchase cost, while the dashboard `inventoryValue` is stock at current cost
-price (`InventoryItem.onHand × Product.costPrice`); the two coincide when
-receipt prices equal the cost price. There is no weighted-average or FIFO
+document `unitPrice` (net of discount, GST excluded); sales, customer
+returns and adjustments post at the product's current `costPrice`. Every
+accepted receipt line moves `Product.costPrice` to the moving average of
+what was on hand and what arrived (`(onHand × costPrice + accepted × net
+unit cost) / (onHand + accepted)`, stock below zero counted as none, 2 dp),
+so the cost of goods a sale takes out of `INVENTORY` is what the receipts
+put in; the remaining difference is rounding, a vendor bill's price
+difference (posted to `INVENTORY` without moving the cost price) and a
+manual cost-price edit. The dashboard `inventoryValue` is stock at current
+cost price (`InventoryItem.onHand × Product.costPrice`). There is no FIFO
 costing layer.
 
 ## 10. Consistency model
@@ -556,26 +768,34 @@ costing layer.
 
 The books of a business day are proven to the paisa by
 `ReconciliationService` (`apps/api/src/reconciliation`), nightly for every
-shop (`CRON_RECONCILIATION`, the shop's previous business day in its own
-timezone, under the `cron:reconciliation` lock) and on demand. Every run,
+shop (`CRON_RECONCILIATION`, read in `CRON_TIMEZONE`, default
+Asia/Kolkata, not the container's UTC; the shop's previous business day in
+its own timezone, under the `cron:reconciliation` lock) and on demand. Every run,
 clean or not, is a `ReconciliationRun` row (`businessDate`, `timeZone`,
 `trigger` CRON / MANUAL / CLI, `status` CLEAN / DRIFT / FAILED,
 `driftCount`, `checks`, `summary`, `error`). Nothing is corrected: a drift
 names the check, the document or row and the two figures that disagree, for
 a person to explain or fix with a recorded adjustment.
 
-The seven checks (`reconciliation-engine.ts`, pure over a Prisma client, so
-the cron, the route and the CLI run identical code):
+The nine checks (`reconciliation-engine.ts`, pure over a Prisma client, so
+the cron, the route and the CLI run identical code). Every run reads one
+database snapshot: the engine runs inside one REPEATABLE READ transaction
+(`inReadSnapshot`, 120 s budget), so a sale that commits while a run reads
+cannot show in one figure and not in the next (it used to report a drift
+that did not exist, and page); the run row is written after the snapshot
+closes:
 
 | Check | Identity |
 |---|---|
-| `documents` | every sale and return of the day: `taxable + tax + round-off = total`, `Σ tender rows + credit = total`, `paid = Σ tender rows`; every repayment: `balance before − amount = balance after` |
-| `postings` | every sale, return, cancellation and repayment of the day has exactly the posting of §9 that its stored amounts imply: CASH / BANK by tender row, ACCOUNTS_RECEIVABLE by credit, SALES_REVENUE / GST_PAYABLE by `splitRevenue`, COST_OF_GOODS / INVENTORY from the stock movements the document caused (`StockLedgerEntry` by reference, so a service product or a custom line expects none); every posting created in the window balances, and a POS posting points at a real document of its kind |
+| `documents` | every sale and return of the day: `taxable + tax + round-off = total`, `Σ line totals + round-off = total`, `Σ tender rows + credit = total`, `paid = Σ tender rows`; every credit sale has its CREDIT `UdharTransaction` for the credit amount; every repayment: `balance before − amount = balance after` |
+| `postings` | every sale, return, cancellation and repayment of the day has exactly the posting of §9 that its stored amounts imply: CASH / BANK by tender row, ACCOUNTS_RECEIVABLE by credit, SALES_REVENUE / GST_PAYABLE by `splitRevenue`, COST_OF_GOODS / INVENTORY from the stock movements the document caused (`StockLedgerEntry` by reference, so a service product or a custom line expects none); every expense created, edited, deleted or posted in the day: the sum of its `EXPENSE` / `EXPENSE_ADJUSTMENT` postings is what the expense now implies (§9; an expense recorded before expenses were posted and not edited since is noted, not compared); every posting created in the window balances and has a known source type, and a POS or expense posting points at a real document of its kind |
 | `tenders` | the day's CASH, BANK and ACCOUNTS_RECEIVABLE movement in the matched postings equals the documents by tender |
 | `dashboard` | `GET /dashboard/summary`'s figures for the day (the shared SQL of `RevenueEngine.totals`: gross sales, returns, orders, return count) equal the documents, and net sales equal the ledger's revenue + GST movement (a same-day cancellation is excluded by the dashboard and nets to zero in the ledger) |
-| `shifts` | every shift open at any point of the day, rebuilt from its documents: `expectedCash = openingCash + cash sales − cash refunds (returns and cancellations, repaid credit included) + cash repayments`, and `totalSales`, `cashSales`, `upiSales`, `cardSales`, `udharSales`, `totalReceipts` likewise |
+| `shifts` | every shift open at any point of the day, rebuilt from its documents: `expectedCash = openingCash + cash sales − cash refunds (returns and cancellations, repaid credit included) + cash repayments − cash payouts`, where the payouts (`Shift.cashPayouts`, checked too) are the live paid cash expenses and the CASH supplier payments naming the shift (an expense edited after its shift closed counts as the audit log recorded it at the close: a closed drawer is never touched again), and `totalSales`, `cashSales`, `upiSales`, `cardSales`, `udharSales`, `totalReceipts` likewise |
 | `stock` | every live `InventoryItem.onHand` equals its stock ledger (a `StockSnapshot`, when one exists, plus the entries after it) and every product's `currentStock` equals the sum of its items |
 | `ledger` | every `LedgerAccountBalance` equals the sum of its transactions (debit-normal accounts grow with debits) and the last transaction's `balanceAfter` |
+| `receivables` | every customer's `outstandingBalance` equals the sum of its udhar movements (`balanceAfter − balanceBefore`) and its newest udhar row's `balanceAfter`; the customers' balances (dues minus advances) equal the ledger's ACCOUNTS_RECEIVABLE (+ UDHAR_RECEIVABLE) balance |
+| `payables` | every supplier's `pendingPayables` equals its opening balance plus the net ACCOUNTS_PAYABLE of its documents' postings (GRN, VENDOR_BILL, PURCHASE_RETURN, SUPPLIER_CREDIT_NOTE, SUPPLIER_PAYMENT, SUPPLIER_OPENING_BALANCE); Σ `pendingPayables` equals the ledger's ACCOUNTS_PAYABLE. A supplier whose `openingPayables` has no `SUPPLIER_OPENING_BALANCE` posting (created before it was posted) makes the check `INCONCLUSIVE` with a note, never a drift |
 
 Two facts the shift check needs are stored on the documents (migration
 `20261005090000_reconciliation_runs`): `Invoice.cancelledShiftId`, the drawer
@@ -611,7 +831,11 @@ closed shift at zero drift, every summary figure against an independent
 read, a corrupted row in each area detected and named, the sweep under the
 lock, the routes, the metrics, the CLI) and
 `financial-year-rollover.integration-spec.ts` (both days of the rollover
-reconcile, roadmap 9.6).
+reconcile, roadmap 9.6) and `reconciliation-books.integration-spec.ts` (sales
+committed between the engine's reads leave a run CLEAN; expenses and cash
+supplier payments in the books and the drawer; a corrupted customer balance,
+credit row, invoice line and supplier balance each detected; an unposted
+supplier opening balance INCONCLUSIVE).
 
 ## 12. The application clock (roadmap 9.6)
 
@@ -644,13 +868,21 @@ this order: products, opening stock, customers. The procedure is
   job: `201 { jobId, kind, dryRun }`. `MERGE` / `REPLACE` are 400. The
   worker runs the job as the uploading user, who must still be an active
   manager of the shop (else the job is FAILED with the reason in row 0).
+  A file name over 191 characters is `400 UPLOAD_FILE_NAME_TOO_LONG` before
+  anything is stored; a file past `MAX_IMPORT_ROWS` records (counted while
+  streaming) or a JSON file over 2 MB is the job's file error
+  (`IMPORT_TOO_MANY_ROWS` / `IMPORT_FILE_TOO_LARGE`). When the queue does
+  not take the job within `BULL_ENQUEUE_TIMEOUT_MS` the answer is
+  `503 QUEUE_UNAVAILABLE`, the job row is FAILED with that reason and the
+  stored file removed, so a retry creates one new job, never two live ones.
 - A dry run validates and plans every row against the shop's data and writes
   only the report; `POST /imports/jobs/:id/apply` (MANAGER+) runs a finished
   dry run (COMPLETED or PARTIAL_SUCCESS) for real as a new job on the same
   file (`409 IMPORT_NOT_A_DRY_RUN`, `409 IMPORT_DRY_RUN_NOT_APPLICABLE`).
 - `GET /imports/jobs` (paged, newest first), `GET /imports/jobs/:id` (status
   and counters: `totalRows`, `validRows`, `errorRows`, `createdCount`,
-  `updatedCount`, `unchangedCount`, `skippedCount`), `GET
+  `updatedCount`, `unchangedCount`, `skippedCount`; never the server's file
+  path), MANAGER+ only (the rows hold customers' phone numbers): `GET
   /imports/jobs/:id/rows?status=SUCCESS|ERROR|SKIPPED&skip&take` (paged, file
   order; row 0 is the file itself: unread columns, a missing required column,
   an unreadable file), `GET /imports/jobs/:id/errors`, `GET
@@ -669,12 +901,18 @@ this order: products, opening stock, customers. The procedure is
   is UNCHANGED, so the same file imported twice changes nothing. A refused
   write (409 from a concurrent change) is that row's error and the run goes
   on.
-- Rules beyond the create DTOs: MRP >= selling price, also against the
-  stored MRP when the file leaves it blank; GST slab 0/5/12/18/28 (blank: 18
+- Rules beyond the create DTOs: MRP >= the selling price plus GST and cess
+  (`inclusiveUnitPrice`, the slab the row will have: its own, else 18 on a
+  new product or the stored one on an update), also against the stored MRP
+  when the file leaves it blank; a blank MRP on a new product is that
+  inclusive price; an update row that changes none of the price, slab, cess
+  or MRP of a product already above its MRP is a warning (the POS refuses
+  the product until it is corrected); GST slab 0/5/12/18/28 (blank: 18
   on a new product, with a warning); unit by the POS rule (KG, GM, LTR, ML
   in decimals, the rest whole); a customer's state is an Indian state or
   union territory (`apps/api/src/common/india/states.ts`, the web picker's
-  list): it decides CGST/SGST against IGST; a code a spreadsheet turned into
+  list), stored canonically (it is part of the address; a counter sale is
+  taxed in the shop's state, §2); a code a spreadsheet turned into
   scientific notation (`8.90123E+12`) is refused; the same SKU, barcode,
   phone or product twice in one file is refused on the later row; opening
   stock is refused for a product that already moved or carries stock from

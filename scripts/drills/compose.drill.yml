@@ -18,9 +18,10 @@
 #     answers inside the network under its public names, and the blackbox
 #     exporter trusts the drill CA, so the edge probes verify certificates
 #     exactly as a browser does.
-#   - Prometheus runs the repository's prometheus.yml with the public edge
-#     targets enabled (the commented lines of that file, rendered into
-#     DRILL_DIR/prometheus.yml) and the repository's alerts.yml unchanged.
+#   - Prometheus runs the repository's prometheus.yml and alerts.yml
+#     unchanged, with the public edge targets enabled the way an operator
+#     enables them (PROMETHEUS_PUBLIC_API_URL / PROMETHEUS_PUBLIC_WEB_URL in
+#     DRILL_DIR/drill.env, rendered by deploy/prometheus/render.sh).
 #   - db-ops and the binlog archiver see DRILL_DIR/offsite as the off-site
 #     target (OFFSITE_REMOTE=local:/offsite), a directory outside the stack.
 services:
@@ -38,10 +39,6 @@ services:
   blackbox:
     volumes:
       - ${DRILL_DIR:?run scripts/drills/drill-stack.sh}/tls/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
-
-  prometheus:
-    volumes:
-      - ${DRILL_DIR:?run scripts/drills/drill-stack.sh}/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
   db-ops:
     environment:

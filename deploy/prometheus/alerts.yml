@@ -172,7 +172,9 @@ groups:
       # (scripts/db/lib.sh record_success). Thresholds follow the objectives
       # in docs/DATA_SAFETY.md: the binary-log archive runs every 5 minutes
       # (15 min of slack), the dump, the documents archive and the off-site
-      # copy run nightly (26 h). alerts.test.yml proves both rules fire.
+      # copy run nightly (26 h). alerts.test.yml proves both rules fire on the
+      # reference topology, alerts.production.test.yml that the production
+      # topology expects no binary-log archive.
       - alert: DukaanAiBackupStale
         expr: |
           (time() - backup_last_success_timestamp_seconds{job="dukaanai-api", kind="binlog"}) > 900
@@ -188,12 +190,15 @@ groups:
           summary: "Backup job {{ $labels.kind }} has not succeeded in time"
           description: "The last successful {{ $labels.kind }} backup was {{ $value | humanizeDuration }} ago (limits: binlog 15 min, dump / documents / offsite 26 h). The recovery point is growing: run `db-ops status`, then the job by hand (db-ops backup, binlog-archive --flush, documents-backup, offsite push) and read its error."
 
+      # The kinds a deployment runs depend on its topology (the production
+      # topology has no binary-log archiver): dukaanai:backup_expected comes
+      # from deploy/prometheus/topology/<topology>.rules.yml, loaded next to
+      # this file. With no topology file loaded the alert fires as kind
+      # "no-topology-rules" instead of going quiet.
       - alert: DukaanAiBackupNeverRecorded
         expr: |
-          absent(backup_last_success_timestamp_seconds{job="dukaanai-api", kind="dump"})
-          or absent(backup_last_success_timestamp_seconds{job="dukaanai-api", kind="binlog"})
-          or absent(backup_last_success_timestamp_seconds{job="dukaanai-api", kind="documents"})
-          or absent(backup_last_success_timestamp_seconds{job="dukaanai-api", kind="offsite"})
+          (dukaanai:backup_expected unless on(kind) backup_last_success_timestamp_seconds{job="dukaanai-api"})
+          or label_replace(absent(dukaanai:backup_expected), "kind", "no-topology-rules", "", "")
         for: 30m
         labels:
           severity: warning

@@ -8,6 +8,20 @@ localhost); `docker-compose.prod.yml` is the production variant (managed
 database and Redis outside, documents on a cloud disk, HTTPS at the edge),
 and `deploy/k8s/` the same topology on Kubernetes.
 
+## Requirements
+
+- **Docker Engine with Docker Compose 2.24.4 or newer.** The compose files
+  use `include` (Compose 2.20.3), an `include` with an override list
+  (`docker-compose.prod.yml` layers `deploy/observability/compose.prod.yml`
+  over the shared monitoring file) and the `!reset` / `!override` tags of
+  the certify overlay (`!override` since 2.24.4). `scripts/compose-smoke.sh` and
+  `scripts/compose-smoke-prod.sh` refuse an older Compose at once with the
+  reason; check with `docker compose version`.
+- **MySQL 8** for production (managed, "MySQL versions" below; MariaDB is
+  for development only), **Redis 7** with `maxmemory-policy noeviction`.
+- Kubernetes: kustomize v5 (built into `kubectl` 1.27+), ingress-nginx and
+  cert-manager, a CNI that enforces NetworkPolicies.
+
 ## Production topology
 
 Decided (roadmap 9.7, with the recovery design signed in
@@ -60,21 +74,34 @@ user, with the `HEALTHCHECK` on the liveness route.
 | Image | Build | Contents | Serves |
 |---|---|---|---|
 | `dukaanai-api` | `docker build -f apps/api/Dockerfile -t dukaanai-api .` | `apps/api/dist`, production `node_modules` of the API only, Prisma schema + migrations | `node dist/main` on `PORT` (3002) |
-| `dukaanai-web` | `docker build -f apps/web/Dockerfile --build-arg NEXT_PUBLIC_API_URL=<browser-facing API URL> -t dukaanai-web .` | Next.js standalone output (`NEXT_STANDALONE=true` at build) | `node apps/web/server.js` on `PORT` (3000) |
+| `dukaanai-web` | `docker build -f apps/web/Dockerfile -t dukaanai-web .` | Next.js standalone output (`NEXT_STANDALONE=true` at build) | `node apps/web/server.js` on `PORT` (3000) |
 
 The web image carries no environment-specific value: the browser-facing API
 URL is read at run time from `API_PUBLIC_URL` (the root layout hands it to
 the browser in `<meta name="dukaanai-api-url">`, the proxy puts it in the
-CSP; `NEXT_PUBLIC_API_URL` is only the local default and the build-time
-fallback). One build therefore serves every environment. No `.env` file is
-copied into either image; every value comes from the orchestrator.
+CSP; the `NEXT_PUBLIC_API_URL` build argument is only the fallback of a
+container started without `API_PUBLIC_URL`). One build therefore serves
+every environment. No env file is in either image, the committed templates
+included (`.dockerignore` keeps every `.env*` but the examples out of the
+build context and both build stages delete any that a different context
+would bring; audit 2026-10-11, R5: Next's standalone output used to copy
+`apps/web/.env.production` into the web image). Every value comes from the
+orchestrator.
 
 ## Images and promotion
 
 Roadmap 9.9: nothing is built on a server. `.github/workflows/release.yml`
-builds the three images once per commit on `main` (and per `v*` tag) and
-pushes `ghcr.io/<owner>/dukaanai-api`, `dukaanai-web` and `dukaanai-db-ops`
-tagged `sha-<7 hex>` (plus `main`, plus the version tag). A deployment names
+builds the three images once per commit on `main` and per `v*` tag, and
+only after CI passed for that commit (it runs on the CI workflow's
+successful completion, never on the push itself; a manual run builds main's
+tip and checks CI's result for it first; audit R8). It pushes
+`ghcr.io/<owner>/dukaanai-api`, `dukaanai-web` and `dukaanai-db-ops`: a main
+commit as `sha-<7 hex>` and `main`, a version tag as `v<version>` ONLY (a tag
+build is its own build with the release in its labels; re-pushing
+`sha-<7>` from it would move a tag main's build had already published to
+other bits, audit R7). The job summary lists each image's digest; pin
+`<image>@sha256:<digest>` where a tag is not trusted to stay put
+(`docs/STAGING.md`, "Deploying by digest"). A deployment names
 the release with `IMAGE_TAG` (`IMAGE_REGISTRY` defaults to the owner's
 ghcr.io namespace); staging runs a tag first, production runs the same tag
 after the staging smoke passed (`docs/STAGING.md`). Promotion and rollback
@@ -110,7 +137,7 @@ which keeps every report in one evidence bundle:
 | Step | What runs against the images | Report |
 |---|---|---|
 | boot-matrix | every refusal case of the boot matrix (`apps/api/test/boot-matrix.json`, the file the boot-regression spec also uses) booted from the API image: each must exit non-zero with `[Bootstrap FATAL]` and the reason | `boot-matrix/boot-matrix.json`, one log per case |
-| migrate-diff | the image's own `prisma migrate deploy`, `migrate diff --exit-code`, `migrate status` and a no-op redeploy on a fresh MySQL 8 and a fresh MariaDB | `migrate-diff/migrate-diff.json` with the logs |
+| migrate-diff | the image's own `prisma migrate deploy`, `migrate diff --exit-code`, `migrate status` and a no-op redeploy on a fresh MySQL 8.0, MySQL 8.4 and MariaDB | `migrate-diff/migrate-diff.json` with the logs |
 | smoke | `scripts/compose-smoke.sh` with `SMOKE_PREBUILT=1` on the reference compose stack built from the candidates (`scripts/certify/compose.certify.yml`): migrations, the business flow through the web and the API, a CLEAN reconciliation, the pre-sale dump rolled forward to the sale, documents and off-site backups, the backup metric, the monitoring stack, the graceful stop (the production-limits gate of the reference smoke is skipped here, `SMOKE_LIMITS_GATE=0`: the overlay opens the limits for the load step); the stack stays up for the next steps | `smoke.log` |
 | route-walk, security | `test/integration/route-walker.integration-spec.ts` and `test/security/*.security-spec.ts` with `CERTIFY_API_URL`: the fixtures (shops, users, tokens) come from the checkout's module on the stack's database, every request goes over HTTP to the API container, and a route the image does not serve fails the walk | `route-walk/route-walk.json` (every route x identity), `*/jest.json` |
 | exploits | `test/certification/exploit-replay.ts` with `EXPLOIT_TARGET` the API container and `EXPLOIT_WEB_URL` the web container (roadmap 9.13): every audit exploit replayed as an attacker would — unauthenticated access, a forged / alg:none JWT, a cross-tenant id, over-refund, a ledger-overflow amount, an SSRF webhook, a 30 MB upload, a brute-force flood, MANAGER→OWNER mass assignment, a VIEWER write, an open redirect — each refused with its documented code | `exploits/exploit-replay.json` (one row per exploit) |
@@ -118,18 +145,23 @@ which keeps every report in one evidence bundle:
 | load, upload-gate | `load/run.sh` and `load/upload-gate.sh` with `LOAD_TARGET` on the API container (RSS and the temp directory read through `docker exec`) | `load/pos-peak-*.json`, `load.log`, `upload-gate.log` |
 | business-day | `apps/api/load/business-day.mjs` for `CERTIFY_BUSINESS_DAY_MINUTES` (6) minutes over three shops with two browser sessions on one of them (roadmap 9.17): cash, UPI and credit sales, returns, cancellations, repayments, goods receipts, shift changes and dashboard polls while Redis is restarted and the API container is killed and started again; the gate is zero API 5xx, every idempotency key resolved to exactly one invoice (the invoice list equals the set the sessions confirmed), in-flight documents complete or absent, reconciliation CLEAN for every shop and business date | `business-day.log`, `business-day/business-day.{json,md}`, `business-day/ui.log` |
 | restore-db, restore-docs, restore-offsite | `scripts/db/restore-drill.sh --pitr require` on the stack's MySQL; the documents and off-site drills on a copy of the stack's storage volume | the three logs |
-| drills | after teardown, `scripts/drills/drill-stack.sh up` + `all` on a drill stack of the same three images (roadmap 9.18, `docs/DRILLS.md`): the API killed during a checkout burst, MySQL stopped 60 s, Redis stopped 5 minutes, the documents volume filled, an expired edge certificate, the database restored from the off-site copy to the second before a chosen sale; each drill fails on a lost or duplicated sale, a user path that never recovers, an expected alert that never fires or a reconciliation that is not CLEAN (`CERTIFY_DRILLS=0` skips; `CERTIFY_DRILL_TLS_WARN_SECONDS=3720` adds the near-expiry stage) | `drills/<drill>-<stamp>.{json,md,jsonl}`, the browser observer's `-screen.jsonl` and screenshots, `drills/compose-logs.txt` |
+| drills | after teardown, `scripts/drills/drill-stack.sh up` + `all` on a drill stack of the same three images (roadmap 9.18, `docs/DRILLS.md`): the API killed during a checkout burst, MySQL stopped 60 s, Redis stopped 5 minutes, the documents volume filled, an expired edge certificate, the database restored from the off-site copy to the second before a chosen sale; each drill fails on a lost or duplicated sale, a user path that never recovers, an expected alert that never fires or a reconciliation that is not CLEAN (`CERTIFY_DRILLS=0` skips them, recorded SKIPPED and listed in `SUMMARY.md` as not certified, never PASS; `CERTIFY_DRILL_TLS_WARN_SECONDS=3720` adds the near-expiry stage) | `drills/<drill>-<stamp>.{json,md,jsonl}`, the browser observer's `-screen.jsonl` and screenshots, `drills/compose-logs.txt` |
 
-`SUMMARY.md` in the bundle lists every step with PASS / FAIL, the image
+`SUMMARY.md` in the bundle lists every step with PASS / FAIL / SKIPPED (a
+skipped step is named apart as not certified and never counts as passed),
+the image
 digests, the commit and the one deviation from production configuration:
 the API container runs with the test profile's open rate limits and billing
 timeout (every suite and the load come from one address; roadmap 9.16 is
 where the production values are exercised). A failing step never stops the
 run, so the bundle always holds every report; the job is red when any step
 failed. The bundle is the workflow artefact `certification-<tag>` and, on a
-tag, the asset `certification-<tag>.tar.gz` of the tag's GitHub release,
-which the job creates as a draft when none exists (`scripts/certify/
-attach-release.sh`): the owner publishes it after reading the evidence. A
+tag, the asset `certification-<tag>.tar.gz` of the tag's ONE draft GitHub
+release: the images job creates the draft (with the SBOMs) and passes its
+id on, and `scripts/certify/attach-release.sh` finds a draft by listing the
+releases, since `GET /releases/tags/{tag}` never returns one (audit R6: the
+certify job used to open a second draft). The owner publishes it after
+reading the evidence. A
 tag whose certification is red is not promoted (`docs/STAGING.md`).
 
 Locally, with docker, the workspace installed, Chromium for Playwright and
@@ -157,11 +189,19 @@ Roadmap 9.14, in `.github/workflows/release.yml` and `.github/workflows/ci.yml`:
   `sbom-<sha>`, and on a `v*` tag attaches `sbom-dukaanai-{api,web,db-ops}.cdx.json`
   to the tag's release (`scripts/certify/attach-release.sh`).
 - **Secrets.** gitleaks scans the tree and the whole history on every push
-  (CI lint job, roadmap 9.11); a planted secret turns CI red.
+  (CI lint job, roadmap 9.11); a planted secret turns CI red. Its fixture
+  allowlists match by rule AND file AND value, and the lint job's control
+  step (`.github/scripts/gitleaks-control.sh`) plants secrets in the
+  allowlisted files of a scratch copy (a committed env template, a spec, a
+  test, the password denylist) and fails unless every one is reported
+  (audit 2026-10-11, P1-13: the allowlists matched by path alone).
 - **Dependencies.** `npm audit --omit=dev --audit-level=high` stays green in
   the lint job, and `.github/dependabot.yml` opens weekly grouped pull
-  requests for npm (the root and each workspace) next to the github-actions
-  pin updates.
+  requests for npm (the root and each workspace), the Dockerfiles' base
+  images and the compose files' pinned images (MySQL, Redis, Caddy, the
+  monitoring stack) next to the github-actions pin updates. The CI service
+  containers and `scripts/certify/migrate-diff.sh` carry the same MySQL /
+  Redis / MariaDB pins by hand: move them in the same pull request.
 
 ## Release step: migrations
 
@@ -179,12 +219,18 @@ container names the binary: the Prisma CLI is `/app/node_modules/.bin/prisma`
 `node dist/cli/<command>`.
 
 Compose models it as the `migrate` service (`api` depends on
-`service_completed_successfully`); on Kubernetes it is a Job or an init
-container with the same command; on ECS a one-off task. It is a no-op when
-nothing is pending, so run it on every deploy. The API never migrates on its
-own: a boot against a database behind the migrations refuses to start with the
-drift message (see `apps/api/prisma/MIGRATIONS.md` for `migrate status` /
-`migrate resolve`). The database user needs `CREATE TRIGGER` (the ledger
+`service_completed_successfully`); on Kubernetes it is the Job of its own
+kustomization, `deploy/k8s/migrate`, applied and waited for BEFORE the
+application kustomization (`deploy/k8s/README.md`, "Release"); on ECS a
+one-off task. It is a no-op when nothing is pending, so run it on every
+deploy. The API never migrates on its own, and refuses to boot behind its
+migrations: at start it compares the migration folders its image carries
+(`prisma/migrations`) with the finished, not rolled back rows of
+`_prisma_migrations`, and any missing one stops the boot with the drift
+message naming it (`PrismaService.assertMigrationsApplied`; audit
+2026-10-11, P1-16: before, only four tables and columns were probed). A
+database AHEAD of the image (the previous image after a rollback) boots. See
+`apps/api/prisma/MIGRATIONS.md` for `migrate status` / `migrate resolve`. The database user needs `CREATE TRIGGER` (the ledger
 immutability triggers) and, with binary logging on, MySQL's
 `log_bin_trust_function_creators=1` (compose sets it on the server).
 
@@ -259,14 +305,17 @@ threshold that the template said were 12 h and 0.85):
 | `BACKUP_STATUS_DIR` | production | the backup jobs' `<kind>.last-success` stamps, read on every scrape into `backup_last_success_timestamp_seconds{kind}` for the stale-backup alert; compose mounts the `db-backups` volume read-only and points it at `status/` (roadmap 9.4) |
 | `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`, `APP_RELEASE` | optional | error tracking is off until the DSN is set; `APP_RELEASE` is baked into release images (the version tag or `sha-<7>`), set it only for an image built without it |
 | `CRON_RETENTION_SWEEP`, `RETENTION_*` | optional | the nightly purge of expired tokens, DONE outbox rows and old history (roadmap 7.8; windows in `apps/api/.env.example`) |
-| `CRON_RECONCILIATION` | optional | the nightly financial reconciliation of every shop's previous business day (roadmap 9.5; default 01:30 server time, after every shop's midnight); drift raises `DukaanAiReconciliationDrift` |
+| `CRON_RECONCILIATION` | optional | the nightly financial reconciliation of every shop's previous business day (roadmap 9.5; default 01:30 in `CRON_TIMEZONE`, after every shop's midnight); drift raises `DukaanAiReconciliationDrift` |
+| `CRON_TIMEZONE` | optional | the IANA zone every `CRON_*` expression is read in (default `Asia/Kolkata`); the images run in UTC, so without it 01:30 would be 07:00 in India with the shops open |
 
 Web:
 
 | Variable | When | Notes |
 |---|---|---|
-| `NEXT_PUBLIC_API_URL` | build (inlined) and runtime (CSP `connect-src`) | the API as the browser reaches it |
+| `API_PUBLIC_URL` | runtime; required behind an edge | the API as the browser reaches it (`https://<API_HOST>/api`), read by the web server at run time: the page gets it in `<meta name="dukaanai-api-url">`, the CSP `connect-src` names its origin. One image serves every environment |
+| `NEXT_PUBLIC_API_URL` | build argument only | inlined into the server and browser bundles at build time, so setting it on a running container changes nothing; the fallback of a container started without `API_PUBLIC_URL` (release images are built without it) and the local default of `next dev` |
 | `API_INTERNAL_URL` | runtime, optional | the API as the web server reaches it (sign-in, refresh); defaults to the public URL |
+| `KEEP_ALIVE_TIMEOUT` | runtime, recommended | idle keep-alive of the Next server in ms; every compose file and the Kubernetes Deployment set `65000`, above the edge's 55 s and ingress-nginx's 60 s (Node's 5 s default made the proxy reuse closed connections: 502s) |
 | `NEXTAUTH_SECRET`, `NEXTAUTH_URL` | runtime | 32+ character secret; the web's public origin |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | runtime, optional | Google sign-in is registered only with real values, and the "Continue with Google" button follows the same rule at run time (`<meta name="dukaanai-google-signin">`, roadmap 9.19); give the API the same `GOOGLE_CLIENT_ID` |
 
@@ -281,7 +330,7 @@ that ends every session after a `JWT_SECRET` rotation or a leak.
 
 ```
 cp .env.example .env
-sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/; s/^NEXTAUTH_SECRET=.*/NEXTAUTH_SECRET=$(openssl rand -hex 32)/" .env
+sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/; s/^NEXTAUTH_SECRET=.*/NEXTAUTH_SECRET=$(openssl rand -hex 32)/; s/^GRAFANA_ADMIN_PASSWORD=.*/GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 24)/" .env
 docker compose up --build -d --wait
 open http://localhost:3000
 ```
@@ -320,7 +369,10 @@ without MySQL and Redis, with the `edge` always on, no port published but
 | `EDGE_TLS_LINE` | blank: automatic public certificates; `tls internal` for a host without public DNS |
 | `STORAGE_PATH`, `UPLOADS_PATH`, `BACKUPS_PATH` | absolute paths on the cloud disk(s); blank = named volumes on the host disk |
 | `TRUST_PROXY` | `1` (the edge); `2` with a load balancer in front of it |
-| `DB_OPS_DATABASE_URL`, `BACKUP_COORDINATES` | the backup user (RELOAD + REPLICATION CLIENT) for the agent, or the application user with `skip` |
+| `DB_OPS_DATABASE_URL`, `BACKUP_COORDINATES` | the backup user (RELOAD + REPLICATION CLIENT) for the agent, or the application user with `skip`; the same `sslaccept=strict` / `sslcert=` options as `DATABASE_URL` (the CA is mounted at `/etc/dukaanai/db-ca.pem` in the agent and `db-ops` too) |
+| `GRAFANA_ADMIN_PASSWORD` | required: the file refuses to start without it, and Grafana refuses the template placeholder or `admin` (`deploy/observability/compose.prod.yml`) |
+| `METRICS_TOKEN` | 16+ characters; the API requires it as the scrape's bearer token and Prometheus sends it (rendered at start, `deploy/prometheus/render.sh`) |
+| `PROMETHEUS_PUBLIC_API_URL`, `PROMETHEUS_PUBLIC_WEB_URL` | optional: the public addresses the uptime and certificate probes watch; default `API_PUBLIC_URL` and `WEB_ORIGIN` |
 | `JWT_SECRET`, `NEXTAUTH_SECRET`, `OFFSITE_*`, integrations | as in the reference stack |
 
 ```
@@ -345,7 +397,9 @@ with the certificate verified; HTTP redirected to HTTPS, HSTS, no `Server`
 header; registration, API and web sign-in, stock, shift, a sale, the
 dashboard and the reconciliation through the edge over HTTPS
 (`scripts/smoke-flow.mjs` trusting Caddy's root); `/api/metrics` 404 from
-outside and served inside; the login rate limit counted per client address
+outside, 401 inside without `METRICS_TOKEN` and served with it; Prometheus
+scraping it with the token, expecting the production backup kinds and
+published on 127.0.0.1 only; the login rate limit counted per client address
 with a client-supplied `X-Forwarded-For` ignored; the backup agent's dump
 (with its binary-log position) and documents archive, both stamps exposed
 by the API; the graceful stop.
@@ -376,21 +430,33 @@ code depends on.
    (`DB_CA_FILE`), and verify the connection once:
    `mysql --ssl-mode=VERIFY_IDENTITY --ssl-ca=<ca.pem> -h <host> -u dukaanai -p`.
 2. **Managed Redis** 7 (the smallest instance; nothing persistent),
-   private endpoint, TLS on where offered (`rediss://`), one database.
+   private endpoint, TLS on where offered (`rediss://`), one database, and
+   the eviction policy set to **`maxmemory-policy noeviction`** (audit
+   2026-10-11, R16). One instance holds the BullMQ queues and their locks,
+   the outbox hand-over, the cron locks, the rate-limit counters and the
+   response cache; the providers' default (`volatile-lru` or
+   `allkeys-lru`) would evict a job, a lock or a throttle counter under
+   memory pressure, losing work or opening the brute-force limits, where
+   `noeviction` refuses the write and the API reports it (readiness, the
+   Redis alerts). Size the instance so it never fills (the queue gauges and
+   `DukaanAiQueueBacklog` show growth); the reference compose Redis runs
+   with the same flag.
 3. **The host**: a VM in the same private network as both services
    (2 vCPU / 4 GB is the measured baseline, `docs/LOAD_TEST_BASELINE.md`),
-   Docker Engine with compose v2, the repository checkout (or just the two
+   Docker Engine with Compose 2.24.4 or newer, the repository checkout (or just the two
    compose files, `deploy/`, `scripts/` and `.env`) under `/srv/dukaanai`.
    Attach a persistent disk, format and mount it at `/srv/dukaanai/data`,
    and set `STORAGE_PATH=/srv/dukaanai/data/storage`,
    `UPLOADS_PATH=/srv/dukaanai/data/uploads`,
    `BACKUPS_PATH=/srv/dukaanai/data/backups` (create the directories;
-   the API runs as uid 1000 and the backup agent as the image's user, so
-   `chown -R 1000:1000` the first two and `chmod 1777` the third, or keep
-   the backups on a second disk). Schedule provider snapshots of the disk
+   the API and the backup agent both run as uid 1000, so
+   `chown -R 1000:1000` all three; the one-shot `backup-volume-init`
+   service re-owns the backups directory for the agent when it is not, or
+   keep the backups on a second disk). Schedule provider snapshots of the disk
    (daily, keep 14) and record the first one. Firewall: inbound 80 and 443
    from anywhere, 22 from the operator's addresses, nothing else (the API
-   and web ports are not published).
+   and web ports are not published; the monitoring ports are published on
+   127.0.0.1 only, see "Monitoring access").
 4. **DNS and certificates**: A/AAAA records for `WEB_HOST` and `API_HOST`
    at the host's public address. Caddy obtains and renews the certificates
    itself (Let's Encrypt, with ZeroSSL as fallback) once both names resolve
@@ -403,12 +469,15 @@ code depends on.
 5. **Secrets** (`.env`, mode 600, owned by the deploy user, in the secret
    store as well): `JWT_SECRET` and `NEXTAUTH_SECRET` from
    `openssl rand -hex 32`, `DATABASE_URL` / `DB_OPS_DATABASE_URL` /
-   `REDIS_URL` from step 1 and 2, `METRICS_TOKEN`, `SMTP_URL` (production
+   `REDIS_URL` from step 1 and 2, `METRICS_TOKEN`, `GRAFANA_ADMIN_PASSWORD`
+   (`openssl rand -hex 24`; the production file refuses to start
+   without it), `SMTP_URL` (production
    refuses to invite without it), `OFFSITE_REMOTE` +
    `OFFSITE_CRYPT_PASSWORD` + the backend's `RCLONE_CONFIG_<NAME>_*` for the
    off-site copies (`docs/BACKUP_RESTORE.md`), `SENTRY_DSN` when used.
 6. **First deploy**: `IMAGE_TAG` in `.env` (the tag that passed on
-   staging), `docker compose -f docker-compose.prod.yml pull`, then
+   staging), `docker compose -f docker-compose.prod.yml pull`,
+   `docker compose -f docker-compose.prod.yml run --rm migrate`, then
    `docker compose -f docker-compose.prod.yml up -d --wait`; then
    `DEPLOYMENT_CHECKLIST.md` from phase 3 (probes through
    the edge, a sale, the observability checks), `db-ops status` after the
@@ -421,9 +490,82 @@ code depends on.
    `scripts/smoke-remote.sh ... --probes-only`).
 8. **Monitoring and alerting** (roadmap 9.10): `ALERT_*`, `GRAFANA_*` in
    `.env`, `docker compose -f docker-compose.prod.yml --profile ops up -d
-   prometheus alertmanager blackbox loki alloy grafana`, the public probe
-   targets in `deploy/prometheus/prometheus.yml`, the external uptime
-   checker, and the test alert to the on-call phone: `docs/OBSERVABILITY.md`.
+   prometheus alertmanager blackbox loki alloy grafana`; nothing in
+   `deploy/prometheus` is edited: the scrape token, the public probe
+   targets (`PROMETHEUS_PUBLIC_*_URL`, default `API_PUBLIC_URL` and
+   `WEB_ORIGIN`) and the production backup kinds are set at start
+   (`deploy/prometheus/render.sh`). Then the external uptime checker and the
+   test alert to the on-call phone: `docs/OBSERVABILITY.md`. The consoles
+   are reached through an SSH tunnel ("Monitoring access").
+
+## Monitoring access
+
+Prometheus (9090), Alertmanager (9093), the blackbox exporter (9115), Loki
+(3100) and Grafana (3001) are published on **127.0.0.1 only** in both
+compose files (audit 2026-10-11, P1-15). None of them belongs on the
+internet: Alertmanager's API silences alerts, the blackbox exporter fetches
+any URL it is given (`/probe?target=` reaches the private network), Loki
+answers every log query, and only Grafana has a login.
+
+Docker publishes a port by writing its own iptables rules (the `DOCKER`
+chains), which are evaluated BEFORE the rules ufw or firewalld manage: a
+port published on `0.0.0.0` is reachable from the internet even when the
+host firewall says it is closed. So the bind address, not the firewall, is
+what keeps these ports private. From an operator's machine:
+
+```
+ssh -N -L 3001:127.0.0.1:3001 -L 9090:127.0.0.1:9090 -L 9093:127.0.0.1:9093 ops@<host>
+# then http://localhost:3001 (Grafana), http://localhost:9090, http://localhost:9093
+```
+
+`PROMETHEUS_BIND`, `ALERTMANAGER_BIND`, `BLACKBOX_BIND`, `LOKI_BIND` and
+`GRAFANA_BIND` move one to another address of the host (a private interface
+a VPN reaches); never `0.0.0.0` on a host with a public address. Kubernetes
+runs no monitoring of its own here (`deploy/k8s/README.md`, "Monitoring").
+
+## Container logs
+
+Every service of both compose files and of the monitoring stack logs
+through the `json-file` driver with rotation: `max-size: 10m`, `max-file:
+"5"` (50 MB per container; audit 2026-10-11, R13: unrotated logs filled the
+disk). Loki keeps 31 days through Alloy, so the local files are only the
+last few hours. The host-wide alternative, for containers started any other
+way, is `/etc/docker/daemon.json`:
+
+```json
+{ "log-driver": "json-file", "log-opts": { "max-size": "10m", "max-file": "5" } }
+```
+
+followed by `systemctl restart docker` (it applies to containers created
+afterwards; `docker compose up -d --force-recreate` recreates them).
+
+## MySQL versions
+
+MySQL 8.0 reached end of life in April 2026; managed providers move to 8.4
+LTS. What runs where (audit 2026-10-11, R17):
+
+- **CI** runs every integration suite on MySQL 8.0.46 and 8.4.11 (job
+  "Integration tests", a matrix); certify's `migrate-diff` step applies and
+  diffs the migrations on 8.0.46, 8.4.11 and MariaDB 10.11.19. A production
+  database on 8.4 is therefore tested.
+- **The reference compose stack and the drills** keep MySQL 8.0.46: the
+  `db-ops` image's clients are 8.0.
+- **The `db-ops` image** (`deploy/db-ops/Dockerfile`) is
+  `mysql:8.0.46-debian`, the last Debian build of the official image. MySQL
+  8.4 has no official Debian image (Oracle Linux only, whose minimal server
+  package is the one that lacked `mysqlbinlog` for 8.0), and the MySQL APT
+  repository could not be reached from where this was prepared, so the move
+  is planned rather than done: build the image on `debian:bookworm-slim`
+  with the MySQL 8.4 client packages from repo.mysql.com (pinned key and
+  version), prove `mysqldump`, `mysqlbinlog` and `mysql` 8.4 against 8.0
+  and 8.4 servers with `scripts/db/restore-drill.sh --pitr require`, then
+  switch the reference stack's server to 8.4 too.
+- **Until then, against an 8.4 server**, the 8.0 clients dump and restore,
+  but `mysqldump` 8.0 reads the binary-log position with `SHOW MASTER
+  STATUS`, which 8.4 removed: check that a backup prints its
+  `binary-log position` line, or run the agent with
+  `BACKUP_COORDINATES=skip` (point in time is the managed provider's in the
+  production topology).
 
 ## The edge
 
@@ -448,9 +590,12 @@ production variant):
   API accepts (`UPLOAD_MAX_MEDIA_BYTES`, 50 MB; the API still answers 413
   itself for anything over its own caps), and `EDGE_UPSTREAM_TIMEOUT`
   (60 s) exceeds `BILLING_GATEWAY_TIMEOUT_MS` (30 s), so a slow checkout is
-  answered by the API, never cut by the edge. Keep
-  `HTTP_KEEP_ALIVE_TIMEOUT_MS` above Caddy's idle timeout (it has none by
-  default).
+  answered by the API, never cut by the edge. Caddy keeps an idle upstream
+  connection for at most 55 s (`keepalive 55s`), below the API's
+  `HTTP_KEEP_ALIVE_TIMEOUT_MS` (65 s) and the web's `KEEP_ALIVE_TIMEOUT`
+  (65000, set by the compose files), so the upstream never closes a
+  connection Caddy is about to reuse (audit R21: Node's 5 s default on the
+  web answered 502s).
 - `/api/metrics` answers 404 at the edge: the scrape endpoint exists only on
   the internal network (`api:3002`), where Prometheus reads it with
   `METRICS_TOKEN` (`docs/OBSERVABILITY.md`).
@@ -466,14 +611,21 @@ value), `client_max_body_size 64m`, `proxy_read_timeout 60s`, a `return
 ## Kubernetes
 
 `deploy/k8s/` (README there) is the same topology as the production
-variant, rendered with kustomize and validated with kubeconform in CI:
-namespace, ConfigMap, a Secret generated from `dukaanai-secrets.env`, three
-ReadWriteOnce claims, the migrate Job, the API Deployment (one replica,
-Recreate, the probes above, 45 s grace, `backup-agent` sidecar), the web
-Deployment, Services, an ingress-nginx + cert-manager Ingress (HTTPS for
-both hosts, HTTP redirected, body 64m, timeouts 60 s, `/api/metrics` routed
-to a Service with no endpoints) and NetworkPolicies (the API reachable from
-the Ingress controller, the web and the monitoring namespace only).
+variant, rendered with kustomize and validated with kubeconform in CI (both
+kustomizations). Two kustomizations share `deploy/k8s/common` (the
+namespace, the Secret generated from `common/dukaanai-secrets.env`, and the
+one release tag): `deploy/k8s/migrate` is the release step (the migrate Job
+and its NetworkPolicy), applied and waited for BEFORE `deploy/k8s`, the
+application: ConfigMap, three ReadWriteOnce claims, the API Deployment (one
+replica, Recreate, the probes above, 45 s grace, `backup-agent` sidecar),
+the web Deployment, Services, the ingress-nginx + cert-manager Ingress
+(HTTPS for both hosts, HTTP redirected, body 64m, timeouts 60 s) with a
+second, regex Ingress that sends `/api/metrics` in any letter case to a
+Service with no endpoints, and NetworkPolicies (ingress: the API reachable
+from the Ingress controller, the web and the monitoring namespace only;
+egress: DNS, the database, Redis, SMTP and HTTPS). Every pod runs without a
+service-account token, non-root, with a read-only root file system and an
+emptyDir `/tmp`.
 
 ## Operations
 
@@ -499,8 +651,8 @@ the Ingress controller, the web and the monitoring namespace only).
   deletes expired refresh and password-reset tokens, DONE outbox rows, old
   `SearchHistory` and `ProductEventLog` rows in bounded batches
   (`RETENTION_*`); `retention_rows_purged_total` counts what it removed.
-- Reconciliation: the `Reconciliation` cron (`CRON_RECONCILIATION`, 01:30 by
-  default, one instance at a time under the `cron:reconciliation` lock)
+- Reconciliation: the `Reconciliation` cron (`CRON_RECONCILIATION`, 01:30 in
+  `CRON_TIMEZONE` by default, one instance at a time under the `cron:reconciliation` lock)
   proves every shop's previous business day to the paisa (documents against
   ledger postings, tenders, shifts, stock, account balances and the
   dashboard figure) and records a `ReconciliationRun` row; the owner reads

@@ -4,7 +4,8 @@ import { promises as fs, createReadStream, existsSync } from 'fs';
 import * as path from 'path';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { csvCell } from '../import-export/import-columns';
-import { ClassifiedField, erasableFields, GST_NAMED_RECIPIENT_THRESHOLD, gstRetentionEnds, inventory, TenantModel, tenantModels } from './personal-data';
+import { ChildModel, childModels, ClassifiedField, erasableFields, GST_NAMED_RECIPIENT_THRESHOLD, gstRetentionEnds, inventory, TenantModel, tenantModels } from './personal-data';
+import { normalizePhone } from '../import-export/import-rows';
 
 /**
  * A shop's data export and its deletion request (roadmap 9.24; procedure in
@@ -122,6 +123,41 @@ async function* shopRows(db: Db, model: TenantModel, shopId: string, secrets: Se
   }
 }
 
+/**
+ * The FROM clause and shop predicate of a child table (audit F2): the child
+ * is `t0`, each hop joins the next parent as `t1`, `t2` ..., and the last row
+ * on the way names the shop (two columns for a stock transfer: either shop).
+ */
+function childScope(child: ChildModel): { from: string; where: string; shopParams: number } {
+  const joins = child.hops.map((hop, i) => {
+    const on = hop.parentColumns.map((col, k) => `t${i + 1}.${q(col)} = t${i}.${q(hop.childColumns[k])}`).join(' AND ');
+    return `JOIN ${q(hop.table)} t${i + 1} ON ${on}`;
+  });
+  const last = `t${child.hops.length}`;
+  const where = child.shopColumns.length === 1 ? `${last}.${q(child.shopColumns[0])} = ?` : `(${child.shopColumns.map((col) => `${last}.${q(col)} = ?`).join(' OR ')})`;
+  return { from: [`${q(child.table)} t0`, ...joins].join(' '), where, shopParams: child.shopColumns.length };
+}
+
+/** Every row of a child table that belongs to the shop through its parents, a page at a time, secrets dropped. */
+async function* childRows(db: Db, child: ChildModel, shopId: string, secrets: Set<string>): AsyncGenerator<Record<string, unknown>> {
+  const scope = childScope(child);
+  const shopParams = Array<string>(scope.shopParams).fill(shopId);
+  let after: unknown = null;
+  for (;;) {
+    const rows = await db.$queryRawUnsafe<Array<Record<string, unknown>>>(
+      `SELECT t0.* FROM ${scope.from} WHERE ${scope.where}${after === null ? '' : ` AND t0.${q(child.idColumn)} > ?`} ORDER BY t0.${q(child.idColumn)} LIMIT ${PAGE}`,
+      ...(after === null ? shopParams : [...shopParams, after]),
+    );
+    for (const row of rows) {
+      const clean: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(row)) if (!secrets.has(key)) clean[key] = serialise(value);
+      yield clean;
+    }
+    if (rows.length < PAGE) return;
+    after = rows[rows.length - 1][child.idColumn];
+  }
+}
+
 /** Readable copies for the shop's accountant: the GST-relevant tables as CSV. */
 const CSV_TABLES: Record<string, string> = {
   Invoice: 'invoices',
@@ -153,6 +189,17 @@ async function mediaPaths(db: Db | Tx, shopId: string): Promise<string[]> {
     }
   }
   return [...out].sort();
+}
+
+/** Removes a file or directory; true when there was one to remove. */
+async function removeIfPresent(target: string): Promise<boolean> {
+  try {
+    await fs.lstat(target);
+  } catch {
+    return false;
+  }
+  await fs.rm(target, { recursive: true, force: true });
+  return true;
 }
 
 function resolveUnder(base: string, stored: string): string {
@@ -210,12 +257,19 @@ export async function exportShop(db: Db, options: ExportOptions): Promise<Export
   }
 
   const tables: Record<string, number> = {};
-  for (const model of [SHOP_MODEL, ...tenantModels()]) {
+  // Tenant tables by their shop column, then the child tables through their
+  // parents (audit F2: the lines of every invoice, a customer's audit trail,
+  // an import's report ... have no shop column and were left out).
+  const sources: Array<{ name: string; rows: () => AsyncGenerator<Record<string, unknown>> }> = [
+    ...[SHOP_MODEL, ...tenantModels()].map((model) => ({ name: model.name, rows: () => shopRows(db, model, shop.id, secretsByModel.get(model.name) ?? new Set()) })),
+    ...childModels().map((child) => ({ name: child.name, rows: () => childRows(db, child, shop.id, secretsByModel.get(child.name) ?? new Set()) })),
+  ];
+  for (const model of sources) {
     let count = 0;
     let handle: import('fs/promises').FileHandle | null = null;
     const csvRows: Array<Record<string, unknown>> = [];
     try {
-      for await (const row of shopRows(db, model, shop.id, secretsByModel.get(model.name) ?? new Set())) {
+      for await (const row of model.rows()) {
         handle ??= await fs.open(path.join(dir, 'data', `${model.name}.jsonl`), 'wx');
         await handle.write(`${JSON.stringify(row)}\n`);
         if (CSV_TABLES[model.name]) csvRows.push(row);
@@ -315,11 +369,11 @@ export async function suspendShop(db: Db, shopId: string, now: Date): Promise<Su
   });
 }
 
-/** The SQL value an erased column gets, by class, nullability and uniqueness. */
-function erasedValue(field: ClassifiedField, idColumn: string | null): string {
+/** The SQL value an erased column gets, by class, nullability and uniqueness (`qualified`: the id is already a column reference). */
+function erasedValue(field: ClassifiedField, idColumn: string | null, qualified = false): string {
   if (!field.required) return 'NULL';
   if (field.type === 'Json') return "'{}'";
-  if (field.unique && idColumn) return `CONCAT('erased-', ${q(idColumn)})`;
+  if (field.unique && idColumn) return `CONCAT('erased-', ${qualified ? idColumn : q(idColumn)})`;
   return `'${ERASED}'`;
 }
 
@@ -385,6 +439,42 @@ function erasureStatements(scope: { shopId: string; customerId?: string; keep?: 
   return out;
 }
 
+/**
+ * The erasure of the child tables (audit F3): the same rewrite by class,
+ * through the joins that reach the shop (a multi-table UPDATE), so a
+ * customer's audit trail, an import's raw rows, a photo's EXIF, a webhook's
+ * logged payloads and a revision's review comments go with the rest. In a
+ * customer's erasure only the children that name the customer (`customerId`)
+ * are rewritten, and only that customer's rows.
+ */
+function childErasureStatements(scope: { shopId: string; customerId?: string; keep?: Set<string> }): ErasureStatement[] {
+  const byModel = erasableFields();
+  const out: ErasureStatement[] = [];
+  for (const child of childModels()) {
+    if (NEVER_TOUCHED.has(child.name)) continue;
+    if (scope.customerId && !child.customerColumn) continue;
+    const fields = (byModel.get(child.name) ?? []).filter((f) => !scope.keep?.has(`${f.model}.${f.field}`));
+    if (fields.length === 0) continue;
+    const { from, where: shopWhere, shopParams } = childScope(child);
+    let where = shopWhere;
+    const params: unknown[] = Array<string>(shopParams).fill(scope.shopId);
+    if (scope.customerId) {
+      where += ` AND t0.${q(child.customerColumn!)} = ?`;
+      params.push(scope.customerId);
+    }
+    const sets = fields.map((f) => `t0.${q(f.dbName)} = ${erasedValue(f, `t0.${q(child.idColumn)}`, true)}`);
+    out.push({
+      model: child.name,
+      sql: `UPDATE ${from} SET ${sets.join(', ')} WHERE ${where}`,
+      params,
+      fields: fields.map((f) => f.field),
+      countSql: `SELECT COUNT(*) AS n FROM ${from} WHERE ${where}`,
+      countParams: params,
+    });
+  }
+  return out;
+}
+
 async function countRows(db: Db, statements: ErasureStatement[]): Promise<Record<string, number>> {
   const rows: Record<string, number> = {};
   for (const s of statements) {
@@ -421,7 +511,7 @@ export interface EraseShopOptions extends ShopDataPaths {
 export async function eraseShop(db: Db, options: EraseShopOptions): Promise<ErasureReceipt> {
   const shop = await loadShop(db, options.shopId);
   if (shop.status === 'ACTIVE') throw new ShopDataError(`shop ${shop.id} is ACTIVE: suspend it first (shop-data suspend), deliver the export, then erase`);
-  const statements = erasureStatements({ shopId: shop.id }, options.now);
+  const statements = [...erasureStatements({ shopId: shop.id }, options.now), ...childErasureStatements({ shopId: shop.id })];
   const files = [
     ...(existsSync(path.join(options.storageRoot, shop.id)) ? [path.join(options.storageRoot, shop.id)] : []),
     ...(await importFiles(options.uploadsRoot, shop.id)),
@@ -477,10 +567,11 @@ export async function eraseShop(db: Db, options: EraseShopOptions): Promise<Eras
     { timeout: 10 * 60_000, maxWait: 30_000 },
   );
 
+  // The receipt counts what was removed, not what was asked for (audit P3):
+  // a media path whose file is already gone is not a removed file.
   let removed = 0;
   for (const target of files) {
-    await fs.rm(target, { recursive: true, force: true });
-    removed++;
+    if (await removeIfPresent(target)) removed++;
   }
   const kept: string[] = [];
   for (const stored of media) {
@@ -488,8 +579,7 @@ export async function eraseShop(db: Db, options: EraseShopOptions): Promise<Eras
       kept.push(stored);
       continue;
     }
-    await fs.rm(resolveUnder(options.workingDirectory, stored), { force: true });
-    removed++;
+    if (await removeIfPresent(resolveUnder(options.workingDirectory, stored))) removed++;
   }
   return { kind: 'shop', shopId: shop.id, executedAt: options.now.toISOString(), dryRun: false, rows, deleted, files: { removed, kept }, legalHold: [] };
 }
@@ -499,15 +589,64 @@ export interface EraseCustomerOptions extends Pick<ShopDataPaths, 'storageRoot'>
   customerId: string;
   now: Date;
   dryRun: boolean;
+  /** The API's `uploads` directory: import files that hold the customer are removed (audit F3). */
+  uploadsRoot?: string;
 }
 
 /** Fields a GST legal hold keeps on the customer's row (Rule 46(e) proviso: name and address of the recipient). */
 const HELD_FIELDS = new Set(['Customer.name', 'Customer.address', 'Customer.city']);
 
+/** How the customer appears in an import: the national phone number, and the email when there is one. */
+interface CustomerKeys {
+  phone: string | null;
+  email: string | null;
+}
+
+function customerKeys(row: { phone: string | null; email: string | null }): CustomerKeys {
+  const phone = row.phone ? normalizePhone(row.phone) : null;
+  return { phone: phone?.ok ? phone.value : null, email: row.email ? row.email.trim().toLowerCase() : null };
+}
+
+/** True when an import row's cells name the customer (its phone, as the import matched it, or its email). */
+function rowNamesCustomer(raw: unknown, keys: CustomerKeys): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const cells = raw as Record<string, unknown>;
+  const phone = typeof cells.phone === 'string' ? normalizePhone(cells.phone) : null;
+  if (keys.phone && phone?.ok && phone.value === keys.phone) return true;
+  return !!keys.email && typeof cells.email === 'string' && cells.email.trim().toLowerCase() === keys.email;
+}
+
+/** True when a stored import file holds the customer: a line with its phone digits (any spelling) or its email. */
+async function fileNamesCustomer(file: string, keys: CustomerKeys): Promise<boolean> {
+  const text = await fs.readFile(file, 'utf8').catch(() => '');
+  for (const line of text.split(/\r?\n/)) {
+    if (keys.phone && keys.phone.length >= 6 && line.replace(/\D/g, '').includes(keys.phone)) return true;
+    if (keys.email && line.toLowerCase().includes(keys.email)) return true;
+  }
+  return false;
+}
+
+/** The report rows of the shop's customer imports that name the customer (their raw cells are the customer's). */
+async function customerImportRows(db: Db | Tx, shopId: string, keys: CustomerKeys): Promise<string[]> {
+  if (!keys.phone && !keys.email) return [];
+  const ids: string[] = [];
+  let after = '';
+  for (;;) {
+    const page = await db.$queryRawUnsafe<Array<{ id: string; rawData: unknown }>>(
+      "SELECT r.`id`, r.`rawData` FROM `ImportJobRow` r JOIN `ImportJob` j ON j.`id` = r.`importJobId` WHERE j.`shopId` = ? AND j.`kind` = 'CUSTOMERS' AND r.`id` > ? ORDER BY r.`id` LIMIT 1000",
+      shopId,
+      after,
+    );
+    for (const row of page) if (rowNamesCustomer(serialise(row.rawData), keys)) ids.push(row.id);
+    if (page.length < 1000) return ids;
+    after = page[page.length - 1].id;
+  }
+}
+
 export async function eraseCustomer(db: Db, options: EraseCustomerOptions): Promise<ErasureReceipt> {
   const shop = await loadShop(db, options.shopId);
-  const customers = await db.$queryRawUnsafe<Array<{ id: string; outstandingBalance: Prisma.Decimal }>>(
-    'SELECT `id`, `outstandingBalance` FROM `Customer` WHERE `id` = ? AND `shopId` = ?',
+  const customers = await db.$queryRawUnsafe<Array<{ id: string; outstandingBalance: Prisma.Decimal; phone: string | null; email: string | null }>>(
+    'SELECT `id`, `outstandingBalance`, `phone`, `email` FROM `Customer` WHERE `id` = ? AND `shopId` = ?',
     options.customerId,
     shop.id,
   );
@@ -516,6 +655,8 @@ export async function eraseCustomer(db: Db, options: EraseCustomerOptions): Prom
   if (!balance.isZero()) {
     throw new ShopDataError(`customer ${options.customerId} has an outstanding balance of ${balance.toFixed(2)}: settle it (repayment, or a write-off by the owner) before the erasure`);
   }
+  // Read before the row is rewritten: the import rows and files are found by these.
+  const keys = customerKeys(customers[0]);
 
   // Legal hold: a sale of 50,000 rupees or more still in its GST retention period.
   const held = await db.$queryRawUnsafe<Array<{ invoiceNumber: string; financialYear: string; totalAmount: Prisma.Decimal }>>(
@@ -526,13 +667,35 @@ export async function eraseCustomer(db: Db, options: EraseCustomerOptions): Prom
   );
   const legalHold = held.filter((i) => gstRetentionEnds(i.financialYear) > options.now).map((i) => `${i.invoiceNumber} (${i.financialYear}, held until ${gstRetentionEnds(i.financialYear).toISOString().slice(0, 10)})`);
   const keep = legalHold.length > 0 ? HELD_FIELDS : undefined;
-  const statements = erasureStatements({ shopId: shop.id, customerId: options.customerId, keep }, options.now);
+  // The customer's own rows, the rows that name the customer, and the child
+  // tables of the customer (its audit trail, addresses, contacts, documents:
+  // audit F3), whose payloads repeat the name and phone.
+  const statements = [
+    ...erasureStatements({ shopId: shop.id, customerId: options.customerId, keep }, options.now),
+    ...childErasureStatements({ shopId: shop.id, customerId: options.customerId, keep }),
+  ];
   const folder = path.join(options.storageRoot, shop.id, 'Customers', options.customerId);
+  const importRows = await customerImportRows(db, shop.id, keys);
+  const importFilesHolding: string[] = [];
+  if (options.uploadsRoot) {
+    for (const file of await importFiles(options.uploadsRoot, shop.id)) if (await fileNamesCustomer(file, keys)) importFilesHolding.push(file);
+  }
 
   const rows: Record<string, number> = {};
   if (options.dryRun) {
     Object.assign(rows, await countRows(db, statements));
-    return { kind: 'customer', shopId: shop.id, customerId: options.customerId, executedAt: options.now.toISOString(), dryRun: true, rows, deleted: {}, files: { removed: existsSync(folder) ? 1 : 0, kept: [] }, legalHold };
+    if (importRows.length > 0) rows.ImportJobRow = (rows.ImportJobRow ?? 0) + importRows.length;
+    return {
+      kind: 'customer',
+      shopId: shop.id,
+      customerId: options.customerId,
+      executedAt: options.now.toISOString(),
+      dryRun: true,
+      rows,
+      deleted: {},
+      files: { removed: (existsSync(folder) ? 1 : 0) + importFilesHolding.length, kept: [] },
+      legalHold,
+    };
   }
 
   await db.$transaction(async (tx) => {
@@ -546,6 +709,15 @@ export async function eraseCustomer(db: Db, options: EraseCustomerOptions): Prom
       shop.id,
       options.customerId,
     );
+    // The import report rows that carried the customer's cells (served by GET /imports/jobs/:id/rows|report).
+    for (let i = 0; i < importRows.length; i += 500) {
+      const batch = importRows.slice(i, i + 500);
+      const n = await tx.$executeRawUnsafe(
+        `UPDATE \`ImportJobRow\` SET \`rawData\` = '{}', \`errors\` = NULL, \`changes\` = NULL WHERE \`id\` IN (${batch.map(() => '?').join(', ')})`,
+        ...batch,
+      );
+      rows.ImportJobRow = (rows.ImportJobRow ?? 0) + n;
+    }
     if (shop.ownerId) {
       await tx.$executeRawUnsafe(
         'INSERT INTO `AuditLog` (`id`, `shopId`, `userId`, `action`, `entity`, `entityId`, `afterData`, `createdAt`) VALUES (?, ?, ?, \'CUSTOMER_ERASED\', \'Customer\', ?, ?, ?)',
@@ -559,7 +731,8 @@ export async function eraseCustomer(db: Db, options: EraseCustomerOptions): Prom
     }
   });
 
-  // Files: everything of the customer, except the invoices a legal hold keeps.
+  // Files: everything of the customer, except the invoices a legal hold keeps,
+  // and every uploaded import file that holds the customer.
   let removed = 0;
   const kept: string[] = [];
   if (existsSync(folder)) {
@@ -568,10 +741,10 @@ export async function eraseCustomer(db: Db, options: EraseCustomerOptions): Prom
         kept.push(path.join('Customers', options.customerId, entry));
         continue;
       }
-      await fs.rm(path.join(folder, entry), { recursive: true, force: true });
-      removed++;
+      if (await removeIfPresent(path.join(folder, entry))) removed++;
     }
     if (kept.length === 0) await fs.rm(folder, { recursive: true, force: true });
   }
+  for (const file of importFilesHolding) if (await removeIfPresent(file)) removed++;
   return { kind: 'customer', shopId: shop.id, customerId: options.customerId, executedAt: options.now.toISOString(), dryRun: false, rows, deleted: {}, files: { removed, kept }, legalHold };
 }

@@ -41,10 +41,13 @@ export class ShopsService {
    * by field: a request can never reach relations such as `users` or `owner`.
    */
   async updateShopProfile(shopId: string, dto: UpdateShopProfileDto) {
-    const shopFields: Partial<Pick<UpdateShopProfileDto, (typeof SHOP_PROFILE_FIELDS)[number]>> = {};
+    const shopFields: Partial<Pick<UpdateShopProfileDto, Exclude<(typeof SHOP_PROFILE_FIELDS)[number], 'email'>>> & { email?: string | null } = {};
     for (const field of SHOP_PROFILE_FIELDS) {
+      if (field === 'email') continue;
       if (dto[field] !== undefined) shopFields[field] = dto[field];
     }
+    // A blank email clears the column (audit W3): store NULL, never ''.
+    if (dto.email !== undefined) shopFields.email = dto.email?.trim() || null;
     const gstin = dto.gstin;
 
     await this.prisma.$transaction(async (tx) => {

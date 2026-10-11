@@ -242,13 +242,26 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `StockCountItem.variance` when raised from a count item, need an approver
   other than the requester, and approve + post in one transaction with
   guarded PENDING_APPROVAL → APPROVED → POSTED transitions.
-- Payables (`SupplierPayablesService`, global LedgerModule): a GRN adds to
-  `Supplier.pendingPayables` and a purchase return floors it, in the same
-  transaction as their postings; supplier and vendor-bill payments create a
-  `SupplierPayment` row (idempotent per `(shopId, idempotencyKey)`), decrement
-  the balance under a guard (`PAYABLES_INSUFFICIENT`) and post DR
-  ACCOUNTS_PAYABLE / CR CASH|BANK with source `SUPPLIER_PAYMENT`.
-  `payablesFromLedger` rebuilds the balance (`openingPayables` + postings).
+- Payables (`SupplierPayablesService`, global LedgerModule): every writer
+  goes through `postWithPayable` (Supplier row `FOR UPDATE` before the
+  ledger; lock order document → Shift → Supplier → LedgerAccountBalance) and
+  moves `Supplier.pendingPayables` by the posting's net AP credit in the same
+  transaction. A GRN values stock at the PO line's net cost (after its
+  discount, ex-GST) and posts DR INVENTORY / CR AP; a vendor bill posts DR
+  INPUT_GST + the price difference (INVENTORY, or EXPENSES for service lines)
+  / CR AP (`VENDOR_BILL`); a purchase return DR AP / CR INVENTORY; a credit
+  note DR AP / CR INPUT_GST + INVENTORY (`SUPPLIER_CREDIT_NOTE`, only the GST
+  part when it backs a return); a supplier's opening balance DR
+  OPENING_BALANCE_EQUITY / CR AP (`SUPPLIER_OPENING_BALANCE`). The balance is
+  never floored: below zero is a supplier advance. Payments
+  (`RecordSupplierPaymentDto.idempotencyKey` is required; another payment
+  under the same key is 409 `IDEMPOTENCY_KEY_REUSED`) create a
+  `SupplierPayment`, decrement under a guard (`PAYABLES_INSUFFICIENT`), post
+  DR AP / CR CASH|BANK (`SUPPLIER_PAYMENT`), and a CASH payment leaves the
+  payer's open drawer (`SupplierPayment.shiftId`, `Shift.cashPayouts`).
+  `payablesFromLedger` = `openingPayables` + the net AP of the supplier's
+  documents (the opening posting is not counted twice). A supplier with a
+  balance cannot be deleted (409 `SUPPLIER_HAS_BALANCE`).
 - Migrations: an applied migration is never edited
   (`scripts/check-migrations-immutable.sh`, run in CI against the base
   branch); a fix ships as a new migration with `information_schema` guards
@@ -637,9 +650,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   edit are MANAGER+, delete ADMIN+/OWNER (mirrors the API's `@Roles`).
 - 6.3 settings: "Shop Profile" writes every `UpdateShopProfileDto` field
   (`shopApi.update`); the state is a picker from
-  `components/pos/indian-states.ts` because `BillingService.resolveInterState`
-  compares `Shop.state` with `Customer.state` to decide IGST, and a shop
-  without a state can never bill IGST (the save toast says so). The side
+  `components/pos/indian-states.ts` (the place of supply of every counter
+  sale: `BillingService.resolveInterState` bills IGST only when a request
+  names an explicit `placeOfSupply` in another state; a customer's state is
+  an address, never the tax rule). The side
   menu holds two panels (Shop Profile, Account & Security: the caller's
   sessions from `GET /auth/sessions` with revoke and sign-out) and two links
   (Notifications, Team Management); "Billing & Plans" is gone because no plan
@@ -790,7 +804,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ## Dependencies (roadmap phase 7)
 
 - 7.1 / 7.2: `npm audit --omit=dev` is clean (the `next` 14 advisory went
-  with the Next 16 upgrade) and CI's lint job fails on any high or critical
+  with the Next 16 upgrade; the full audit's remaining highs are build tooling
+  only: `braces`, which has no fixed release, through `eslint-config-next`
+  and Tailwind 3, whose fix is the Tailwind 4 styling migration; jest 30
+  everywhere removed the jest chain and the critical handlebars) and CI's lint job fails on any high or critical
   production advisory (`npm audit --omit=dev --audit-level=high`); re-check
   after any dependency change and keep it that way. The root `overrides`
   carry the fixes that upstream pins block, each with its reason in
@@ -953,8 +970,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `retentionRowsPurgedTotal{table}`, `errorsTrackedTotal{kind}`. Labels stay
   low-cardinality: never an id, shop or user. `GET /api/metrics`
   (`MetricsController`, `@Public() @SkipThrottle()`, `ObservabilityModule`)
-  answers `metricsRegistry.contentType`, 404 under `METRICS_ENABLED=false`,
-  401 unless the bearer token equals `METRICS_TOKEN` (`crypto.timingSafeEqual`).
+  answers `metricsRegistry.contentType`, 404 under `METRICS_ENABLED=false`
+  and, in production, while `METRICS_TOKEN` is blank (the production compose
+  refuses to start without it), 401 unless the bearer token equals
+  `METRICS_TOKEN` (`crypto.timingSafeEqual`; Prometheus reads it from the
+  file `deploy/prometheus/render.sh` writes).
   Rules: `deploy/prometheus/alerts.yml` (+ `prometheus.yml`; `promtool check`
   in the CI deploy job; compose `prometheus` service under profile `ops`);
   runbook `docs/OBSERVABILITY.md`.
@@ -1212,9 +1232,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   rule check.
 - 9.5 reconciliation (`src/reconciliation`): `reconcileBusinessDay(db, {
   shopId, timeZone, businessDate })` in `reconciliation-engine.ts` is pure
-  over a Prisma client (every query names the shop) and runs seven checks
-  (documents, postings, tenders, dashboard, shifts, stock, ledger; contract
-  §11), each with figures and drifts (subject, detail, expected, actual,
+  over a Prisma client (every query names the shop), runs inside one
+  REPEATABLE READ snapshot (`inReadSnapshot`; never on a bare client) and
+  runs nine checks (documents, postings, tenders, dashboard, shifts, stock,
+  ledger, receivables, payables; contract §11), each with figures and drifts (subject, detail, expected, actual,
   difference). Expected postings are rebuilt from the stored document: tender
   rows (legacy `paidAmount` under `paymentMode` when there are none), credit,
   `splitRevenue`, and cost of goods from the `StockLedgerEntry` rows that
@@ -1274,9 +1295,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   dump + documents + off-site daily, `BACKUP_LOOP_*`, stamps for the
   metric) and `deploy/k8s/` (kustomize: 1 replica Recreate, probes, 45 s
   grace, `backup-agent` sidecar sharing the RWO claims, ingress-nginx +
-  cert-manager Ingress, NetworkPolicies; `dukaanai-secrets.env` generated and
-  gitignored there; validated with `kubectl kustomize | kubeconform
-  -strict` in CI) are the two forms; never set `replicas > 1` before the
+  cert-manager Ingress, NetworkPolicies; the release is two kustomizations,
+  `deploy/k8s/migrate` (the Job) applied and waited for before `deploy/k8s`,
+  both sharing the Component `deploy/k8s/common` (namespace, the Secret from
+  the gitignored `common/dukaanai-secrets.env`, the one image tag);
+  validated with `kubectl kustomize | kubeconform -strict` in CI) are the two forms; never set `replicas > 1` before the
   documents move to object storage behind `StoragePathBuilder`. The db-ops
   image now bakes `scripts/` in (`COPY scripts /scripts`) so the sidecar
   runs without a bind mount. `scripts/compose-smoke-prod.sh` (CI deploy
@@ -1764,11 +1787,148 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   erasure, with the ledger unchanged. A restore re-applies the erasure
   register (`docs/BACKUP_RESTORE.md` step 7).
 
+## Release audit fixes (2026-10-11)
+
+The audit report and the per-area notes live outside the repository; what
+the fixes made true, and must stay true:
+
+- Accounts (lead): every email lookup goes through `canonicalEmail` /
+  `sameEmailAddress` (`src/common/email-address.ts`: NFC, lower case,
+  punycode domain). `User.email` is `utf8mb4_unicode_ci`, which equates
+  `tést.local` with `test.local`, so a row found by email is re-checked and
+  mail goes to the stored address, never the typed one (the reset-link
+  takeover). Login answers unknown accounts after a dummy bcrypt
+  (`equaliseTiming`); logout and `DELETE /auth/sessions/:id` close that
+  family's sockets only (`disconnectSession`); `PATCH /users/:id/suspend`
+  needs `{ isActive }`; suspending or removing a user deletes the unused
+  invitations they issued; an invitation to an address with an account is
+  409 `ALREADY_A_MEMBER` only inside the inviter's own shop (other shops are
+  not revealed); `PATCH /notifications/read-all` is MANAGEMENT_ROLES;
+  product revisions are found under their own product and never approved by
+  their author (403 `SEPARATION_OF_DUTIES`).
+- Billing (contract §1-§5, §13): MRP is tax-inclusive and
+  `inclusiveUnitPrice` (invoice-math) is its floor in the products API,
+  imports and checkout (`PRICE_ABOVE_MRP`; a blank MRP becomes the
+  inclusive price; fixtures must set MRP at least the price with GST,
+  `pos-fixtures` does). A counter sale is intra-state: IGST only with an
+  explicit `placeOfSupply` (`@IsIndianState`) in another state; customer
+  states are canonicalised and are addresses only. The checkout identity
+  hash leaves out `tenderedAmount` (the legacy hash is still accepted); a 422
+  key reuse carries the saved document (`details.invoiceId`,
+  `transactionId`) and the POS shows it instead of rotating the key, which
+  travels with a held cart (`keyAttempted`). Cashier authority:
+  `BILLING_CASHIER_MAX_REFUND_AMOUNT`, `BILLING_CASHIER_RETURN_WINDOW_DAYS`
+  (403 `RETURN_REQUIRES_APPROVAL`), `BILLING_CASHIER_MAX_CUSTOM_TOTAL_AMOUNT`,
+  a cashier-created customer's credit limit is 0. DAMAGED / EXPIRED returns
+  are not restocked and reverse no COGS; a return after the s.34(2) date is
+  409 `RETURN_PAST_GST_DEADLINE` (`billing/gst-deadline.ts`). COGS is booked
+  per line as cumulative slices (`costOfGoodsSlice`), and reconciliation
+  expects the same. Product links (category, supplier, brand) go through
+  `assertOwned`; the SKU sequence skips numbers an explicit SKU holds.
+- Books: a paid expense posts DR EXPENSES / CR CASH|BANK (`EXPENSE`, later
+  changes `EXPENSE_ADJUSTMENT <id>:<n>` for the difference, so Σ postings =
+  `expenseLedgerState`, `src/expenses/expense-books.ts`) and a cash one
+  leaves the recorder's open drawer (`Expense.shiftId`, `Shift.cashPayouts`
+  via `src/shifts/cash-payout.ts`; a closed drawer is never touched). Shift
+  expected cash = opening + cash sales − cash refunds + cash repayments −
+  cashPayouts. Outstanding udhar counts positive balances only;
+  `customerAdvances` is separate. Dashboard and analytics COGS =
+  `ITEM_COGS` (lines with a stock movement), Net Profit = gross profit −
+  the period's expenses. Report exports list COMPLETED and CANCELLED
+  documents with cess; an impossible date is 400 `INVALID_DATE`.
+- Schedules: every `CronJob` is built by `createCronJob`
+  (`src/common/cron/cron-job.ts`) in `CRON_TIMEZONE` (IANA, default
+  Asia/Kolkata; the images run in UTC); `cron-job.spec.ts` fails on a
+  `new CronJob` anywhere else. Cron locks are `SET NX PX` with
+  token-checked extend / release on the one Redis (`redisLockClient`, the
+  redlock beta is gone; same keys, so mixed versions still exclude each
+  other), extended every TTL/3 while the job runs.
+- Stock and purchasing: GRN acceptance updates `costPrice` by moving
+  average; a GRN without `warehouseId` goes to the sale location's warehouse
+  (400 `GRN_WAREHOUSE_REQUIRED` when the shop has others);
+  `POST /inventory-domain/transfer` moves stock between locations; legacy
+  `currentStock` bootstraps only into the sale-location row; stock-count
+  variance = counted − (snapshot + movements in `(startedAt, countedAt]`),
+  one live adjustment request per count item; a MANAGER adjustment above
+  `INVENTORY_MANAGER_MAX_ADJUST_VALUE` is 403 `ADJUSTMENT_REQUIRES_APPROVAL`;
+  OPENING_BALANCE once per item. Procurement transitions are compare-and-set
+  under the document lock (409 `<DOC>_STATE_CONFLICT`), reject / cancel
+  routes exist, the bill three-way match is cumulative with no quantity
+  tolerance (`PURCHASE_BILL_PRICE_TOLERANCE_PERCENT` on price), caches are
+  invalidated after commit. System stock movements are recorded under the
+  shop owner. Workflow tasks are acted on by their assignee / delegate /
+  role, never the document's creator.
+- Queues and Redis: a queue's `defaultJobOptions` come only from
+  `bullDefaultJobOptions` (`common/queues/job-options.ts`; BullMQ merges
+  shallowly) with `BULL_KEEP_JOBS_*` bounds; a request-path `queue.add` goes
+  through `enqueueWithin` (503 `QUEUE_UNAVAILABLE`, the caller closes the
+  rows it wrote, the worker treats a given-up row as a no-op). The cache
+  client has `REDIS_COMMAND_TIMEOUT_MS`; post-commit invalidation is one
+  `mdel` raced against 1 s and never throws. Outbox settles are
+  claim-guarded (`{ retryCount }` from the job id `<id>.<n>`); the
+  system-events marker is `sysevt.<eventId>`, inserted first. Relay
+  families include `Barcode*` (product) and `Workflow*` (purchase);
+  `outbox-routing.spec` fails on a staged type nobody relays.
+- HTTP and storage: routing is case-sensitive (`createHttpAdapter()` in
+  `main.ts` and the fixture, so `/API/metrics` is 404). Webhook deliveries
+  send a Buffer, ignore proxy variables, have a total deadline, retry 8
+  times from 30 s, and a shop has at most
+  `EVENTS_WEBHOOK_MAX_ENDPOINTS_PER_SHOP` endpoints; the URL guard allows
+  global IPv6 unicast only. Media bytes are served by `GET
+  /api/media/assets/:id/file` (tenant-checked); responses carry
+  store-relative paths; upload names are at most 191 characters; P2000 /
+  P2020 are 400 `VALUE_TOO_LONG` / `VALUE_OUT_OF_RANGE`. Imports parse as a
+  stream and stop at `MAX_IMPORT_ROWS + 1`. EmailService strips control
+  characters from every subject and body and logs masked recipients.
+- Web: `components/customers/permissions.ts` mirrors the API role sets
+  (`isManagement`, `canWriteCustomers`, `canSetCreditLimit`,
+  `canReturnInvoices`, `canUsePos`, `outranks`; AUTH_DISABLED is OWNER):
+  every write button, sidebar link and quick action is gated with it
+  (`e2e-auth/role-gates.spec.ts` checks the hidden action and the API's 403
+  per role). A capped list reads `X-Total-Count` (`fetchEveryPage`, a pager
+  or "Load more"), never the default 100; the navbar badge reads `GET
+  /notifications/unread-count`. "Today" is the shop's business date
+  (`useShopBusinessDate`, or the API's `from` / `to`), never `new Date()`.
+  CSV built in the browser goes through `lib/csv.ts` `csvCell`; exports
+  have a 120 s timeout and parse a Blob error body. A blank shop email
+  clears it (`@ValidateIf(email !== '')`). A figure no module records is
+  shown as "Not tracked", never as ₹0.
+- Privacy: shop export and erasure reach child tables through
+  `childModels()` (DMMF); a new model without `shopId` must hang off a
+  tenant model or be listed in `NOT_SHOP_DATA` with its reason.
+- Backups: the scripts run under `umask 077`, take TLS from `DATABASE_URL`
+  (`sslaccept=strict` → `VERIFY_IDENTITY`, `sslcert` → `--ssl-ca`, never
+  unverified), `binlog-archive.sh` prunes only below the oldest kept dump's
+  position (`--dumps`), `restore.sh --to` refuses a target past the archive
+  (`--allow-short`); `scripts/db/lib.test.sh` runs in CI.
+- Deployment and CI: the API refuses to boot unless every migration folder
+  of its build is applied (`assertMigrationsApplied`; a database ahead of
+  the image boots), so `migrate deploy` every database before tests. The
+  migration-immutability gate compares with the PR base / previous push and
+  the latest `v*` tag. gitleaks allowlists use `targetRules` + `condition =
+  "AND"` (a global `paths` allowlist skips files before any rule) and
+  `.github/scripts/gitleaks-control.sh` plants secrets to prove it. Monitoring
+  ports bind `${*_BIND:-127.0.0.1}`; production needs
+  `GRAFANA_ADMIN_PASSWORD` and `METRICS_TOKEN`; Prometheus config is rendered
+  at start (`deploy/prometheus/render.sh`: token file, public probe targets,
+  `topology/{reference,production}.rules.yml` for the expected backup
+  kinds). Every compose service rotates its logs; db-ops containers run as
+  uid 1000. Compose 2.24.4 is the minimum. `release.yml` runs on a green CI
+  of a push (`workflow_run`), a tag pushes only `:vX.Y.Z`, and both attach
+  jobs reuse one draft. certify records a skipped step as SKIPPED, never
+  PASS. `.dockerignore` and both Dockerfiles keep `.env*` out of images
+  (Next copied `.env.production` into the standalone output).
+  `apps/web/next-env.d.ts` is untracked. The CI integration job is a matrix
+  over MySQL 8.0 and 8.4.
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and
   `engines` in every package.json. `npm run lint|type-check|test|build` at the
-  root go through turbo; `apps/api` lint is clean at zero errors and must stay
+  root go through turbo 2 (`turbo.json` `tasks`, `envMode: loose` so tasks
+  see the whole environment as turbo 1 did, `agentGuidance: false` or turbo
+  appends its own block to this file; it needs the root `packageManager`
+  field); `apps/api` lint is clean at zero errors and must stay
   so: unused parameters that a signature must keep are `_`-prefixed, and a
   deliberately un-awaited promise is written `void fn()` only when the callee
   catches its own errors (`no-floating-promises` is on; `no-unsafe-argument`

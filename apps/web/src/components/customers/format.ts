@@ -37,12 +37,16 @@ export function formatTime(iso: string | null | undefined): string {
   return date.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
 }
 
-/** Local calendar date as `YYYY-MM-DD` (what the export endpoints expect). */
-export function toIsoDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+/**
+ * A business date (`YYYY-MM-DD`, already in the shop's time zone) for display.
+ * Read as a calendar date, never as an instant: `new Date('2026-10-11')` is UTC
+ * midnight, which a browser west of UTC shows as the day before.
+ */
+export function formatBusinessDate(date: string | null | undefined): string {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return '—';
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return '—';
+  return parsed.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 }
 
 export const TENDER_LABELS: Record<string, string> = {

@@ -5,7 +5,9 @@ import Link from 'next/link';
 import {
   BarChart3, Clock, FileText, Package, PackageSearch, Receipt, ShoppingCart, UserPlus, Users,
 } from 'lucide-react';
+import { useSession } from 'next-auth/react';
 import { Card } from '@/components/ui/Card';
+import { canUsePos, canWriteCustomers, isManagement } from '@/components/customers/permissions';
 
 interface QuickAction {
   icon: React.ComponentType<{ size?: number | string }>;
@@ -13,13 +15,15 @@ interface QuickAction {
   href: string;
   color: string;
   bg: string;
+  /** Shown only to the roles the target action accepts (the API's role sets); absent = everyone. */
+  allowed?: (role: string | null | undefined) => boolean;
 }
 
 /** Every action is a plain navigation to a page that exists. */
 const QUICK_ACTIONS: QuickAction[] = [
-  { icon: ShoppingCart, label: 'Create Bill', href: '/billing', color: 'text-[#8B5CF6]', bg: 'bg-[#8B5CF6]/10' },
-  { icon: PackageSearch, label: 'Add Product', href: '/products', color: 'text-green-500', bg: 'bg-green-500/10' },
-  { icon: UserPlus, label: 'Add Customer', href: '/customers?new=1', color: 'text-blue-500', bg: 'bg-blue-500/10' },
+  { icon: ShoppingCart, label: 'Create Bill', href: '/billing', color: 'text-[#8B5CF6]', bg: 'bg-[#8B5CF6]/10', allowed: canUsePos },
+  { icon: PackageSearch, label: 'Add Product', href: '/products', color: 'text-green-500', bg: 'bg-green-500/10', allowed: isManagement },
+  { icon: UserPlus, label: 'Add Customer', href: '/customers?new=1', color: 'text-blue-500', bg: 'bg-blue-500/10', allowed: canWriteCustomers },
   { icon: Users, label: 'Customer Udhar', href: '/customers', color: 'text-orange-500', bg: 'bg-orange-500/10' },
   { icon: Package, label: 'Low Stock', href: '/inventory?tab=low-stock', color: 'text-amber-500', bg: 'bg-amber-500/10' },
   { icon: Receipt, label: 'Expenses', href: '/expenses', color: 'text-pink-500', bg: 'bg-pink-500/10' },
@@ -29,11 +33,14 @@ const QUICK_ACTIONS: QuickAction[] = [
 ];
 
 export function QuickActionsCard({ className = '' }: { className?: string }) {
+  const { data: session, status } = useSession();
+  const role = session?.user?.role;
+  const actions = QUICK_ACTIONS.filter((action) => status === 'loading' || !action.allowed || action.allowed(role));
   return (
     <Card className={`bg-gray-50/50 p-5 ${className}`}>
       <h3 className="mb-4 font-bold text-gray-800">Quick Actions</h3>
       <div className="grid grid-cols-3 gap-3">
-        {QUICK_ACTIONS.map((action) => {
+        {actions.map((action) => {
           const Icon = action.icon;
           return (
             <Link

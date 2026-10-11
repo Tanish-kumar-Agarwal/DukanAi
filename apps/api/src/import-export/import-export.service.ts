@@ -1,4 +1,5 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { promises as fs } from 'fs';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { ImportJob, ImportKind, ImportMode, JobStatus, Prisma } from '@prisma/client';
@@ -10,6 +11,8 @@ import { importFormatOf } from './import-upload';
 import { IMPORT_JOB_QUEUE, ImportJobData, PROCESS_IMPORT_JOB } from './import.worker';
 import { ImportRowsQueryDto } from './dto/upload-import.dto';
 import type { RowIssue } from './import-rows';
+import { BullConfig } from '../config/domains/bull.config';
+import { enqueueWithin } from '../common/queues/enqueue';
 
 const JOB_LIST_SELECT = {
   id: true,
@@ -42,11 +45,43 @@ const DRY_RUN_APPLICABLE: ReadonlySet<JobStatus> = new Set<JobStatus>([JobStatus
  */
 @Injectable()
 export class ImportExportService {
+  private readonly logger = new Logger(ImportExportService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: FileStorageService,
     @InjectQueue(IMPORT_JOB_QUEUE) private readonly importQueue: Queue<ImportJobData>,
+    private readonly bullConfig: BullConfig,
   ) {}
+
+  /**
+   * Hands the job to the worker within BULL_ENQUEUE_TIMEOUT_MS (audit R5).
+   * When Redis does not take it, the job row is closed as FAILED with the
+   * reason on its report (row 0) and the request answers 503
+   * QUEUE_UNAVAILABLE: a retry creates a new job instead of leaving a
+   * PENDING one behind that nothing will ever run. Should the abandoned add
+   * still reach Redis later, the worker finds the row FAILED and does nothing.
+   */
+  private async enqueueOrGiveUp(jobId: string, shopId: string, discardFile?: string): Promise<void> {
+    try {
+      await enqueueWithin(this.importQueue, PROCESS_IMPORT_JOB, { jobId, shopId }, undefined, this.bullConfig.enqueueTimeoutMs);
+    } catch (error) {
+      await this.prisma.importJob.update({ where: { id: jobId }, data: { status: JobStatus.FAILED, completedAt: new Date() } });
+      await this.prisma.importJobRow.create({
+        data: {
+          importJobId: jobId,
+          rowNumber: 0,
+          rawData: {},
+          status: 'ERROR',
+          actionTaken: 'FILE',
+          errors: [{ message: 'The import could not be queued (the job queue was unavailable); nothing was imported. Upload the file again.', severity: 'error' }],
+        },
+      });
+      if (discardFile) await fs.unlink(discardFile).catch(() => undefined);
+      this.logger.warn(`Import job ${jobId} not queued; closed as FAILED`);
+      throw error;
+    }
+  }
 
   /** Stores the uploaded file and queues its import; the worker runs it as `userId` in `shopId`. */
   async queueUpload(kind: ImportKind, file: Express.Multer.File, options: { mode: ImportMode; dryRun: boolean }, shopId: string, userId: string) {
@@ -65,7 +100,8 @@ export class ImportExportService {
         createdById: userId,
       },
     });
-    await this.importQueue.add(PROCESS_IMPORT_JOB, { jobId: job.id, shopId });
+    // The stored file belongs to this job alone: a job that could not be queued takes it with it.
+    await this.enqueueOrGiveUp(job.id, shopId, fileUrl);
     return { message: options.dryRun ? 'Dry run queued' : 'Import queued successfully', jobId: job.id, kind, dryRun: options.dryRun };
   }
 
@@ -83,6 +119,12 @@ export class ImportExportService {
   async get(shopId: string, id: string): Promise<ImportJob> {
     const job = await this.prisma.importJob.findFirst({ where: { id, shopId } });
     if (!job) throw new NotFoundException({ message: 'Import job not found', code: 'IMPORT_JOB_NOT_FOUND' });
+    return job;
+  }
+
+  /** The job as an answer: everything but `fileUrl`, the stored file's server path. */
+  async status(shopId: string, id: string): Promise<Omit<ImportJob, 'fileUrl'>> {
+    const { fileUrl: _fileUrl, ...job } = await this.get(shopId, id);
     return job;
   }
 
@@ -159,7 +201,8 @@ export class ImportExportService {
         createdById: userId,
       },
     });
-    await this.importQueue.add(PROCESS_IMPORT_JOB, { jobId: job.id, shopId });
+    // The file is the dry run's too: it stays.
+    await this.enqueueOrGiveUp(job.id, shopId);
     return { message: 'Import queued successfully', jobId: job.id, kind: job.kind, dryRun: false, fromDryRun: dryRun.id };
   }
 }

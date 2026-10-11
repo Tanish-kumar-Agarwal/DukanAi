@@ -15,9 +15,12 @@ import { MonitoringConfig } from './config/domains/monitoring.config';
 import { ErrorTracking } from './common/observability/error-tracking';
 import { httpAccessLogMiddleware } from './common/observability/http-access-log.middleware';
 import { httpMetricsMiddleware } from './common/observability/http-metrics.middleware';
+import { createHttpAdapter } from './common/http/http-adapter';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, {
+  // Case-sensitive routing (audit R13): the Express instance is configured
+  // before Nest touches it (see createHttpAdapter).
+  const app = await NestFactory.create(AppModule, createHttpAdapter(), {
     bufferLogs: true,
     // Reject instead of aborting the process, so the catch below can report why.
     abortOnError: false,
@@ -107,9 +110,13 @@ async function bootstrap() {
   logger.log(`Application is running on: http://localhost:${port} (readiness: /api/health/ready)`);
   logger.log(
     `Logging at level ${app.get(LoggingConfig).logLevel}; metrics ${
-      monitoringConfig.metricsEnabled
-        ? `at GET /api/metrics (${monitoringConfig.metricsToken ? 'bearer token required' : 'no token: keep the port off the public internet'})`
-        : 'disabled (METRICS_ENABLED=false)'
+      !monitoringConfig.metricsEnabled
+        ? 'disabled (METRICS_ENABLED=false)'
+        : monitoringConfig.metricsToken
+          ? 'at GET /api/metrics (bearer token required)'
+          : appConfig.nodeEnv === Environment.Production
+            ? 'hidden: GET /api/metrics answers 404 in production until METRICS_TOKEN is set'
+            : 'at GET /api/metrics (no token: keep the port off the public internet)'
     }`,
   );
 }

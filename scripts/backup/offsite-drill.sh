@@ -82,7 +82,8 @@ step "3/7 The bucket holds nothing readable"
 raw_listing="$(rclone lsf -R "$OFFSITE_REMOTE" 2>/dev/null || true)"
 [ -n "$raw_listing" ] || die "the remote $OFFSITE_REMOTE lists nothing after the push"
 for plain in "$(basename "$dump")" "$(basename "$docs")" "status" "binlog" "documents" ".sql.gz" ".tar.gz" ".sha256" ".last-success"; do
-  if printf '%s\n' "$raw_listing" | grep -qF "$plain"; then die "the bucket shows a readable name: $plain"; fi
+  # A here-string, not a pipe: grep -q exits at its first match and the writer's EPIPE would fail the check under pipefail.
+  if grep -qF -- "$plain" <<<"$raw_listing"; then die "the bucket shows a readable name: $plain"; fi
 done
 raw_count="$(printf '%s\n' "$raw_listing" | grep -vc '/$' || true)"
 printf '  %s encrypted objects, no readable name among them\n' "$raw_count"

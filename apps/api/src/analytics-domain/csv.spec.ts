@@ -38,6 +38,17 @@ describe('escapeCsvField', () => {
     // Negative amounts are numbers/Decimals, never strings, so they are untouched.
     expect(escapeCsvField(-5)).toBe('-5');
   });
+
+  it('guards a leading minus like the import report does, but never a plain number (release audit L7)', () => {
+    expect(escapeCsvField("-2+3+cmd|' /C calc'!A0")).toBe("'-2+3+cmd|' /C calc'!A0");
+    expect(escapeCsvField('-SUM(A1:A2)')).toBe("'-SUM(A1:A2)");
+    expect(escapeCsvField('\tleading tab')).toBe("'\tleading tab");
+    expect(escapeCsvField('\r=1')).toBe(`"'\r=1"`);
+    expect(escapeCsvField('-5.00')).toBe('-5.00');
+    expect(escapeCsvField('+42')).toBe('+42');
+    expect(escapeCsvField('-x, y')).toBe(`"'-x, y"`);
+    expect(escapeCsvField(new Prisma.Decimal('-5.00'))).toBe('-5');
+  });
 });
 
 describe('csvRow', () => {

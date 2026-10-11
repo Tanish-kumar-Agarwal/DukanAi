@@ -35,7 +35,9 @@ dc exec api node dist/cli/shop-data export --shop <shopId> --out /var/lib/dukaan
 
 - This writes `dukaanai-export-<shopId>-<UTC stamp>.tar.gz` with a
   `.sha256` sidecar. The archive holds:
-  - every row of the shop as JSON lines (`data/<Model>.jsonl`);
+  - every row of the shop as JSON lines (`data/<Model>.jsonl`), the child
+    tables without a shop column included (`InvoiceItem`, `CustomerAudit`,
+    `ImportJobRow` ...: through their parent row);
   - the books as CSV (`csv/invoices.csv`, `invoice-items`, `invoice-payments`, `customers`, `credit-transactions`, `products`, `expenses`, `suppliers`);
   - the stored documents, product photos and import files;
   - `manifest.json` (counts, schema version, release) and `SHA256SUMS`.
@@ -65,7 +67,9 @@ dc exec api node dist/cli/shop-data export --shop <shopId> --out /var/lib/dukaan
 What `erase` does:
 
 - Every personal column of every row of the shop is rewritten by its
-  class (`apps/api/src/privacy/personal-data.ts`).
+  class (`apps/api/src/privacy/personal-data.ts`), including the child
+  tables reached through their parent (customer audit trails, import report
+  rows, photo metadata, webhook delivery logs, revision reviews).
 - The owner's and staff accounts are anonymised and closed.
 - Sessions, reset tokens, login attempts, invitations, notifications and
   search history are deleted.
@@ -77,8 +81,9 @@ The anonymised financial history stays: amounts, dates, document numbers,
 product names. The ledger cannot be changed by design, and since migration
 `20261011090000` it holds no names.
 
-`erase` refuses an ACTIVE shop, and refuses an export archive of another
-shop or one without its checksum.
+`erase` refuses an ACTIVE shop, and refuses an export archive whose bytes
+do not match its `.sha256` sidecar or whose `manifest.json` names another
+shop (the file name alone is not trusted).
 
 ## 3. A customer of a shop asks to be forgotten
 
@@ -98,8 +103,11 @@ them to contact the shop, and tell the owner.
 
 3. What happens:
    - **Erased:** phone, email, notes and tags on the customer row; the
-     notes on their invoices and credit entries; the snapshots in their
-     audit rows; their documents folder.
+     notes on their invoices and credit entries; the snapshots and IP in
+     their audit rows (`AuditLog` and `CustomerAudit`); the report rows of
+     customer imports that carry their phone or email; their documents
+     folder; every uploaded import file that holds their phone or email
+     (the whole file is deleted).
    - **The row:** marked deleted, so the customer can be registered again
      as new.
    - **Kept: invoices.** Invoices stay, attached to the anonymised

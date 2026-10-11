@@ -47,6 +47,20 @@ export class SupplierCreditController {
     return this.repository.approveSupplierCredit(shopId, id, actorId, req.ip, body.comments, body.signature);
   }
 
+  /** PENDING_APPROVAL -> REJECTED by a manager other than the creator or submitter. */
+  @Roles(...MANAGEMENT_ROLES)
+  @Post(':id/reject')
+  async rejectCreditNote(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Body() body: ApprovalDecisionDto, @Req() req: Request) {
+    return this.repository.approveSupplierCredit(shopId, id, actorId, req.ip, body.comments, undefined, 'REJECT');
+  }
+
+  /** DRAFT / SUBMITTED / PENDING_APPROVAL -> CANCELLED. */
+  @Roles(...MANAGEMENT_ROLES)
+  @Post(':id/cancel')
+  async cancelCreditNote(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Body() body: ApprovalDecisionDto) {
+    return this.repository.cancelSupplierCredit(shopId, id, actorId, body.comments);
+  }
+
   @Roles(...MANAGEMENT_ROLES)
   @Post(':id/allocate')
   async allocateCreditNote(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Body() body: AllocateSupplierCreditDto, @Req() req: Request) {

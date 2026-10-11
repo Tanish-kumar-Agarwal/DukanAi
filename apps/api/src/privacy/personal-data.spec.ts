@@ -2,7 +2,7 @@ import { readFileSync } from 'fs';
 import * as path from 'path';
 import { Prisma } from '@prisma/client';
 import { RetentionConfig } from '../config/domains/retention.config';
-import { classify, CANDIDATE_FIELD, erasableFields, gstRetentionEnds, inventory, NOT_PERSONAL, tenantModels } from './personal-data';
+import { childModels, classify, CANDIDATE_FIELD, erasableFields, gstRetentionEnds, inventory, NOT_PERSONAL, NOT_SHOP_DATA, tenantModels, unownedModels } from './personal-data';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 
@@ -47,6 +47,34 @@ describe('personal-data inventory', () => {
     }
   });
 
+  it('every model is tenant-owned, a child reachable from one, or excluded with a reason (audit F2)', () => {
+    expect(unownedModels()).toEqual([]);
+    for (const [model, reason] of Object.entries(NOT_SHOP_DATA)) expect({ model, reason: reason.length > 10 }).toEqual({ model, reason: true });
+  });
+
+  it('reaches the child tables of a shop through their parents (audit F2)', () => {
+    const children = new Map(childModels().map((c) => [c.name, c]));
+    const via = (name: string) => children.get(name)?.via;
+    expect(via('InvoiceItem')).toEqual(['Invoice']);
+    expect(via('CustomerAudit')).toEqual(['Customer']);
+    expect(children.get('CustomerAudit')?.customerColumn).toBe('customerId');
+    expect(via('ImportJobRow')).toEqual(['ImportJob']);
+    expect(via('MediaMetadata')).toEqual(['MediaAsset']);
+    expect(via('WebhookDelivery')).toEqual(['WebhookEndpoint']);
+    expect(via('RevisionApproval')).toEqual(['ProductRevision']);
+    expect(via('LoginAttempt')).toEqual(['User']);
+    expect(children.get('StockTransfer')).toMatchObject({ hops: [], shopColumns: ['sourceShopId', 'destinationShopId'] });
+    expect(via('StockTransferItem')).toEqual(['StockTransfer', 'Shop']);
+    for (const name of ['RefreshToken', 'PasswordResetToken', 'IdempotencyRecord']) expect(children.has(name)).toBe(false);
+    // The personal columns of the children are erasable like any other (audit F3).
+    const erasable = erasableFields();
+    expect(erasable.get('CustomerAudit')?.map((f) => f.field).sort()).toEqual(['ipAddress', 'newPayload', 'previousPayload']);
+    expect(erasable.get('ImportJobRow')?.map((f) => f.field).sort()).toEqual(['changes', 'errors', 'rawData']);
+    expect(erasable.get('MediaMetadata')?.map((f) => f.field)).toEqual(['exifData']);
+    expect(erasable.get('WebhookDelivery')?.map((f) => f.field).sort()).toEqual(['errorMessage', 'payload']);
+    expect(erasable.get('RevisionApproval')?.map((f) => f.field).sort()).toEqual(['comments', 'digitalSignature']);
+  });
+
   it('the retention policy states the sweep defaults (docs/privacy/RETENTION_POLICY.md §1)', () => {
     const policy = readFileSync(path.join(REPO_ROOT, 'docs', 'privacy', 'RETENTION_POLICY.md'), 'utf8');
     const config = new RetentionConfig();
@@ -55,6 +83,7 @@ describe('personal-data inventory', () => {
       ['RETENTION_OUTBOX_DONE_DAYS', config.outboxDoneDays],
       ['RETENTION_SEARCH_HISTORY_DAYS', config.searchHistoryDays],
       ['RETENTION_PRODUCT_EVENT_LOG_DAYS', config.productEventLogDays],
+      ['RETENTION_WEBHOOK_DELIVERY_DAYS', config.webhookDeliveryDays],
     ];
     for (const [variable, days] of rows) expect(policy).toMatch(new RegExp(`\\| \`${variable}\` \\| ${days} \\|`));
   });

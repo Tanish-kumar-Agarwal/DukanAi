@@ -172,8 +172,10 @@ must end `READY` (a WARN only for Google sign-in where the shop does not
 use it). It sends no mail, never calls the OCR model and creates nothing.
 
 **Shop profile.** Settings › Shop Profile: name, address, phone and the
-state (the state decides CGST/SGST against IGST); the GSTIN prints on every
-receipt when set. The shop's time zone is Asia/Kolkata (`ShopSettings.timezone`,
+state (a counter sale is an intra-state supply in the shop's state, so it
+carries CGST + SGST whatever the customer's address; IGST applies only to a
+supply with an explicit place of supply in another state, which the POS does
+not offer); the GSTIN prints on every receipt when set. The shop's time zone is Asia/Kolkata (`ShopSettings.timezone`,
 the default): the business day, invoice dates and the dashboard follow it.
 
 **The shop's data.** Products, the counted opening stock and the customers
@@ -234,7 +236,7 @@ photo of the paper, a screenshot or the invoice number.
 | # | Feature | Steps | Expected | Staging | Production | Evidence |
 |---|---|---|---|---|---|---|
 | 1 | Receipt on the shop's printer | Sell 3 items (one with GST 5 %, one 18 %, one exempt) and Print from the POS receipt; reprint from Invoices › the invoice › Print | 72 mm wide, nothing cut at the right edge; shop name, address, GSTIN; invoice number and date-time in IST; every line, quantity and amount; Taxable, CGST and SGST each the invoice's figures (not ₹0.00); grand total, paid and change; one cut; the paper fed no further than the receipt | pending | pending | |
-| 2 | Interstate sale | Bill a customer whose state differs from the shop's | IGST row with the full tax, no CGST/SGST | pending | pending | |
+| 2 | Customer from another state | Bill a customer whose saved address is in another state | CGST and SGST as for any counter sale (the place of supply is the shop), no IGST row | pending | pending | |
 | 3 | Return receipt | Return one line of a sale and print | "SALES RETURN", "Against <the sale's number>", the refund | pending | pending | |
 | 4 | Long names, large amounts | A product with a 60-character name sold at ₹98,765 × 3 | wraps inside the paper, totals intact | pending | pending | |
 | 5 | Dark mode device | Print a receipt from a device in dark mode | black text, nothing missing | pending | pending | |

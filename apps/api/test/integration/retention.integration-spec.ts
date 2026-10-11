@@ -68,6 +68,9 @@ describe('retention sweep (roadmap 7.8)', () => {
         prisma.searchHistory.create({ data: { shopId, query: 'retention probe', resultCount: 0, durationMs: 1, createdAt }, select: { id: true } });
       const event = (timestamp: Date) =>
         prisma.productEventLog.create({ data: { shopId, eventId: randomUUID(), eventType: 'RetentionProbe', payload: {}, timestamp }, select: { id: true } });
+      const endpoint = await prisma.webhookEndpoint.create({ data: { shopId, url: 'https://hooks.example.com/retention', secret: randomUUID(), events: ['*'] }, select: { id: true } });
+      const delivery = (createdAt: Date) =>
+        prisma.webhookDelivery.create({ data: { endpointId: endpoint.id, eventId: randomUUID(), eventType: 'RetentionProbe', payload: {}, status: 'FAILED', createdAt }, select: { id: true } });
 
       return {
         purge: {
@@ -78,6 +81,7 @@ describe('retention sweep (roadmap 7.8)', () => {
           outboxDoneOld: await outbox('DONE', daysAgo(now, 30)),
           searchOld: await search(daysAgo(now, 120)),
           eventOld: await event(daysAgo(now, 200)),
+          deliveryOld: await delivery(daysAgo(now, 31)),
         },
         keep: {
           refreshLive: await token(daysAhead(now, 5)),
@@ -90,6 +94,7 @@ describe('retention sweep (roadmap 7.8)', () => {
           outboxPendingOld: await outbox('PENDING', daysAgo(now, 30)),
           searchRecent: await search(daysAgo(now, 3)),
           eventRecent: await event(daysAgo(now, 10)),
+          deliveryRecent: await delivery(daysAgo(now, 29)),
         },
       };
     });
@@ -101,6 +106,7 @@ describe('retention sweep (roadmap 7.8)', () => {
     expect(outcome.purged.OutboxEvent).toBeGreaterThanOrEqual(1);
     expect(outcome.purged.SearchHistory).toBeGreaterThanOrEqual(1);
     expect(outcome.purged.ProductEventLog).toBeGreaterThanOrEqual(1);
+    expect(outcome.purged.WebhookDelivery).toBeGreaterThanOrEqual(1);
 
     const exists = {
       refresh: (id: string) => prisma.refreshToken.findUnique({ where: { id }, select: { id: true } }),
@@ -108,8 +114,10 @@ describe('retention sweep (roadmap 7.8)', () => {
       outbox: (id: string) => prisma.outboxEvent.findUnique({ where: { id }, select: { id: true } }),
       search: (id: string) => prisma.searchHistory.findUnique({ where: { id }, select: { id: true } }),
       event: (id: string) => prisma.productEventLog.findUnique({ where: { id }, select: { id: true } }),
+      delivery: (id: string) => prisma.webhookDelivery.findUnique({ where: { id }, select: { id: true } }),
     };
-    const kindOf = (name: string) => (name.startsWith('refresh') ? 'refresh' : name.startsWith('reset') ? 'reset' : name.startsWith('outbox') ? 'outbox' : name.startsWith('search') ? 'search' : 'event');
+    const kindOf = (name: string) =>
+      name.startsWith('refresh') ? 'refresh' : name.startsWith('reset') ? 'reset' : name.startsWith('outbox') ? 'outbox' : name.startsWith('search') ? 'search' : name.startsWith('delivery') ? 'delivery' : 'event';
     await run.system(async () => {
       for (const [name, row] of Object.entries(seeded.purge)) {
         expect({ name, row: await exists[kindOf(name)](row.id) }).toEqual({ name, row: null });
@@ -168,5 +176,6 @@ describe('retention sweep (roadmap 7.8)', () => {
     expect(value('OutboxEvent')).toBeGreaterThanOrEqual(1);
     expect(value('ProductEventLog')).toBeGreaterThanOrEqual(1);
     expect(value('PasswordResetToken')).toBeGreaterThanOrEqual(2);
+    expect(value('WebhookDelivery')).toBeGreaterThanOrEqual(1);
   });
 });

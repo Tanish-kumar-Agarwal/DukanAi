@@ -82,7 +82,10 @@ for (let i = 1; i <= PRODUCTS; i++) {
   const type = i % 250 === 0 ? 'SERVICE' : 'SIMPLE';
   const cost = Math.round(between(5, 2000) * 100) / 100;
   const selling = Math.round(cost * between(1.05, 1.4) * 100) / 100;
-  const mrp = Math.ceil(selling * between(1, 1.15) * 100) / 100;
+  const gstRate = pick(['0', '5', '5', '12', '18', '18', '18', '28']);
+  const cessRate = i % 100 === 0 ? '12' : '0';
+  // The MRP includes GST and cess (audit P1-2); 2 paise cover the per-component rounding of the inclusive price.
+  const mrp = Math.ceil(selling * (1 + (Number(gstRate) + Number(cessRate)) / 100) * between(1, 1.15) * 100) / 100 + 0.02;
   products.push({
     sku: `GATE-${pad(i, 5)}`,
     name: `${type === 'SERVICE' ? 'Delivery charge' : 'Item'} ${i}`,
@@ -90,8 +93,8 @@ for (let i = 1; i <= PRODUCTS; i++) {
     barcode: i % 10 === 0 || type === 'SERVICE' ? '' : ean13(`890${pad(SEED % 1000, 3)}${pad(i, 6)}`),
     hsnCode: String(Math.floor(between(10000000, 99999999))),
     unit,
-    gstRate: pick(['0', '5', '5', '12', '18', '18', '18', '28']),
-    cessRate: i % 100 === 0 ? '12' : '0',
+    gstRate,
+    cessRate,
     costPrice: cost.toFixed(2),
     sellingPrice: selling.toFixed(2),
     mrp: mrp.toFixed(2),

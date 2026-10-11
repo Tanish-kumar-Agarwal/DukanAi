@@ -1,15 +1,16 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { FileText, RefreshCw, Search } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
 import { SkeletonTable } from '@/components/ui/Skeleton';
 import { billingApi } from '@/lib/api-client';
 import { useDebounce } from '@/hooks/useDebounce';
+import { useShopBusinessDate } from '@/hooks/useShopBusinessDate';
 import type { InvoiceStatus, InvoiceSummary, InvoiceType } from '@/types';
 import { extractApiError } from '@/components/pos/api-errors';
-import { dateTime, money, toDateInputValue } from '@/components/pos/format';
+import { dateTime, money } from '@/components/pos/format';
 import { InvoiceStatusBadge, InvoiceTypeBadge, PaymentModeBadge } from '@/components/invoices/InvoiceBadges';
 import { Pagination } from '@/components/invoices/Pagination';
 
@@ -20,9 +21,10 @@ const fieldClass =
 
 export default function InvoicesPage() {
   const router = useRouter();
-  const today = useMemo(() => toDateInputValue(new Date()), []);
-  const [from, setFrom] = useState(today);
-  const [to, setTo] = useState(today);
+  // "Today" is the shop's business date, not the browser's (audit W16): the list waits for it.
+  const today = useShopBusinessDate();
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [type, setType] = useState<InvoiceType | ''>('');
   const [status, setStatus] = useState<InvoiceStatus | ''>('');
   const [q, setQ] = useState('');
@@ -35,10 +37,17 @@ export default function InvoicesPage() {
   const debouncedQ = useDebounce(q.trim(), 300);
 
   useEffect(() => {
+    if (!today) return;
+    setFrom((current) => current || today);
+    setTo((current) => current || today);
+  }, [today]);
+
+  useEffect(() => {
     setSkip(0);
   }, [from, to, type, status, debouncedQ]);
 
   useEffect(() => {
+    if (!from || !to) return undefined;
     const controller = new AbortController();
     setLoading(true);
     setError(null);
@@ -108,7 +117,7 @@ export default function InvoicesPage() {
             Invoice number
             <div className="relative mt-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
-              <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="e.g. INV-2026-0042" className={`${fieldClass} w-full pl-9`} />
+              <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="e.g. INV-2627-000123" className={`${fieldClass} w-full pl-9`} />
             </div>
           </label>
         </div>

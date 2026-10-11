@@ -21,7 +21,11 @@
 # archive taken while the API runs is consistent; a file that changes while
 # tar reads it fails the run (nothing is kept) and the next run succeeds. The
 # manifest (`<name>.manifest`, `sha256sum` format with storage/... and
-# media/... paths) is what restore.sh verifies every restored file against.
+# media/... paths) is what restore.sh verifies every restored file against;
+# it is computed from the archive itself once the archive is written (audit
+# F4): built from the live tree in a separate pass, it listed a file written
+# between the two passes that the archive did not hold, and a good archive
+# then failed its own restore check.
 # Records the success in BACKUP_STATUS_DIR (roadmap 9.4). Prints the archive path last.
 set -euo pipefail
 . "$(dirname "$0")/../db/lib.sh"
@@ -55,6 +59,7 @@ command -v tar >/dev/null 2>&1 || die "tar not found"
 tar --version 2>/dev/null | grep -q "GNU tar" || die "GNU tar is required (--dereference, --sort)"
 mkdir -p "$OUT" 2>/dev/null || die "cannot create $OUT (pass --out DIR or set DOCUMENTS_BACKUP_DIR)"
 [ -w "$OUT" ] || die "$OUT is not writable (pass --out DIR or set DOCUMENTS_BACKUP_DIR)"
+private_dir "$OUT"
 
 taken_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 stamp="${taken_at//[-:]/}"
@@ -73,13 +78,17 @@ if [ -n "$MEDIA" ]; then
 fi
 
 step "Archiving documents: storage root $ROOT${MEDIA:+, media $MEDIA} to $target"
-# The manifest first, from the same tree the archive is taken from.
-( cd "$stage" && find -L "${members[@]}" -type f -print0 | sort -z | xargs -0 -r sha256sum ) > "$OUT/.$name.manifest.partial"
-files="$(wc -l < "$OUT/.$name.manifest.partial" | tr -d ' ')"
 if ! tar --create --gzip --dereference --sort=name --file "$partial" -C "$stage" "${members[@]}"; then
   die "tar failed (a file changed while it was read, or a path is unreadable): nothing kept"
 fi
 gzip -t "$partial" || die "the archive is not a valid gzip file: nothing kept"
+# The manifest from the archive's own bytes: tar streams each regular member
+# to the summing command (TAR_FILENAME names it), nothing is extracted.
+summer="$stage/.sum.sh"
+printf '%s\n' '#!/bin/sh' 'set -e' 'sum=$(sha256sum | cut -d" " -f1)' 'printf "%s  %s\n" "$sum" "$TAR_FILENAME"' > "$summer"
+tar --extract --gzip --file "$partial" --to-command="sh $summer" > "$OUT/.$name.manifest.partial" \
+  || die "could not read the archive back to build its manifest: nothing kept"
+files="$(wc -l < "$OUT/.$name.manifest.partial" | tr -d ' ')"
 mv "$partial" "$target"
 mv "$OUT/.$name.manifest.partial" "$target.manifest"
 ( cd "$OUT" && sha256sum "$name" > "$name.sha256" )
@@ -93,10 +102,18 @@ trap - EXIT
 rm -rf "$stage"
 
 if [ "$KEEP" -gt 0 ]; then
-  ls -1 "$OUT"/documents-*.tar.gz 2>/dev/null | sort | head -n -"$KEEP" | while read -r old; do
-    step "Pruning $(basename "$old")"
-    rm -f "$old" "$old.sha256" "$old.manifest" "$old.meta"
-  done
+  # Only complete archives (with their .sha256 and .manifest) count toward KEEP.
+  complete=()
+  while read -r archive; do
+    [ -n "$archive" ] || continue
+    [ -f "$archive.sha256" ] && [ -f "$archive.manifest" ] && complete+=("$archive")
+  done < <(ls -1 "$OUT"/documents-*.tar.gz 2>/dev/null | sort)
+  if [ "${#complete[@]}" -gt "$KEEP" ]; then
+    for old in "${complete[@]:0:${#complete[@]}-KEEP}"; do
+      step "Pruning $(basename "$old")"
+      rm -f "$old" "$old.sha256" "$old.manifest" "$old.meta"
+    done
+  fi
 fi
 
 size="$(du -h "$target" | cut -f1)"

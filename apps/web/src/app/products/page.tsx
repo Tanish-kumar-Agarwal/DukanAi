@@ -16,6 +16,7 @@ import apiClient from '@/lib/api';
 import { describeApiError } from '@/lib/api-error';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
 import { gstLabel } from '@/components/pos/format';
+import { inclusiveUnitPrice } from '@dukaanai/invoice-math';
 import type { Product, GstRate, ProductUnit } from '@/types';
 import { AnimatePresence, motion } from 'framer-motion';
 
@@ -263,17 +264,28 @@ function ProductsPageContent() {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const categoryOptions = useMemo(() => [{ id: 'All', name: 'All' }, ...categories], [categories]);
 
-  const readForm = (source: ProductForm): { error: string; value?: undefined } | { error?: undefined; value: { name: string; price: number; cost: number; mrp: number } } => {
+  /**
+   * `mrp` is null when the field is blank: the API then stores the selling
+   * price plus GST. MRP includes all taxes and the selling price does not, so
+   * a typed MRP must be at least the price with GST and cess (audit P1-2,
+   * the API's rule through the same `inclusiveUnitPrice`).
+   */
+  const readForm = (source: ProductForm, cessRate = 0): { error: string; value?: undefined } | { error?: undefined; value: { name: string; price: number; cost: number; mrp: number | null } } => {
     const price = parseMoney(source.price);
     const cost = parseMoney(source.cost);
     const mrp = parseMoney(source.mrp);
     if (!source.name.trim()) return { error: 'Enter a product name.' };
-    if (price === null) return { error: 'Enter a selling price of 0 or more.' };
+    if (price === null) return { error: 'Enter a selling price (before GST) of 0 or more.' };
     // Roadmap 6.2: the cost price is what you paid, never guessed from the selling price.
     if (cost === null) return { error: 'Enter the cost price (what you pay per unit). Use 0 if there is none.' };
     if (source.mrp.trim() !== '' && mrp === null) return { error: 'The MRP must be a number of 0 or more.' };
-    if (mrp !== null && mrp < price) return { error: 'The MRP cannot be below the selling price.' };
-    return { value: { name: source.name.trim(), price, cost, mrp: mrp ?? price } };
+    if (mrp !== null) {
+      const inclusive = Number(inclusiveUnitPrice(price, source.gstRate, cessRate).toFixed(2));
+      if (mrp < inclusive) {
+        return { error: `The MRP (₹${mrp.toFixed(2)}) is below the selling price plus GST (₹${inclusive.toFixed(2)}). The MRP includes all taxes: raise it, or lower the selling price.` };
+      }
+    }
+    return { value: { name: source.name.trim(), price, cost, mrp } };
   };
 
   const handleSaveProduct = async (e: React.FormEvent) => {
@@ -294,7 +306,8 @@ function ProductsPageContent() {
         barcode: form.barcode.trim() || undefined,
         sellingPrice: parsed.value.price,
         costPrice: parsed.value.cost,
-        mrp: parsed.value.mrp,
+        // Blank: the API stores the selling price plus GST.
+        mrp: parsed.value.mrp ?? undefined,
         gstRate: form.gstRate,
         unit: form.unit,
         categoryId,
@@ -343,7 +356,7 @@ function ProductsPageContent() {
   const handleEditProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedProduct) return;
-    const parsed = readForm(editForm);
+    const parsed = readForm(editForm, selectedProduct.cessRate ?? 0);
     if (parsed.error !== undefined) {
       toast(parsed.error, 'error');
       return;
@@ -356,6 +369,7 @@ function ProductsPageContent() {
         barcode: editForm.barcode.trim() ? editForm.barcode.trim() : null,
         sellingPrice: parsed.value.price,
         costPrice: parsed.value.cost,
+        // Cleared: the API resets it to the selling price plus GST.
         mrp: parsed.value.mrp,
         gstRate: editForm.gstRate,
         unit: editForm.unit,
@@ -471,10 +485,10 @@ function ProductsPageContent() {
           <div><label className="text-sm font-medium">Category</label><input value={state.category} onChange={e=>update({ category: e.target.value })} list="product-category-options" className="w-full mt-1 border rounded-lg p-2" placeholder="e.g. Snacks" /></div>
         </div>
         <div className="grid grid-cols-3 gap-4">
-          <div><label className="text-sm font-medium">Selling Price (₹) *</label><input value={state.price} onChange={e=>update({ price: e.target.value })} type="number" min="0" step="0.01" required className="w-full mt-1 border rounded-lg p-2" /></div>
+          <div><label className="text-sm font-medium">Selling Price before GST (₹) *</label><input value={state.price} onChange={e=>update({ price: e.target.value })} type="number" min="0" step="0.01" required className="w-full mt-1 border rounded-lg p-2" /></div>
           <div><label className="text-sm font-medium">Cost Price (₹) *</label><input value={state.cost} onChange={e=>update({ cost: e.target.value })} type="number" min="0" step="0.01" required className="w-full mt-1 border rounded-lg p-2" placeholder="What you pay per unit" /></div>
           {mode === 'add' ? (
-            <div><label className="text-sm font-medium">Initial Stock</label><input value={state.qty} onChange={e=>update({ qty: e.target.value })} type="number" min="0" className="w-full mt-1 border rounded-lg p-2" /></div>
+            <div><label className="text-sm font-medium">Initial Stock</label><input value={state.qty} onChange={e=>update({ qty: e.target.value })} type="number" min="0" step="0.001" className="w-full mt-1 border rounded-lg p-2" /></div>
           ) : (
             <div><label className="text-sm font-medium">Barcode</label><input value={state.barcode} onChange={e=>update({ barcode: e.target.value })} className="w-full mt-1 border rounded-lg p-2" placeholder="Optional" /></div>
           )}
@@ -492,7 +506,7 @@ function ProductsPageContent() {
               {UNITS.map((unit) => <option key={unit.value} value={unit.value}>{unit.label}</option>)}
             </select>
           </div>
-          <div><label className="text-sm font-medium">MRP (₹)</label><input value={state.mrp} onChange={e=>update({ mrp: e.target.value })} type="number" min="0" step="0.01" className="w-full mt-1 border rounded-lg p-2" placeholder="Defaults to selling price" /></div>
+          <div><label className="text-sm font-medium">MRP (₹)</label><input value={state.mrp} onChange={e=>update({ mrp: e.target.value })} type="number" min="0" step="0.01" className="w-full mt-1 border rounded-lg p-2" placeholder="Defaults to selling price + GST" /></div>
         </div>
       </>
     );

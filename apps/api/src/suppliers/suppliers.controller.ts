@@ -17,6 +17,12 @@ export class SuppliersController {
     return this.suppliersService.findAll(query);
   }
 
+  /** Totals over every live supplier for the page's tiles (the list itself is a capped page). */
+  @Get('summary')
+  summary() {
+    return this.suppliersService.summary();
+  }
+
   @Roles(...MANAGEMENT_ROLES)
   @Post()
   create(@Body() dto: CreateSupplierDto) {

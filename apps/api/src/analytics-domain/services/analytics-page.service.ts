@@ -6,6 +6,7 @@ import { TrendEngine } from '../engines/trend-engine';
 import { completedInvoiceFilter, INVOICE_SIGN, IS_SALE, pctChange, percentShare, toDecimal, toInt, toMoney } from '../engines/invoice-sql';
 import { AnalyticsRange, businessDayLabel, MAX_TREND_DAYS, rangeDays, trailingBusinessDays } from '../analytics-range';
 import { ShopTimezoneService } from './shop-timezone.service';
+import { customerBalances } from '../engines/customer-balances';
 
 export type { AnalyticsRange } from '../analytics-range';
 
@@ -25,8 +26,16 @@ export interface AnalyticsPagePayload {
   to: string;
   kpis: {
     totalRevenue: number;
+    /** Gross profit minus the period's expenses (`grossProfit − expenses`). */
     netProfit: number;
+    /** Taxable value minus the cost of goods the ledger booked, sales minus returns. */
+    grossProfit: number;
+    /** Live expenses dated in the period (paid or pending), by `expenseDate` in the shop's timezone. */
+    expenses: number;
+    /** Credit customers owe (positive balances only; an advance never offsets a due). */
     udharOutstanding: number;
+    /** Money customers paid ahead (negative balances, as a positive figure). */
+    customerAdvances: number;
     avgOrderValue: number;
     revenueChangePct: number | null;
     profitChangePct: number | null;
@@ -62,7 +71,7 @@ export class AnalyticsPageService {
     const [current, previous, udhar, trend, paymentModes, categorySales, topCustomers] = await Promise.all([
       this.revenueAndProfit(shopId, start, end),
       this.revenueAndProfit(shopId, prevStart, start),
-      this.prisma.customer.aggregate({ where: { shopId, isDeleted: false }, _sum: { outstandingBalance: true } }),
+      customerBalances(this.prisma, shopId),
       this.trendSeries(shopId, start, end, timeZone),
       this.paymentModes(shopId, start, end),
       this.categorySales(shopId, start, end),
@@ -80,7 +89,10 @@ export class AnalyticsPageService {
       kpis: {
         totalRevenue: toMoney(current.revenue),
         netProfit: toMoney(current.profit),
-        udharOutstanding: toMoney(udhar._sum.outstandingBalance ?? new Prisma.Decimal(0)),
+        grossProfit: toMoney(current.grossProfit),
+        expenses: toMoney(current.expenses),
+        udharOutstanding: toMoney(udhar.outstanding),
+        customerAdvances: toMoney(udhar.advances),
         avgOrderValue: avgOrderValue.toDecimalPlaces(0).toNumber(),
         revenueChangePct: pctChange(current.revenue, previous.revenue),
         profitChangePct: pctChange(current.profit, previous.profit),
@@ -110,12 +122,20 @@ export class AnalyticsPageService {
     }));
   }
 
+  /**
+   * Net revenue, gross profit, the expenses of the window and the net profit
+   * (gross profit minus expenses, release audit L6) for [start, end). An
+   * expense counts in the window its `expenseDate` falls in (the window is
+   * whole business days in the shop's timezone), paid or still pending.
+   */
   private async revenueAndProfit(shopId: string, start: Date, end: Date) {
-    const [totals, profit] = await Promise.all([
+    const [totals, grossProfit, expenses] = await Promise.all([
       this.revenueEngine.totals(shopId, start, end),
       this.revenueEngine.profit(shopId, start, end),
+      this.prisma.expense.aggregate({ where: { shopId, isDeleted: false, expenseDate: { gte: start, lt: end } }, _sum: { amount: true } }),
     ]);
-    return { revenue: totals.netSales, profit, orders: totals.orders };
+    const expenseTotal = expenses._sum.amount ?? new Prisma.Decimal(0);
+    return { revenue: totals.netSales, grossProfit, expenses: expenseTotal, profit: grossProfit.minus(expenseTotal), orders: totals.orders };
   }
 
   private async paymentModes(shopId: string, start: Date, end: Date) {

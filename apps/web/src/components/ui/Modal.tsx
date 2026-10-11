@@ -62,6 +62,8 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, size = 'md
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{title}</h3>
                 <button
                   onClick={onClose}
+                  type="button"
+                  aria-label="Close"
                   className="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition-colors"
                 >
                   <X size={20} />
@@ -71,6 +73,8 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, size = 'md
             {!title && (
               <button
                 onClick={onClose}
+                type="button"
+                aria-label="Close"
                 className="absolute top-4 right-4 p-1.5 z-10 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition-colors"
               >
                 <X size={20} />

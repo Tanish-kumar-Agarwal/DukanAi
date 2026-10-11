@@ -1,12 +1,12 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
-import { CronJob } from 'cron';
 import { KpiService } from './kpi.service';
 import { ClassificationService } from './classification.service';
 import { RecommendationEngineService } from './recommendation-engine.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CronConfig } from '../../config/domains/cron.config';
 import { CronLockService } from '../../common/cron-lock/cron-lock.service';
+import { createCronJob } from '../../common/cron/cron-job';
 import { sweepEveryShop, SweepSummary } from '../../common/sweeps/per-shop-sweep';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 
@@ -41,9 +41,9 @@ export class AnalyticsJobScheduler implements OnApplicationBootstrap {
       this.logger.warn(`${ANALYTICS_JOB} schedule not registered: CRON_ENABLED=false`);
       return;
     }
-    const job = new CronJob(this.cronConfig.analyticsJobCron, () => {
+    const job = createCronJob(this.cronConfig.analyticsJobCron, () => {
       this.handleCron().catch((error: unknown) => this.logger.error(`${ANALYTICS_JOB} crashed: ${(error as Error).message}`));
-    });
+    }, this.cronConfig);
     this.schedulerRegistry.addCronJob(ANALYTICS_JOB, job);
     job.start();
   }

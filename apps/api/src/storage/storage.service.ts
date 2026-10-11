@@ -22,7 +22,7 @@ import { assertOwned } from '../prisma/tenant-ownership';
 
 type AuditLevel = 'info' | 'error';
 
-/** `path` is shop-relative (`Backups/Daily/backup_2026_10_03.zip`); responses never carry an absolute path (roadmap 7.5). */
+/** `path` is shop-relative (`Backups/Daily/backup_20261003_093000_a1b2c3.zip`); responses never carry an absolute path (roadmap 7.5). */
 export interface BackupResult {
   success: true;
   path: string;
@@ -60,6 +60,53 @@ export class StorageService {
   }
 
   /**
+   * The shop's JSON indexes (`customer_index.json`, `invoice_registry.json`)
+   * are read, changed and written whole (audit P3): two requests of one shop
+   * used to interleave and the later write dropped the earlier one's entry.
+   * Every read-modify-write of one file now runs after the previous one
+   * (an in-process queue per file; one API replica, roadmap 9.7).
+   */
+  private readonly fileLocks = new Map<string, Promise<unknown>>();
+
+  private async withFileLock<T>(file: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.fileLocks.get(file) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(work);
+    const tail = run.catch(() => undefined);
+    this.fileLocks.set(file, tail);
+    try {
+      return await run;
+    } finally {
+      if (this.fileLocks.get(file) === tail) this.fileLocks.delete(file);
+    }
+  }
+
+  /**
+   * A JSON index as an array: absent is empty, but a file that cannot be
+   * parsed is an error (audit P3). It used to be read as empty and the next
+   * write replaced the shop's whole index with one entry.
+   */
+  private async readJsonIndex(file: string): Promise<Array<Record<string, unknown>>> {
+    let raw: string;
+    try {
+      raw = await fs.readFile(file, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = undefined;
+    }
+    if (!Array.isArray(parsed)) {
+      this.logger.error(`Storage index ${file} is not a JSON array; refusing to overwrite it`);
+      throw new InternalServerErrorException({ message: 'A storage index of this shop is damaged; nothing was changed. Ask support to repair it.', code: 'STORAGE_INDEX_CORRUPT', details: { file: path.basename(file) } });
+    }
+    return parsed as Array<Record<string, unknown>>;
+  }
+
+  /**
    * The customer named in the route must belong to the caller's shop
    * (roadmap 7.5): a foreign or unknown id is 404 like every other lookup of
    * another shop's row (`assertOwned`), so other shops' ids are never
@@ -68,6 +115,22 @@ export class StorageService {
   private async validateCustomerOwnership(customerId: string): Promise<void> {
     if (customerId === WALK_IN_CUSTOMER_ID) return;
     await assertOwned(this.prisma, 'customer', customerId, this.tenantContext.getShopId());
+  }
+
+  /**
+   * The invoice a stored document claims to be (T6d): one of the shop's
+   * invoices, sold to the customer whose folder it goes into (`Walk-in` for a
+   * sale without a customer). An unknown or foreign invoice, or one of
+   * another customer, is 404 like every foreign id. A captured bill
+   * (`POST /storage/bills/...`) has no row to check: its id is the label the
+   * capture screen gives a paper bill, under the caller's own shop folder.
+   */
+  private async validateInvoiceOwnership(shopId: string, customerId: string, invoiceId: string): Promise<void> {
+    const invoice = await this.prisma.invoice.findFirst({ where: { id: invoiceId, shopId }, select: { customerId: true } });
+    const expected = customerId === WALK_IN_CUSTOMER_ID ? null : customerId;
+    if (!invoice || invoice.customerId !== expected) {
+      throw new NotFoundException({ message: 'Invoice not found for this customer', code: 'STORAGE_INVOICE_NOT_FOUND' });
+    }
   }
 
   /**
@@ -195,27 +258,25 @@ export class StorageService {
     const shopId = this.tenantContext.getShopId();
     const indexPath = this.storagePathBuilder.getSystemFile(shopId, 'customer_index.json');
     await fs.ensureDir(path.dirname(indexPath));
-    
-    const index = (await fs.readJson(indexPath).catch(() => [])) as Array<Record<string, unknown>>;
     const customerId = customerData.customerId as string;
-    
-    const existingIndex = index.findIndex((c) => c.customerId === customerId);
-    
-    const safeCustomerData = {
-      ...customerData,
-      updatedAt: new Date().toISOString(),
-    };
 
-    if (existingIndex >= 0) {
-      index[existingIndex] = { ...index[existingIndex], ...safeCustomerData };
-    } else {
-      index.push({
-        ...safeCustomerData,
-        createdAt: new Date().toISOString(),
-      });
-    }
-
-    await this.writeJsonAtomic(indexPath, index);
+    await this.withFileLock(indexPath, async () => {
+      const index = await this.readJsonIndex(indexPath);
+      const existingIndex = index.findIndex((c) => c.customerId === customerId);
+      const safeCustomerData = {
+        ...customerData,
+        updatedAt: new Date().toISOString(),
+      };
+      if (existingIndex >= 0) {
+        index[existingIndex] = { ...index[existingIndex], ...safeCustomerData };
+      } else {
+        index.push({
+          ...safeCustomerData,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      await this.writeJsonAtomic(indexPath, index);
+    });
     await this.logAction(`Updated customer index customer=${customerId}`, 'info');
   }
 
@@ -228,6 +289,7 @@ export class StorageService {
   ): Promise<void> {
     const shopId = this.tenantContext.getShopId();
     await this.validateCustomerOwnership(customerId);
+    await this.validateInvoiceOwnership(shopId, customerId, invoiceId);
 
     const invoiceDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.Invoices);
     await fs.ensureDir(invoiceDir);
@@ -236,25 +298,26 @@ export class StorageService {
     const pdfPath = path.join(invoiceDir, `${baseName}.pdf`);
     const jsonPath = path.join(invoiceDir, `${baseName}.json`);
     const previewPath = path.join(invoiceDir, `${baseName}-preview.jpg`);
-    await this.assertNoneExist([pdfPath, jsonPath, ...(thumbnailFile ? [previewPath] : [])]);
-    await this.writeAllEvidence([
-      [pdfPath, pdfFile.buffer],
-      [jsonPath, JSON.stringify(jsonContent, null, 2)],
-      ...(thumbnailFile ? [[previewPath, thumbnailFile.buffer] as [string, Buffer]] : []),
-    ]);
 
     const registryPath = this.storagePathBuilder.getSystemFile(shopId, 'invoice_registry.json');
     await fs.ensureDir(path.dirname(registryPath));
-    const registry = (await fs.readJson(registryPath).catch(() => [])) as Array<Record<string, unknown>>;
-
-    registry.push({
-      invoiceId,
-      customerId,
-      status: typeof jsonContent.status === 'string' ? jsonContent.status : 'Generated',
-      timestamp: new Date().toISOString(),
+    await this.withFileLock(registryPath, async () => {
+      // The registry is read (and refused when damaged) before any evidence is written.
+      const registry = await this.readJsonIndex(registryPath);
+      await this.assertNoneExist([pdfPath, jsonPath, ...(thumbnailFile ? [previewPath] : [])]);
+      await this.writeAllEvidence([
+        [pdfPath, pdfFile.buffer],
+        [jsonPath, JSON.stringify(jsonContent, null, 2)],
+        ...(thumbnailFile ? [[previewPath, thumbnailFile.buffer] as [string, Buffer]] : []),
+      ]);
+      registry.push({
+        invoiceId,
+        customerId,
+        status: typeof jsonContent.status === 'string' ? jsonContent.status : 'Generated',
+        timestamp: new Date().toISOString(),
+      });
+      await this.writeJsonAtomic(registryPath, registry);
     });
-    
-    await this.writeJsonAtomic(registryPath, registry);
     await this.logAction(`Stored invoice invoice=${invoiceId} customer=${customerId}`, 'info');
   }
 
@@ -366,6 +429,14 @@ export class StorageService {
     }
   }
 
+  /**
+   * Zips the shop's documents, system files and logs (audit P3): every run
+   * writes its own file (`backup_<date>_<time>_<rand>.zip`; two runs on one
+   * day used to truncate each other's zip), the zip is built under a
+   * `.partial` name and renamed only once complete, the answer is a success
+   * only when that happened, and after a success the oldest zips beyond
+   * STORAGE_BACKUP_KEEP are removed.
+   */
   async createBackup(
     type: string = 'Daily',
   ): Promise<BackupResult> {
@@ -373,42 +444,62 @@ export class StorageService {
     const backupDir = this.storagePathBuilder.getBackupDirectory(shopId, type);
     await fs.ensureDir(backupDir);
 
-    const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '_');
-    const backupPath = path.join(backupDir, `backup_${dateStr}.zip`);
+    const stamp = new Date().toISOString().replace(/\.\d+Z$/, '').replace(/[-:]/g, '').replace('T', '_');
+    const backupPath = path.join(backupDir, `backup_${stamp}_${crypto.randomBytes(3).toString('hex')}.zip`);
+    const partialPath = `${backupPath}.partial`;
     const shopRoot = this.storagePathBuilder.getShopRoot(shopId);
 
-    return new Promise<BackupResult>((resolve, reject) => {
-      const output = fs.createWriteStream(backupPath);
-      const archive = archiver('zip', { zlib: { level: 9 } });
-
-      output.on('close', () => {
-        const size = archive.pointer();
-        this.logAction(`Created backup type=${type} file=${path.basename(backupPath)} size=${size}`, 'info')
-          .then(() => resolve({ success: true, path: this.storagePathBuilder.relativeToShop(shopId, backupPath), size }))
-          .catch(reject);
-      });
-
-      // A failed archive (a full volume) leaves no partial zip that looks like a backup.
-      const fail = (error: Error) => {
-        output.destroy();
-        void fs.remove(backupPath).catch(() => undefined);
-        void this.logAction(`Backup error type=${type}: ${error.message}`, 'error').finally(() => reject(error));
-      };
-      output.on('error', fail);
-      archive.on('error', fail);
-
-      archive.pipe(output);
-
-      // Only zip the specific shop's data
-      for (const dir of ['Customers', 'System', 'Logs']) {
-        const dirPath = path.join(shopRoot, dir);
-        if (fs.existsSync(dirPath)) {
-          archive.directory(dirPath, dir);
+    let size: number;
+    try {
+      size = await new Promise<number>((resolve, reject) => {
+        const output = fs.createWriteStream(partialPath, { flags: 'wx' });
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        let failed = false;
+        const fail = (error: Error) => {
+          if (failed) return;
+          failed = true;
+          archive.abort();
+          output.destroy();
+          reject(error);
+        };
+        output.on('error', fail);
+        archive.on('error', fail);
+        // 'close' also follows a destroy: only a run that never failed is complete.
+        output.on('close', () => {
+          if (!failed) resolve(archive.pointer());
+        });
+        archive.pipe(output);
+        // Only zip the specific shop's data
+        for (const dir of ['Customers', 'System', 'Logs']) {
+          const dirPath = path.join(shopRoot, dir);
+          if (fs.existsSync(dirPath)) {
+            archive.directory(dirPath, dir);
+          }
         }
-      }
+        archive.finalize().catch(fail);
+      });
+      await fs.rename(partialPath, backupPath);
+    } catch (error) {
+      // A failed archive (a full volume) leaves no partial zip that looks like a backup.
+      await fs.remove(partialPath).catch(() => undefined);
+      await this.logAction(`Backup error type=${type}: ${(error as Error).message}`, 'error');
+      throw error;
+    }
+    await this.logAction(`Created backup type=${type} file=${path.basename(backupPath)} size=${size}`, 'info');
+    await this.pruneBackups(backupDir, path.basename(backupPath));
+    return { success: true, path: this.storagePathBuilder.relativeToShop(shopId, backupPath), size };
+  }
 
-      archive.finalize().catch(reject);
-    });
+  /** Keeps the newest STORAGE_BACKUP_KEEP zips of the directory (by modification time); never the one just written. */
+  private async pruneBackups(backupDir: string, keepName: string): Promise<void> {
+    const keep = this.storageConfig.backupKeep ?? 7;
+    const names = (await fs.readdir(backupDir)).filter((name) => /^backup_.*\.zip$/.test(name));
+    const dated = await Promise.all(names.map(async (name) => ({ name, mtime: (await fs.stat(path.join(backupDir, name))).mtimeMs })));
+    const zips = dated.sort((a, b) => b.mtime - a.mtime || b.name.localeCompare(a.name)).map((z) => z.name);
+    for (const name of zips.slice(keep)) {
+      if (name === keepName) continue;
+      await fs.remove(path.join(backupDir, name)).catch((error: unknown) => this.logger.warn(`Old backup ${name} not removed: ${(error as Error).message}`));
+    }
   }
 
   async uploadFileToCloud(

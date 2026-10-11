@@ -13,8 +13,10 @@ getting help. Button names are exactly what the screen shows.
    - **GSTIN is required.** Every receipt is printed as a TAX INVOICE and
      charges GST. That is lawful only with your registration number on
      it.
-   - **State** decides the tax split. A customer in another state is
-     billed IGST; one in your state is billed CGST + SGST.
+   - **State** is where your counter sales are taxed: every sale at the
+     counter is billed CGST + SGST, whatever state the customer lives in
+     (the place of supply is your shop). IGST is for goods you supply to
+     another state, which the POS does not bill.
 2. **First-day data.** Bring in your products, customers (with their
    udhar balances) and opening stock from spreadsheets. Support runs this
    with you, following `docs/ONBOARDING.md`. Check every number on the

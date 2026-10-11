@@ -18,7 +18,7 @@ import * as bcrypt from 'bcrypt';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
 import { UserMapper, safeUserSelect } from '../users/user.mapper';
 import { ADMIN_ROLES, outranks } from '../auth/role-sets';
-import { EmailService } from '../common/email/email.service';
+import { emailSafeText, EmailService } from '../common/email/email.service';
 import { AppConfig } from '../config/domains/app.config';
 import { SecurityConfig } from '../config/domains/security.config';
 import { isProductionEnv } from '../config/validation/env-rules';
@@ -103,8 +103,9 @@ export class InvitationsService {
       await this.email.send({
         purpose: 'invitation',
         to: email,
-        subject: `You're invited to ${shop.name} on DukaanAI`,
-        text: this.invitationText(shop.name, data.role, rawToken, expiresAt),
+        // The shop's name is user text: one line, bounded (audit R15).
+        subject: `You're invited to ${emailSafeText(shop.name, 80)} on DukaanAI`,
+        text: this.invitationText(emailSafeText(shop.name), data.role, rawToken, expiresAt),
       });
     } catch {
       // The token exists only in the message that was not delivered: the row

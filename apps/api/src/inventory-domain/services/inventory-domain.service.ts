@@ -1,7 +1,7 @@
-import { Injectable, Logger, BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
-import { AdjustmentReason, LedgerAccount, LedgerEntryType, Prisma } from '@prisma/client';
+import { AdjustmentReason, LedgerAccount, LedgerEntryType, Prisma, Role } from '@prisma/client';
 import { LedgerPostingService } from '../../ledger/ledger-posting.service';
 import { ProductEventPublisher } from '../../product-events/services/product-event-publisher.service';
 import { InventoryFeatureConfig } from '../../config/domains/features/inventory-feature.config';
@@ -11,6 +11,34 @@ import { InventoryLocationService } from './inventory-location.service';
 import { InventoryCacheService } from '../../inventory/inventory-cache.service';
 import { assertOwned } from '../../prisma/tenant-ownership';
 import { ListQueryDto, pageArgs } from '../../common/pagination';
+import { withSerializationRetry } from '../../common/db/serialization-retry';
+import { ADMIN_ROLES } from '../../auth/role-sets';
+
+/** Largest |quantity| one stock movement may carry: InventoryItem.onHand is Decimal(12, 3). */
+export const MAX_STOCK_QUANTITY = 999_999_999.999;
+
+/** The actor of a direct adjustment; a MANAGER is capped by INVENTORY_MANAGER_MAX_ADJUST_VALUE (release audit T5). */
+export interface AdjustmentActor {
+  id: string;
+  role?: Role | null;
+}
+
+export interface TransferInput {
+  productId: string;
+  variantId?: string | null;
+  fromLocationId: string;
+  toLocationId: string;
+  quantity: number;
+  idempotencyKey: string;
+  notes?: string;
+}
+
+/** A variant named next to a product must be one of that product's (release audit T6e). */
+export async function assertVariantOfProduct(db: Prisma.TransactionClient | PrismaService, shopId: string, productId: string, variantId: string | null | undefined): Promise<void> {
+  if (!variantId) return;
+  const variant = await db.productVariant.findFirst({ where: { id: variantId, shopId, productId }, select: { id: true } });
+  if (!variant) throw new NotFoundException({ message: `Product variant ${variantId} not found for this product.`, code: 'VARIANT_NOT_FOUND' });
+}
 
 /** The key of an item's one opening-stock movement (stock ledger `correlationId` and `referenceId`). */
 export function openingStockKey(inventoryItemId: string): string {
@@ -35,7 +63,7 @@ export class InventoryDomainService {
   async ensureInventoryItem(productId: string, variantId?: string, explicitLocationId?: string) {
     const shopId = this.tenantContext.getShopId();
     await assertOwned(this.prisma, 'product', productId, shopId, { isDeleted: false });
-    await assertOwned(this.prisma, 'productVariant', variantId, shopId);
+    await assertVariantOfProduct(this.prisma, shopId, productId, variantId);
 
     // 1. Resolve Location: explicit ids must belong to this shop; otherwise use the sale location.
     let locationId: string;
@@ -104,35 +132,185 @@ export class InventoryDomainService {
   }
 
   /**
-   * Adjusts stock with full transactional safety, optimistic locking, 
-   * audit trail, and Outbox event emission.
+   * Adjusts stock with full transactional safety, optimistic locking,
+   * audit trail, and Outbox event emission (POST /inventory-domain/:id/adjust).
+   *
+   * Release audit S18 / T5:
+   *  - the quantity is bounded by the column (Decimal(12, 3)) and never 0;
+   *  - an `idempotencyKey` makes a retried request a replay (the engine skips
+   *    a movement whose key is already in the stock ledger); the same key for
+   *    another item or quantity is 409 IDEMPOTENCY_KEY_REUSED;
+   *  - `OPENING_BALANCE` is positive and once per item (409 OPENING_STOCK_EXISTS);
+   *  - a MANAGER adjusts directly only up to INVENTORY_MANAGER_MAX_ADJUST_VALUE
+   *    of stock value (|quantity| × cost price); more is 403
+   *    ADJUSTMENT_REQUIRES_APPROVAL (a stock-count adjustment request, which
+   *    another manager approves). OWNER / ADMIN are not capped.
    */
   async adjustStock(
     inventoryItemId: string,
     reason: AdjustmentReason,
     quantityChange: number,
-    createdBy: string,
-    opts?: { notes?: string; correlationId?: string }
+    createdBy: string | AdjustmentActor,
+    opts?: { notes?: string; correlationId?: string; idempotencyKey?: string }
   ) {
     const shopId = this.tenantContext.getShopId();
+    const actor: AdjustmentActor = typeof createdBy === 'string' ? { id: createdBy } : createdBy;
 
-    if (!Number.isFinite(quantityChange) || quantityChange === 0) {
-      throw new BadRequestException({ message: 'quantityChange must be a non-zero number', code: 'INVALID_QUANTITY' });
+    if (!Number.isFinite(quantityChange) || quantityChange === 0 || Math.abs(quantityChange) > MAX_STOCK_QUANTITY) {
+      throw new BadRequestException({ message: `quantityChange must be a non-zero number of at most ${MAX_STOCK_QUANTITY} in size`, code: 'INVALID_QUANTITY' });
     }
+    if (reason === AdjustmentReason.OPENING_BALANCE && quantityChange < 0) {
+      throw new BadRequestException({ message: 'Opening stock cannot be negative; record a correction instead.', code: 'OPENING_STOCK_NEGATIVE' });
+    }
+    const key = opts?.idempotencyKey ? `ADJ:${opts.idempotencyKey}` : undefined;
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      // 1. Fetch item to get ProductId
-      const item = await tx.inventoryItem.findFirst({
-        where: { id: inventoryItemId, shopId, isDeleted: false },
-      });
+    const result = await withSerializationRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        // 1. Fetch item to get ProductId
+        const item = await tx.inventoryItem.findFirst({
+          where: { id: inventoryItemId, shopId, isDeleted: false },
+        });
 
-      if (!item) throw new NotFoundException('Inventory item not found');
-      return this.applyAdjustment(tx, shopId, item, reason, quantityChange, createdBy, opts);
-    });
+        if (!item) throw new NotFoundException({ message: 'Inventory item not found', code: 'INVENTORY_ITEM_NOT_FOUND' });
+        // Every check below reads under the product lock every stock movement takes.
+        await this.inventoryMutationEngine.lockProducts(tx, shopId, [item.productId]);
+
+        if (key) {
+          const replay = await tx.stockLedgerEntry.findFirst({ where: { shopId, correlationId: key }, select: { inventoryItemId: true, quantity: true } });
+          if (replay && (replay.inventoryItemId !== item.id || !replay.quantity.abs().equals(new Prisma.Decimal(Math.abs(quantityChange))))) {
+            throw new ConflictException({ message: 'This idempotency key was already used for a different adjustment.', code: 'IDEMPOTENCY_KEY_REUSED' });
+          }
+        }
+        if (reason === AdjustmentReason.OPENING_BALANCE) {
+          const opening = await tx.inventoryAdjustment.findFirst({ where: { shopId, inventoryItemId: item.id, reason: AdjustmentReason.OPENING_BALANCE }, select: { id: true, quantityChange: true } });
+          const imported = await tx.stockLedgerEntry.findFirst({ where: { shopId, inventoryItemId: item.id, correlationId: openingStockKey(item.id) }, select: { id: true } });
+          const isReplay = key ? await tx.stockLedgerEntry.findFirst({ where: { shopId, correlationId: key }, select: { id: true } }) : null;
+          if ((opening || imported) && !isReplay) {
+            throw new ConflictException({ message: 'The opening stock of this item is already recorded; record the difference as a correction.', code: 'OPENING_STOCK_EXISTS' });
+          }
+        }
+        if (actor.role && !ADMIN_ROLES.includes(actor.role)) {
+          const product = await tx.product.findFirst({ where: { id: item.productId, shopId }, select: { costPrice: true } });
+          const value = new Prisma.Decimal(product?.costPrice ?? 0).times(Math.abs(quantityChange)).toDecimalPlaces(2);
+          const cap = new Prisma.Decimal(this.inventoryFeatureConfig.managerMaxAdjustValue);
+          if (value.greaterThan(cap)) {
+            throw new ForbiddenException({
+              message: `This adjustment moves ₹${value.toFixed(2)} of stock, more than a manager may adjust directly (₹${cap.toFixed(2)}). Ask an owner or raise a stock-count adjustment for approval.`,
+              code: 'ADJUSTMENT_REQUIRES_APPROVAL',
+              details: { value: value.toFixed(2), limit: cap.toFixed(2) },
+            });
+          }
+        }
+        return this.applyAdjustment(tx, shopId, item, reason, quantityChange, actor.id, { ...opts, idempotencyKey: key, referenceId: key });
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }),
+    );
 
     // Keep the Redis fast-path in step with the authoritative aggregate.
     await this.inventoryCache.syncStock(result.productId, result.productStockAfter);
     return result;
+  }
+
+  /**
+   * Moves stock between two locations of the shop (release audit S2: goods
+   * received into a back warehouse could never reach the POS, which sells
+   * from the sale location). One transaction: the product row locked, a
+   * TRANSFER_OUT at the source (refused when the source does not hold the
+   * quantity) and a TRANSFER_IN at the destination through the inventory
+   * engine. Ledger-neutral: the stock keeps its value, only its place
+   * changes, so nothing is posted. `idempotencyKey` makes a retry a replay
+   * (both movements are keyed); the same key for another transfer is 409.
+   */
+  async transferStock(input: TransferInput, actorId: string) {
+    const shopId = this.tenantContext.getShopId();
+    if (!Number.isFinite(input.quantity) || input.quantity <= 0 || input.quantity > MAX_STOCK_QUANTITY) {
+      throw new BadRequestException({ message: 'A transfer moves a positive quantity.', code: 'INVALID_QUANTITY' });
+    }
+    if (input.fromLocationId === input.toLocationId) {
+      throw new BadRequestException({ message: 'The source and the destination are the same location.', code: 'TRANSFER_SAME_LOCATION' });
+    }
+    await assertOwned(this.prisma, 'product', input.productId, shopId, { isDeleted: false });
+    const product = await this.prisma.product.findFirst({ where: { id: input.productId, shopId }, select: { type: true } });
+    if (product && (product.type === 'SERVICE' || product.type === 'DIGITAL')) {
+      throw new BadRequestException({ message: 'A service or digital product holds no stock to move.', code: 'TRANSFER_NOT_STOCKED' });
+    }
+    await assertVariantOfProduct(this.prisma, shopId, input.productId, input.variantId);
+    await assertOwned(this.prisma, 'location', input.fromLocationId, shopId, { isDeleted: false });
+    await assertOwned(this.prisma, 'location', input.toLocationId, shopId, { isDeleted: false });
+
+    const referenceId = `TRANSFER:${input.idempotencyKey}`.slice(0, 191);
+    const quantity = new Prisma.Decimal(input.quantity);
+
+    const outcome = await withSerializationRetry(() =>
+      this.prisma.$transaction(async (tx) => {
+        await this.inventoryMutationEngine.lockProducts(tx, shopId, [input.productId]);
+
+        const earlier = await tx.stockLedgerEntry.findMany({ where: { shopId, referenceId }, select: { quantity: true, inventoryItem: { select: { productId: true, variantId: true, locationId: true } } } });
+        if (earlier.length > 0) {
+          const out = earlier.find((e) => e.quantity.isNegative());
+          const into = earlier.find((e) => e.quantity.greaterThan(0));
+          const same = out && into
+            && out.inventoryItem.productId === input.productId && (out.inventoryItem.variantId ?? null) === (input.variantId ?? null)
+            && out.inventoryItem.locationId === input.fromLocationId && into.inventoryItem.locationId === input.toLocationId
+            && into.quantity.equals(quantity);
+          if (!same) throw new ConflictException({ message: 'This idempotency key was already used for a different transfer.', code: 'IDEMPOTENCY_KEY_REUSED' });
+          return { replayed: true, productStockAfter: null as Prisma.Decimal | null };
+        }
+
+        const base = {
+          shopId,
+          productId: input.productId,
+          variantId: input.variantId ?? null,
+          quantity: input.quantity,
+          referenceId,
+          performedBy: actorId,
+          occurredAt: new Date(),
+          reason: input.notes ? `Transfer - ${input.notes}` : 'Transfer',
+        };
+        try {
+          await this.inventoryMutationEngine.mutateStock(tx, { ...base, locationId: input.fromLocationId, mutationType: MutationType.TRANSFER_OUT, idempotencyKey: `${referenceId}:OUT`.slice(0, 191), allowNegative: false });
+        } catch (e) {
+          if (e instanceof InsufficientStockError) {
+            throw new ConflictException({ message: `The source location does not hold ${input.quantity} of this product.`, code: 'INSUFFICIENT_STOCK', details: (e as InsufficientStockError).details });
+          }
+          throw e;
+        }
+        const into = await this.inventoryMutationEngine.mutateStock(tx, { ...base, locationId: input.toLocationId, mutationType: MutationType.TRANSFER_IN, idempotencyKey: `${referenceId}:IN`.slice(0, 191) });
+
+        await this.eventPublisher.publish(tx as any, {
+          shopId,
+          eventType: 'InventoryTransferred',
+          entityId: input.productId,
+          entityType: 'Product',
+          payload: { productId: input.productId, variantId: input.variantId ?? null, fromLocationId: input.fromLocationId, toLocationId: input.toLocationId, quantity: input.quantity, referenceId },
+        });
+        await tx.auditLog.create({
+          data: {
+            shopId,
+            userId: actorId,
+            action: 'STOCK_TRANSFERRED',
+            entity: 'Product',
+            entityId: input.productId,
+            afterData: { variantId: input.variantId ?? null, fromLocationId: input.fromLocationId, toLocationId: input.toLocationId, quantity: input.quantity, notes: input.notes ?? null },
+          },
+        });
+        return { replayed: false, productStockAfter: into.productStockAfter };
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }),
+    );
+
+    if (outcome.productStockAfter) await this.inventoryCache.syncStock(input.productId, outcome.productStockAfter.toNumber());
+    const items = await this.prisma.inventoryItem.findMany({
+      where: { shopId, productId: input.productId, variantKey: input.variantId ?? '-', locationId: { in: [input.fromLocationId, input.toLocationId] }, isDeleted: false },
+      select: { id: true, locationId: true, onHand: true },
+    });
+    const at = (locationId: string) => items.find((i) => i.locationId === locationId)?.onHand.toNumber() ?? 0;
+    return {
+      status: outcome.replayed ? 'UNCHANGED' : 'TRANSFERRED',
+      productId: input.productId,
+      variantId: input.variantId ?? null,
+      quantity: input.quantity,
+      from: { locationId: input.fromLocationId, onHand: at(input.fromLocationId) },
+      to: { locationId: input.toLocationId, onHand: at(input.toLocationId) },
+    };
   }
 
   /**

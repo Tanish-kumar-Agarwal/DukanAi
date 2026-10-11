@@ -76,7 +76,7 @@ describe('storage (roadmap 7.5)', () => {
 
     const backup = await http().post('/api/storage/backup').set('Authorization', `Bearer ${tokenA}`).send({ type: 'Daily' });
     expect(backup.status).toBe(201);
-    expect(backup.body.path).toMatch(/^Backups\/Daily\/backup_\d{4}_\d{2}_\d{2}\.zip$/);
+    expect(backup.body.path).toMatch(/^Backups\/Daily\/backup_\d{8}_\d{6}_[0-9a-f]{6}\.zip$/);
 
     for (const body of [folder.body, deleted.body, backup.body]) {
       expect(JSON.stringify(body)).not.toContain(root);

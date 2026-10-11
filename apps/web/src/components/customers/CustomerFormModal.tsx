@@ -1,11 +1,13 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { useSession } from 'next-auth/react';
 import { Modal } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
 import { customersApi, type CustomerInput, type CustomerView } from '@/lib/api-client';
 import { describeApiError, getApiErrorCode } from '@/lib/api-error';
 import { INDIAN_STATES } from './indian-states';
+import { canSetCreditLimit } from './permissions';
 
 const inputClass =
   'w-full mt-1 border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-[#8B5CF6]/20 focus:border-[#8B5CF6] transition-all disabled:bg-gray-50 disabled:text-gray-500';
@@ -74,10 +76,15 @@ interface CustomerFormModalProps {
 /**
  * Create (`POST /customers`) or edit (`PATCH /customers/:id`) a customer.
  * Every field from contract §4 is exposed; the credit limit is left blank on
- * create so the server default applies.
+ * create so the server default applies. Only a manager may set a credit
+ * limit (the API answers 403 `CREDIT_LIMIT_REQUIRES_MANAGER` otherwise), so a
+ * cashier sees it read-only and the field is sent only when a manager
+ * changed it: a cashier can edit everything else (audit W4).
  */
 export function CustomerFormModal({ isOpen, mode, customer, onClose, onSaved }: CustomerFormModalProps) {
   const { toast } = useToast();
+  const { data: session } = useSession();
+  const allowCreditLimit = canSetCreditLimit(session?.user?.role);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -103,11 +110,16 @@ export function CustomerFormModal({ isOpen, mode, customer, onClose, onSaved }: 
       return;
     }
     const creditLimitRaw = form.creditLimit.trim();
-    const creditLimit = creditLimitRaw === '' ? undefined : Number(creditLimitRaw);
-    if (creditLimit !== undefined && (!Number.isFinite(creditLimit) || creditLimit < 0)) {
+    const typedLimit = creditLimitRaw === '' ? undefined : Number(creditLimitRaw);
+    if (allowCreditLimit && typedLimit !== undefined && (!Number.isFinite(typedLimit) || typedLimit < 0)) {
       setFormError('Credit limit must be zero or a positive amount.');
       return;
     }
+    // Sent only by a manager, and on an edit only when it changed.
+    const creditLimit =
+      !allowCreditLimit || typedLimit === undefined || (mode === 'edit' && customer && typedLimit === customer.creditLimit)
+        ? undefined
+        : typedLimit;
 
     const payload: CustomerInput = {
       name,
@@ -193,9 +205,10 @@ export function CustomerFormModal({ isOpen, mode, customer, onClose, onSaved }: 
               inputMode="decimal"
               value={form.creditLimit}
               onChange={(e) => update('creditLimit', e.target.value)}
-              placeholder={mode === 'create' ? 'Leave blank for the shop default' : ''}
+              placeholder={mode === 'create' ? (allowCreditLimit ? 'Leave blank for the shop default' : 'Set by a manager') : ''}
+              title={allowCreditLimit ? undefined : 'Only a manager can set the credit limit'}
               className={inputClass}
-              disabled={submitting}
+              disabled={submitting || !allowCreditLimit}
             />
           </div>
         </div>
@@ -239,7 +252,7 @@ export function CustomerFormModal({ isOpen, mode, customer, onClose, onSaved }: 
                 <option key={state} value={state}>{state}</option>
               ))}
             </select>
-            <p className="mt-1 text-[11px] text-gray-500">Used to decide inter-state GST on this customer's bills.</p>
+            <p className="mt-1 text-[11px] text-gray-500">Kept on record; a counter sale is billed in the shop&apos;s state.</p>
           </div>
         </div>
 

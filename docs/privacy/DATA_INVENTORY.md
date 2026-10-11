@@ -29,9 +29,17 @@ gazette text before it is relied on.
 
 ### 2.1 The database (MySQL 8)
 
-Each shop's rows carry its `shopId`. Requests are kept apart by the tenant
-extension (`src/prisma/tenant-scope.ts`), and the operator tools work on
-one shop at a time.
+Each shop's rows carry its `shopId`, or belong to a row that does: the
+child tables (an invoice's lines, a customer's audit trail and addresses,
+an import's report rows, a photo's metadata, a webhook's delivery log, a
+revision's reviews, a stock transfer's items) have no shop column and are
+reached through their parent (`childModels` in `personal-data.ts`, derived
+from the schema). Export and erasure cover them the same way; a table that
+is neither a shop's, nor a child of one, nor listed with a reason
+(`NOT_SHOP_DATA`: session and reset tokens, event bookkeeping) fails
+`personal-data.spec.ts`. Requests are kept apart by the tenant extension
+(`src/prisma/tenant-scope.ts`), and the operator tools work on one shop at
+a time.
 
 | Table(s) | Personal data | Purpose | Retention | Erasure |
 |---|---|---|---|---|
@@ -40,7 +48,8 @@ one shop at a time.
 | `RefreshToken` | IP, user agent, token hash (no token itself) | sessions and the sessions list | 7 days after expiry (retention sweep) | deleted |
 | `PasswordResetToken`, `Invitation` | email, token hash | password reset, joining a shop | reset: 7 days after use or expiry; invitation: until accepted, revoked or expired (48 h) | deleted |
 | `LoginAttempt` | email, IP, user agent | brute-force defence, investigating account abuse | until the account is closed | deleted with the account |
-| `Customer` (and the unused enterprise tables `CustomerProfile`, `CustomerAddress`, `CustomerContact`, `CustomerDocument`, `CustomerAudit`) | name, phone, email, address, city, state, notes, tags, credit limit and balance | billing, credit (udhar) and statements, on the shop's instruction | as long as the shop keeps the customer; GST invoice details for the retention period (§3) | `shop-data erase-customer` (one customer) or `shop-data erase` (the shop) |
+| `Customer` (and the enterprise tables `CustomerProfile`, `CustomerAddress`, `CustomerContact`, `CustomerDocument`, unused by the web) | name, phone, email, address, city, state, notes, tags, credit limit and balance | billing, credit (udhar) and statements, on the shop's instruction | as long as the shop keeps the customer; GST invoice details for the retention period (§3) | `shop-data erase-customer` (one customer) or `shop-data erase` (the shop) |
+| `CustomerAudit` | written on every create, update and delete of a customer (the web, the API and onboarding imports): the whole customer row as created, the changed fields with their old and new values, the actor and the client IP | the customer's change history | as long as the shop keeps the customer | payloads and IP erased with the customer (`erase-customer`) or the shop (`erase`); the action, time and actor stay |
 | `Invoice`, `InvoiceItem`, `InvoicePayment`, `UdharTransaction` | the customer (by id), what they bought, amounts, tender, free-text notes, discount and cancellation reasons | the sale, its tax, the shop's books | GST retention period (§3) | free text erased; amounts stay (non-personal once the customer row is anonymised) |
 | `LedgerTransaction`, `LedgerPosting` | none: document references only, since migration `20261011090000` | the books | immutable (database triggers) | not needed |
 | `Supplier`, `Manufacturer`, `Warehouse` | contact person, phone, email, address, GSTIN (a sole proprietor's is a person's) | purchasing | while the shop keeps the supplier | anonymised |
@@ -48,9 +57,10 @@ one shop at a time.
 | `AuditLog` | who did what (user id), the row before and after (may contain a customer's details), IP, user agent | accountability, investigating disputes | while the shop is a customer | snapshots, IP and user agent erased; the action, time and user id stay |
 | `Notification` | messages that may name a product or customer | in-app notices | until the shop deletes them | deleted |
 | `SearchHistory`, `SearchAnalytics`, `SearchClick`, `SavedSearch` | what staff typed into search boxes | the popular-searches card | `SearchHistory` 90 days (retention sweep); the others while the shop is a customer | deleted (`SearchHistory`) or query text erased |
-| `ImportJob`, `ImportJobRow` | the uploaded file's name and every raw row (customer lists hold names and phones) | onboarding imports and their reports | while the shop is a customer | raw rows and file names erased; the files are deleted |
+| `ImportJob`, `ImportJobRow` | the uploaded file's name and every raw row (customer lists hold names and phones), the planned changes and the problems of each row (they quote the cells) | onboarding imports and their reports (`GET /imports/jobs/:id/rows`, `/report`: management only) | while the shop is a customer | `erase`: raw rows, changes, problems and file names erased, the files deleted; `erase-customer`: the report rows of a customer import that carry the customer's phone or email are emptied and every uploaded import file that holds them is deleted |
 | `MediaAsset` and the media tables | the original file name of an uploaded photo, EXIF data (may include a location) | product photos | while the product exists | file names and EXIF erased; files deleted unless another shop uses the same file |
-| `OutboxEvent`, `ProductEventLog`, `WebhookDelivery`, `DeadLetterEvent` | event payloads (a sale's payload names its customer id and amounts) | delivering events | DONE outbox rows 14 days, `ProductEventLog` 180 days (retention sweep) | payloads erased |
+| `OutboxEvent`, `ProductEventLog`, `WebhookDelivery`, `DeadLetterEvent` | event payloads (a sale's payload names its customer id and amounts); a delivery's error message | delivering events | DONE outbox rows 14 days, `ProductEventLog` 180 days, `WebhookDelivery` 30 days (retention sweep) | payloads and error messages erased |
+| `RevisionApproval` | a reviewer's comments and signature on a catalogue change | catalogue change review | while the product exists | free text erased |
 | `WebhookEndpoint` | the shop's webhook URL and its signing secret | integrations the shop configured | while configured | URL erased |
 | `ReconciliationRun` | none (figures and document ids) | checking the books | while the shop is a customer | not needed |
 

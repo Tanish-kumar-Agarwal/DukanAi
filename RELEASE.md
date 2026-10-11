@@ -70,7 +70,8 @@ on `main` with CI green:
 3. Run `node scripts/release/release.mjs lint`. CI runs it too: the newest
    section must be the `package.json` version.
 4. Merge. CI on `main` must be green. The release workflow then builds
-   `sha-<commit>` images of that commit; they are not the release yet.
+   `sha-<commit>` images of that commit (it runs only once CI passed for
+   it); they are not the release yet.
 
 ## 2. Check, then tag (owner)
 
@@ -86,14 +87,18 @@ git push origin vX.Y.Z
 section dated ..., above N earlier release tag(s), on main`. It lists every problem
 otherwise.
 
-Pushing the tag starts `.github/workflows/release.yml`. Its `images` job:
+Pushing the tag runs CI on the tagged commit; once that CI run has passed,
+`.github/workflows/release.yml` starts (a failed CI builds nothing). Its
+`images` job:
 1. Runs `check` again; nothing is built for a tag that fails it.
 2. Refuses a version the registry already has.
 3. Builds the API, web and db-ops images with `APP_RELEASE=vX.Y.Z` and
    `APP_REVISION=<commit>`. These become the OCI `version` / `revision`
    labels, the `release` field of `GET /api/health` and `build_info{release}`.
 4. Runs the Trivy gate.
-5. Pushes `:vX.Y.Z` and `:sha-<7>`.
+5. Pushes `:vX.Y.Z` only (a tag build never re-pushes `:sha-<7>`, which
+   main's build of the commit already published), and lists each image's
+   digest in the job summary.
 6. Writes the SBOMs.
 7. Opens a draft GitHub release. Its notes are the CHANGELOG section
    (`release.mjs notes`); it is a pre-release for an `-rc`.
@@ -231,8 +236,10 @@ docker compose -f docker-compose.prod.yml up -d --wait
   API wait for it). Against the newer database it answers `No pending
   migrations to apply` and exits 0. Prisma does not refuse migrations it does
   not know.
-- The boot drift check refuses only a missing table or column, so the
-  previous API starts.
+- The boot check refuses a database that lacks a migration of the image
+  (or one of the probed tables or columns); every migration of the previous
+  image is applied, and newer ones do not matter, so the previous API
+  starts.
 - Nothing is undone in the database. Rolling forward later is step 4 again.
 
 ### Restore (destructive migrations, or rows the previous build cannot read)

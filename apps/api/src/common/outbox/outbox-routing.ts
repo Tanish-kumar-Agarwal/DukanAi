@@ -15,10 +15,26 @@ export const PURCHASE_RELAY_TYPE_PREFIXES: readonly string[] = Object.freeze([
   'Goods',
   'Inspection',
   'Outstanding',
+  // WorkflowCompleted (procurement approval workflows, `WorkflowRepository`):
+  // a procurement event whose listeners and webhooks the purchase relay
+  // serves; it used to reach the system-events worker as ignored-unknown (audit R14).
+  'Workflow',
 ]);
 
-/** OutboxEvent.type prefixes owned by the product-events relay (`OutboxProcessorWorker`). */
-export const PRODUCT_RELAY_TYPE_PREFIXES: readonly string[] = Object.freeze(['Product', 'Inventory', 'Category', 'Brand']);
+/**
+ * OutboxEvent.type prefixes owned by the product-events relay (`OutboxProcessorWorker`).
+ * `Barcode` (BarcodeChanged, `IdentityAuditService`) is catalogue identity: a
+ * webhook subscriber of the shop receives it with the product events (audit R14).
+ */
+export const PRODUCT_RELAY_TYPE_PREFIXES: readonly string[] = Object.freeze(['Product', 'Inventory', 'Category', 'Brand', 'Barcode']);
+
+/**
+ * Every OutboxEvent.type the code base stages, with the relay family that
+ * delivers it (`outbox-routing.spec.ts` scans the sources for `type:` /
+ * `eventType:` literals next to an outbox write and fails on one that is not
+ * listed, so a new event type cannot end up ignored-unknown unnoticed).
+ */
+export const SYSTEM_EVENT_TYPES: readonly string[] = Object.freeze(['INVOICE_CREATED', 'INVOICE_RETURNED', 'INVOICE_CANCELLED', 'CUSTOMER_PAYMENT_RECORDED', 'BILL_SCANNED']);
 
 /**
  * OutboxEvent.type prefixes owned by a domain relay:

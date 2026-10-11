@@ -7,9 +7,10 @@ complete) and `apps/web/.env.example`; the deployment runbook is
 `docs/DEPLOYMENT.md`.
 
 ## 1. Relational Database
-**Engine:** MySQL 8.0+ (production). Development and CI may run MariaDB 10.11,
-but the two differ (`AGENTS.md`, "Build and run sharp edges"): test raw SQL
-on MySQL 8.
+**Engine:** MySQL 8 (production; CI runs every suite on 8.0 and 8.4 LTS,
+8.0 being end of life since April 2026: `docs/DEPLOYMENT.md`, "MySQL
+versions"). Development may run MariaDB 10.11, but the two differ
+(`AGENTS.md`, "Build and run sharp edges"): test raw SQL on MySQL 8.
 - **Privileges:** the `DATABASE_URL` user needs `CREATE TRIGGER` / `DROP
   TRIGGER` (the ledger immutability triggers ship as migrations) and, for the
   migration replay test, `CREATE DATABASE` on the test server.
@@ -18,11 +19,15 @@ on MySQL 8.
 - **Isolation:** the API sets `READ COMMITTED` on its own transactions; the
   server default may stay `REPEATABLE READ`.
 - **Migrations:** `prisma migrate deploy` is the release step (compose
-  `migrate` service, or a Kubernetes Job) and runs before the new API starts.
-  Never `prisma db push`.
+  `migrate` service, or the `deploy/k8s/migrate` Job applied on its own) and
+  runs before the new API starts; the API refuses to boot while a migration
+  of its image is not applied. Never `prisma db push`.
 
 ## 2. Redis
-**Engine:** Redis 6.2+ (7 in the reference compose stack, AOF on).
+**Engine:** Redis 6.2+ (7 in the reference compose stack, AOF on) with
+`maxmemory-policy noeviction`: the queues and their locks, the cron locks,
+the throttler counters and the cache share one instance, and an evicted
+lock or job is lost work (`docs/DEPLOYMENT.md`, "Provider steps").
 - `REDIS_URL` is required in every environment (`redis://` or `rediss://`;
   the path is the database index). It carries BullMQ, the shared cache, the
   cron locks, the throttler counters and the advisory stock hints.
@@ -50,8 +55,12 @@ on MySQL 8.
 | `STORAGE_ROOT` | API | Absolute path on a persistent volume (billing evidence). |
 | `PORT` | API | Defaults to `3002`. |
 | `NEXTAUTH_SECRET`, `NEXTAUTH_URL` | web | 32+ character secret; the web's public origin. |
-| `NEXT_PUBLIC_API_URL` | web | The API as the browser reaches it; inlined at build time and read at runtime for the CSP. |
+| `API_PUBLIC_URL` | web | The API as the browser reaches it (`https://<API_HOST>/api`), read at run time (the page's `<meta>` and the CSP); required behind an edge. One web image serves every environment. |
+| `NEXT_PUBLIC_API_URL` | web (build only) | Inlined at build time; a run-time value changes nothing. Only the fallback of a container without `API_PUBLIC_URL` and the `next dev` default. |
+| `KEEP_ALIVE_TIMEOUT` | web | Recommended `65000` (the compose files and Kubernetes set it): above the edge's idle keep-alive. |
 | `SMTP_URL` | API | Required for invitations and password reset in production (503 otherwise). |
 
 Optional integrations (`GEMINI_API_KEY`, `S3_*`, Google OAuth, `SENTRY_DSN`,
-`METRICS_TOKEN`) are off until set; `.env.example` documents each.
+`METRICS_TOKEN`) are off until set; `.env.example` documents each. The
+deployment itself (compose files, monitoring, backups) reads the root
+`.env.example`; Docker Compose 2.24.4 or newer.

@@ -17,6 +17,7 @@ The sweep runs on `CRON_RETENTION_SWEEP` (default 03:30 every night).
 | Delivered outbox events | days after creation (failed rows stay until an operator retries them) | `RETENTION_OUTBOX_DONE_DAYS` | 14 |
 | Search history (what staff typed into search boxes) | days | `RETENTION_SEARCH_HISTORY_DAYS` | 90 |
 | Product event log | days | `RETENTION_PRODUCT_EVENT_LOG_DAYS` | 180 |
+| Webhook delivery attempts (each with the event payload sent) | days after the attempt | `RETENTION_WEBHOOK_DELIVERY_DAYS` | 30 |
 
 ## 2. Kept while the shop is a customer
 

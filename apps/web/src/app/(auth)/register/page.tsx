@@ -160,6 +160,7 @@ function RegisterForm() {
         {/* --- Error banner --- */}
         {error && (
           <motion.div
+            role="alert"
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             className="flex items-center gap-2.5 p-3 mb-6 bg-red-50 border border-red-200 rounded-xl text-sm font-medium text-red-700"
@@ -197,12 +198,13 @@ function RegisterForm() {
         {/* --- Registration form --- */}
         <form onSubmit={handleRegister} className="space-y-4">
           <div>
-            <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
+            <label htmlFor="register-invite" className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
               Invitation Code <span className="normal-case font-medium text-gray-400">(only if you were invited)</span>
             </label>
             <div className="relative">
               <KeyRound size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
+                id="register-invite"
                 type="text"
                 value={inviteToken}
                 onChange={(e) => setInviteToken(e.target.value.trim().toLowerCase())}
@@ -216,12 +218,13 @@ function RegisterForm() {
           </div>
 
           <div>
-            <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
+            <label htmlFor="register-name" className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
               Full Name
             </label>
             <div className="relative">
               <User size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
+                id="register-name"
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -235,12 +238,13 @@ function RegisterForm() {
 
           {!joining && (
             <div>
-              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
+              <label htmlFor="register-shop" className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
                 Shop Name
               </label>
               <div className="relative">
                 <Store size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input
+                  id="register-shop"
                   type="text"
                   value={shopName}
                   onChange={(e) => setShopName(e.target.value)}
@@ -255,12 +259,13 @@ function RegisterForm() {
 
           {!joining && (
             <div>
-              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
+              <label htmlFor="register-email" className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
                 Email Address
               </label>
               <div className="relative">
                 <Mail size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input
+                  id="register-email"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -274,12 +279,13 @@ function RegisterForm() {
           )}
 
           <div>
-            <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
+            <label htmlFor="register-password" className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
               Password
             </label>
             <div className="relative">
               <Lock size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
+                id="register-password"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}

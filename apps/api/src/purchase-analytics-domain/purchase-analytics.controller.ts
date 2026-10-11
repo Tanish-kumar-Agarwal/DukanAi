@@ -16,13 +16,12 @@ export class PurchaseAnalyticsController {
 
   @Get('dashboard')
   async getDashboard(@CurrentShop() shopId: string, @Query('date') date?: string) {
-    const targetDate = date ? new Date(date) : new Date();
-    return this.dashboardService.getDashboardSnapshot(shopId, targetDate);
+    return this.dashboardService.getDashboardSnapshot(shopId, typeof date === 'string' && date.length > 0 ? date : undefined);
   }
 
   @Get('kpis')
   async getKpis(@CurrentShop() shopId: string) {
-    return this.dashboardService.getDashboardSnapshot(shopId, new Date());
+    return this.dashboardService.getDashboardSnapshot(shopId);
   }
 
   @Get('vendors')

@@ -1,7 +1,10 @@
 # The API: one replica (the documents volume is ReadWriteOnce and the
 # backup sidecar reads it), Recreate so the old pod releases the volumes
 # before the new one claims them. Probes per docs/DEPLOYMENT.md; the grace
-# period exceeds SHUTDOWN_DRAIN_DELAY_MS + SHUTDOWN_TIMEOUT_MS.
+# period exceeds SHUTDOWN_DRAIN_DELAY_MS + SHUTDOWN_TIMEOUT_MS. Hardened
+# (audit 2026-10-11, R25): no service-account token, read-only root file
+# systems with an emptyDir /tmp each (the documents, uploads with their
+# multipart temp directory, and backups are the volumes below).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -23,6 +26,7 @@ spec:
         app.kubernetes.io/part-of: dukaanai
     spec:
       terminationGracePeriodSeconds: 45
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -109,6 +113,8 @@ spec:
             - name: db-ca
               mountPath: /etc/dukaanai
               readOnly: true
+            - name: tmp-api
+              mountPath: /tmp
           startupProbe:
             httpGet: { path: /api/health/live, port: http }
             periodSeconds: 5
@@ -122,6 +128,7 @@ spec:
             failureThreshold: 2
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
           resources:
@@ -131,13 +138,20 @@ spec:
         # 9.7): the daily dump of the managed database, the documents
         # archive and the encrypted off-site copy, each success stamped under
         # BACKUP_STATUS_DIR for backup_last_success_timestamp_seconds. It
-        # shares the pod so it reads the ReadWriteOnce volumes.
+        # shares the pod so it reads the ReadWriteOnce volumes. Over TLS like
+        # the API: DB_OPS_DATABASE_URL carries the same sslaccept / sslcert=
+        # options and the CA is mounted at /etc/dukaanai/db-ca.pem, where the
+        # MySQL clients of scripts/db verify the server (audit R9).
         - name: backup-agent
           image: dukaanai-db-ops
           args: ["backup-loop"]
           env:
             - name: DATABASE_URL
               valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: DB_OPS_DATABASE_URL } }
+            # Read-only root file system: the scripts' staging and rclone's
+            # files go to /tmp.
+            - name: HOME
+              value: /tmp
             - name: BACKUP_DIR
               value: /backups
             - name: STORAGE_ROOT
@@ -173,8 +187,14 @@ spec:
             - name: uploads
               mountPath: /data/uploads
               readOnly: true
+            - name: db-ca
+              mountPath: /etc/dukaanai
+              readOnly: true
+            - name: tmp-backup
+              mountPath: /tmp
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
           resources:
@@ -194,3 +214,9 @@ spec:
           secret:
             secretName: dukaanai-db-ca
             optional: true
+        - name: tmp-api
+          emptyDir: { sizeLimit: 1Gi }
+        # The scripts' staging directories (the documents archive is staged
+        # as symlinks; the archive itself is written to /backups).
+        - name: tmp-backup
+          emptyDir: { sizeLimit: 2Gi }

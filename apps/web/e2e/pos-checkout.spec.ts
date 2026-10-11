@@ -62,7 +62,7 @@ async function createServiceProduct(request: APIRequestContext, overrides: Recor
       gstRate: 'EIGHTEEN',
       costPrice: 100,
       sellingPrice: 199.5,
-      mrp: 199.5,
+      // No MRP: the API stores the selling price plus GST (audit P1-2).
       wholesalePrice: 150,
       ...overrides,
     },
@@ -212,7 +212,8 @@ test.describe('POS checkout', () => {
   });
 
   test('cess parity: a product with cess previews and settles at the API total', async ({ page, request }) => {
-    const product = await createServiceProduct(request, { sellingPrice: 120, mrp: 120 });
+    // The cess is set in the database below, past the products API: the MRP must cover it (120 + 18% + 12.5% = 156.60).
+    const product = await createServiceProduct(request, { sellingPrice: 120, mrp: 160 });
     await setProductCess(product.id, 12.5);
 
     await openPos(page);
@@ -270,6 +271,105 @@ test.describe('POS checkout', () => {
     // Exactly one bill exists for the key: the receipt's invoice, holding this product.
     const invoice = await fetchInvoice(request, (await receipt.getAttribute('data-invoice-id')) as string);
     expect(invoice.items.map((i) => i.productId)).toEqual([product.id]);
+  });
+
+  test('a lost answer never bills twice: the retry with other cash replays, a changed cart is shown the saved bill (audit P1-4)', async ({ page, request }) => {
+    const product = await createServiceProduct(request);
+    const other = await createServiceProduct(request);
+    await openPos(page);
+    await addProductViaSearch(page, product);
+
+    // The first checkout reaches the API and is saved; its answer never comes back.
+    const keys: string[] = [];
+    const statuses: number[] = [];
+    let loseNext = true;
+    await page.route(/\/api\/billing\/invoice$/, async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      keys.push((route.request().postDataJSON() as { idempotencyKey: string }).idempotencyKey);
+      const response = await route.fetch();
+      statuses.push(response.status());
+      if (loseNext) {
+        loseNext = false;
+        return route.abort('connectionreset');
+      }
+      return route.fulfill({ response });
+    });
+
+    await page.getByTestId('pos-charge').click();
+    const due = parseMoney(await page.getByTestId('payment-amount-due').innerText());
+    await page.getByTestId('cash-tendered').fill(String(Math.ceil(due) + 100));
+    await page.getByTestId('payment-confirm').click();
+    await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();
+
+    // The cashier goes back, adds an item and charges again: the key already
+    // saved a different bill, so the POS shows that bill instead of a second one.
+    await page.getByRole('button', { name: 'Back' }).click();
+    await addProductViaSearch(page, other);
+    await page.getByTestId('pos-charge').click();
+    await page.getByTestId('payment-confirm').click();
+
+    const receipt = page.getByTestId('receipt-modal');
+    await expect(receipt).toBeVisible();
+    await expect(page.getByText('was already saved as', { exact: false })).toBeVisible();
+    expect(statuses).toEqual([201, 422]);
+    expect(new Set(keys).size).toBe(1);
+    const invoice = await fetchInvoice(request, (await receipt.getAttribute('data-invoice-id')) as string);
+    expect(invoice.items.map((i) => i.productId)).toEqual([product.id]);
+    // The cart was the saved bill's: it is cleared, and the next sale gets a new key.
+    await page.getByRole('button', { name: /new sale/i }).click();
+    await expect(page.locator('[data-testid="cart-line"]')).toHaveCount(0);
+  });
+
+  test('a held cart keeps the key of its unanswered checkout: resumed, it replays the saved bill (audit P1-4)', async ({ page, request }) => {
+    const product = await createServiceProduct(request);
+    const next = await createServiceProduct(request);
+    await openPos(page);
+    await addProductViaSearch(page, product);
+
+    const sent: Array<{ key: string; status: number; productIds: string[] }> = [];
+    let loseNext = true;
+    await page.route(/\/api\/billing\/invoice$/, async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      const body = route.request().postDataJSON() as { idempotencyKey: string; items: Array<{ productId?: string }> };
+      const response = await route.fetch();
+      sent.push({ key: body.idempotencyKey, status: response.status(), productIds: body.items.map((i) => i.productId ?? '') });
+      if (loseNext) {
+        loseNext = false;
+        return route.abort('connectionreset');
+      }
+      return route.fulfill({ response });
+    });
+
+    await page.getByTestId('pos-charge').click();
+    const due = parseMoney(await page.getByTestId('payment-amount-due').innerText());
+    await page.getByTestId('cash-tendered').fill(String(Math.ceil(due)));
+    await page.getByTestId('payment-confirm').click();
+    await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();
+    await page.getByRole('button', { name: 'Back' }).click();
+
+    // Hold it and serve the next customer: that sale is billed under a key of its own.
+    await page.getByRole('button', { name: /Hold cart/ }).click();
+    await page.getByRole('button', { name: 'Hold', exact: true }).click();
+    await addProductViaSearch(page, next);
+    const nextSale = await checkoutWithCash(page, 0);
+    await page.getByRole('button', { name: /new sale/i }).click();
+
+    // Resumed with other cash in hand: the same bill under its own key replays (200), never a second invoice.
+    await page.getByRole('button', { name: /^Held/ }).click();
+    await page.getByRole('button', { name: /^Resume / }).first().click();
+    await page.getByTestId('pos-charge').click();
+    await page.getByTestId('cash-tendered').fill(String(Math.ceil(due) + 500));
+    await page.getByTestId('payment-confirm').click();
+    const receipt = page.getByTestId('receipt-modal');
+    await expect(receipt).toBeVisible();
+
+    expect(sent.map((s) => s.status)).toEqual([201, 201, 200]);
+    expect(sent[2].key).toBe(sent[0].key);
+    expect(sent[1].key).not.toBe(sent[0].key);
+    expect(sent[1].productIds).toEqual([next.id]);
+    const replayed = await fetchInvoice(request, (await receipt.getAttribute('data-invoice-id')) as string);
+    expect(replayed.items.map((i) => i.productId)).toEqual([product.id]);
+    expect(replayed.id).not.toBe(nextSale.invoiceId);
   });
 
   test('a POS opened while the API restarts loads its shop, shift and products on its own (roadmap 9.18)', async ({ page, request }) => {

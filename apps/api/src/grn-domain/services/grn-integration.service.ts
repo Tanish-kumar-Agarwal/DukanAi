@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { LedgerAccount, LedgerEntryType, Prisma } from '@prisma/client';
 import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 import { InventoryLocationService } from '../../inventory-domain/services/inventory-location.service';
-import { LedgerPostingService } from '../../ledger/ledger-posting.service';
 import { SupplierPayablesService } from '../../ledger/supplier-payables.service';
 
 export interface GrnIntegrationLine {
@@ -11,6 +10,7 @@ export interface GrnIntegrationLine {
   productId: string;
   variantId?: string | null;
   acceptedQuantity: Prisma.Decimal | number | string;
+  /** Net unit cost: the order line's price after its discount, before GST. */
   unitPrice: Prisma.Decimal | number | string;
   batchId?: string | null;
 }
@@ -24,6 +24,15 @@ export interface GrnIntegrationInput {
   lines: GrnIntegrationLine[];
 }
 
+/** Moving-average cost after receiving `accepted` units at `unitCost` onto `onHand` units costing `costPrice` each. */
+export function movingAverageCost(onHand: Prisma.Decimal, costPrice: Prisma.Decimal, accepted: Prisma.Decimal, unitCost: Prisma.Decimal): Prisma.Decimal {
+  // Stock below zero (sold ahead of the receipt) carries no value to average with.
+  const held = Prisma.Decimal.max(onHand, 0);
+  const total = held.plus(accepted);
+  if (total.lessThanOrEqualTo(0)) return unitCost.toDecimalPlaces(2);
+  return held.times(costPrice).plus(accepted.times(unitCost)).dividedBy(total).toDecimalPlaces(2);
+}
+
 @Injectable()
 export class GrnIntegrationService {
   private readonly logger = new Logger(GrnIntegrationService.name);
@@ -31,31 +40,40 @@ export class GrnIntegrationService {
   constructor(
     private readonly inventoryMutationEngine: InventoryMutationEngine,
     private readonly locationService: InventoryLocationService,
-    private readonly ledger: LedgerPostingService,
     private readonly payables: SupplierPayablesService,
   ) {}
 
   /**
    * Translates GRN acceptance into inventory mutations through the single
    * mutation authority. Goods are received into the default bin of the GRN's
-   * warehouse (or the shop's sale location when the GRN has no warehouse), so
-   * received stock is exactly what the POS sells from.
+   * warehouse (or the shop's sale location when the GRN has no warehouse).
    *
-   * The stock value received (Σ unitPrice × acceptedQuantity over stocked
-   * lines) is then posted once per GRN through `LedgerPostingService`:
-   * DEBIT INVENTORY / CREDIT ACCOUNTS_PAYABLE. Lines the engine bypasses
+   * Each stocked line also moves `Product.costPrice` to the moving average
+   * of what was on hand and what arrived (release audit S12): sales post
+   * cost of goods at `costPrice`, so the INVENTORY the receipts put in at
+   * their net cost is what the sales take out again.
+   *
+   * The stock value received (Σ net unitPrice × acceptedQuantity over stocked
+   * lines, GST excluded: the input tax is the vendor bill's) is then posted
+   * once per GRN: DEBIT INVENTORY / CREDIT ACCOUNTS_PAYABLE, with the
+   * supplier row locked before the ledger (lock order: Supplier, then the
+   * account balances; release audit S15). Lines the engine bypasses
    * (SERVICE / DIGITAL products) carry no stock value. The posting is
    * idempotent on `GRN <id>` so a retried acceptance never double-books.
    */
   async updateInventoryFromGrn(tx: Prisma.TransactionClient, shopId: string, grn: GrnIntegrationInput) {
     this.logger.debug(`Integrating GRN ${grn.id} with Inventory & Stock Ledger`);
     const locationId = await this.locationService.resolveWarehouseBin(tx, shopId, grn.warehouseId ?? null);
+    // Locks every product of the receipt in ascending id before the first stock move.
+    await this.inventoryMutationEngine.lockProducts(tx, shopId, grn.lines.map((l) => l.productId));
 
     let inventoryValue = new Prisma.Decimal(0);
 
     for (const line of grn.lines) {
       const accepted = new Prisma.Decimal(line.acceptedQuantity.toString());
       if (accepted.lessThanOrEqualTo(0)) continue;
+      const unitCost = new Prisma.Decimal(line.unitPrice.toString());
+      const before = await tx.product.findFirst({ where: { id: line.productId, shopId }, select: { currentStock: true, costPrice: true } });
 
       const result = await this.inventoryMutationEngine.mutateStock(tx, {
         shopId,
@@ -79,7 +97,11 @@ export class GrnIntegrationService {
       }
 
       if (result.bypassed || result.idempotent) continue;
-      inventoryValue = inventoryValue.plus(new Prisma.Decimal(line.unitPrice.toString()).times(accepted));
+      if (before) {
+        const costPrice = movingAverageCost(before.currentStock, before.costPrice, accepted, unitCost);
+        if (!costPrice.equals(before.costPrice)) await tx.product.update({ where: { id: line.productId }, data: { costPrice } });
+      }
+      inventoryValue = inventoryValue.plus(unitCost.times(accepted));
     }
 
     await this.postInventoryReceipt(tx, shopId, grn.id, inventoryValue.toDecimalPlaces(2), grn.supplierId);
@@ -91,20 +113,21 @@ export class GrnIntegrationService {
     const description = `GRN ${grnId}`;
 
     // Idempotent at the database level: LedgerPosting (shopId, sourceType, sourceId) is unique.
-    const result = await this.ledger.post(tx, {
-      shopId,
-      source: { type: 'GRN', id: grnId },
-      invoiceId: null,
-      description,
-      entries: [
-        { account: LedgerAccount.INVENTORY, type: LedgerEntryType.DEBIT, amount: value },
-        { account: LedgerAccount.ACCOUNTS_PAYABLE, type: LedgerEntryType.CREDIT, amount: value },
-      ],
-    });
-    if (!result.posted) {
-      this.logger.log(`Ledger posting for ${description} already exists. Skipped.`);
-      return;
-    }
-    await this.payables.addPayable(tx, shopId, supplierId, value);
+    const result = await this.payables.postWithPayable(
+      tx,
+      supplierId,
+      {
+        shopId,
+        source: { type: 'GRN', id: grnId },
+        invoiceId: null,
+        description,
+        entries: [
+          { account: LedgerAccount.INVENTORY, type: LedgerEntryType.DEBIT, amount: value },
+          { account: LedgerAccount.ACCOUNTS_PAYABLE, type: LedgerEntryType.CREDIT, amount: value },
+        ],
+      },
+      value,
+    );
+    if (!result.posted) this.logger.log(`Ledger posting for ${description} already exists. Skipped.`);
   }
 }

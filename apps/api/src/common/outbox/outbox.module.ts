@@ -7,6 +7,7 @@ import { InventoryModule } from '../../inventory/inventory.module';
 import { OutboxClaimService } from './outbox-claim.service';
 import { OutboxReaperService } from './outbox-reaper.service';
 import { CronLockModule } from '../cron-lock/cron-lock.module';
+import { bullDefaultJobOptions } from '../queues/job-options';
 
 /**
  * The outbox core (roadmap 4.7): the claim semantic every relay shares
@@ -17,18 +18,13 @@ import { CronLockModule } from '../cron-lock/cron-lock.module';
   imports: [
     // Retry policy is declared here rather than inherited, so the processor's
     // final-attempt check has a reliable `job.opts.attempts` to compare against.
+    // The whole set comes from bullDefaultJobOptions: a queue-level
+    // defaultJobOptions replaces the root one (shallow merge), and the hand-
+    // written object here once dropped removeOnComplete (audit R1).
     BullModule.registerQueueAsync({
       name: 'system-events',
       inject: [BullConfig],
-      useFactory: (bullConfig: BullConfig) => ({
-        defaultJobOptions: {
-          attempts: bullConfig.defaultAttempts,
-          backoff: {
-            type: bullConfig.backoffType as 'exponential' | 'fixed',
-            delay: bullConfig.backoffDelay,
-          },
-        },
-      }),
+      useFactory: (bullConfig: BullConfig) => ({ defaultJobOptions: bullDefaultJobOptions(bullConfig) }),
     }),
     // InventoryGateway is used by the processor to broadcast low-stock alerts.
     InventoryModule,

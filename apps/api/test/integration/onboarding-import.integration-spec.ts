@@ -65,12 +65,12 @@ describe('Onboarding imports (roadmap 9.20)', () => {
     [
       'Item Code,Product Name,Category,Barcode,HSN,Unit,GST %,Cost Price,Selling Price,MRP,Reorder Level,Colour',
       `P1-${A.suffix},Basmati Rice 5 kg,Rice & Grains,8901234567890,10063020,PCS,5,560,599,650,5,white`,
-      `P2-${A.suffix},Toor Dal loose,Pulses,,0713,kg,5%,120.50,135,140,,`,
-      `P3-${A.suffix},Lux Soap 100 g,Personal Care,8901030712345,34011110,Nos,18,28.50,32,35,24,`,
+      `P2-${A.suffix},Toor Dal loose,Pulses,,0713,kg,5%,120.50,135,142,,`,
+      `P3-${A.suffix},Lux Soap 100 g,Personal Care,8901030712345,34011110,Nos,18,28.50,32,38,24,`,
       `P4-${A.suffix},Above its MRP,,,,,18,10,20,15,,`,
-      `,No SKU,,,,,5,1,2,2,,`,
-      `P1-${A.suffix},Same SKU again,,,,,5,1,2,2,,`,
-      `P6-${A.suffix},Nothing on the shelf,Personal Care,,,PCS,12,10,12,12,,`,
+      `,No SKU,,,,,5,1,2,3,,`,
+      `P1-${A.suffix},Same SKU again,,,,,5,1,2,3,,`,
+      `P6-${A.suffix},Nothing on the shelf,Personal Care,,,PCS,12,10,12,14,,`,
     ].join('\n');
 
   const upload = (kind: Kind, csv: string, fields: Record<string, string> = {}, token = ownerToken) => {
@@ -163,7 +163,7 @@ describe('Onboarding imports (roadmap 9.20)', () => {
     expect(rice).toEqual(expect.objectContaining({ name: 'Basmati Rice 5 kg', barcode: '8901234567890', hsnCode: '10063020', unit: 'PCS', gstRate: 'FIVE', createdBy: A.ownerId }));
     expect([num(rice.costPrice), num(rice.sellingPrice), num(rice.mrp), num(rice.wholesalePrice), num(rice.reorderPoint), rice.category?.name]).toEqual([560, 599, 650, 599, 5, 'Rice & Grains']);
     const dal = await productBySku(`P2-${A.suffix}`);
-    expect([dal.unit, num(dal.costPrice), num(dal.mrp), num(dal.reorderPoint), dal.category?.name]).toEqual(['KG', 120.5, 140, 10, 'Pulses']);
+    expect([dal.unit, num(dal.costPrice), num(dal.mrp), num(dal.reorderPoint), dal.category?.name]).toEqual(['KG', 120.5, 142, 10, 'Pulses']);
     // The two Personal Care rows share one category, created once; no phantom variant per product.
     expect(await run.system(() => prisma.category.count({ where: { shopId: A.shopId } }))).toBe(3);
     expect(await run.system(() => prisma.productVariant.count({ where: { shopId: A.shopId } }))).toBe(0);
@@ -173,14 +173,15 @@ describe('Onboarding imports (roadmap 9.20)', () => {
   });
 
   it('products: an update changes only what the file gives, never sells above the stored MRP, and audits the price change', async () => {
-    const csv = ['sku,sellingPrice,costPrice,name', `p1-${A.suffix},620,560,Basmati Rice 5 kg`, `P2-${A.suffix},150,120.50,Toor Dal loose`].join('\n');
+    const csv = ['sku,sellingPrice,costPrice,name', `p1-${A.suffix},615,560,Basmati Rice 5 kg`, `P2-${A.suffix},150,120.50,Toor Dal loose`].join('\n');
     const job = await runImport('products', csv);
     expect(counts(job)).toEqual({ total: 2, valid: 1, errors: 1, created: 0, updated: 1, unchanged: 0, skipped: 0 });
     const report = await reportOf(job.id);
-    expect(report[0].changes).toEqual(['sellingPrice 599.00 → 620.00']);
-    expect(report[1].errors).toEqual([expect.objectContaining({ field: 'mrp', message: "The selling price 150.00 is above the product's MRP 140.00; give the MRP in the file." })]);
+    expect(report[0].changes).toEqual(['sellingPrice 599.00 → 615.00']);
+    // MRP includes GST (audit P1-2): 150 + 5% is 157.50, above the stored 142.
+    expect(report[1].errors).toEqual([expect.objectContaining({ field: 'mrp', message: "The selling price 150.00 plus GST is 157.50, above the product's MRP 142.00; give the MRP in the file." })]);
     const rice = await productBySku(`P1-${A.suffix}`);
-    expect([num(rice.sellingPrice), num(rice.mrp), rice.barcode, rice.category?.name]).toEqual([620, 650, '8901234567890', 'Rice & Grains']);
+    expect([num(rice.sellingPrice), num(rice.mrp), rice.barcode, rice.category?.name]).toEqual([615, 650, '8901234567890', 'Rice & Grains']);
     const audit = await run.system(() => prisma.auditLog.findFirst({ where: { shopId: A.shopId, action: 'PRODUCT_PRICE_CHANGED', entityId: rice.id } }));
     expect(audit?.userId).toBe(A.ownerId);
   });

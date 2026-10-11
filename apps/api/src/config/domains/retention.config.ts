@@ -17,6 +17,9 @@ import { IntegerFromEnv } from '../hydrate-from-env';
  *   FAILED rows stay for an operator to retry (`POST /sales/events/retry`).
  * - SearchHistory feeds the seven-day popular-searches card, ProductEventLog
  *   the event replay, which then covers only what is retained.
+ * - WebhookDelivery rows (one per delivery attempt, with the event payload)
+ *   go `RETENTION_WEBHOOK_DELIVERY_DAYS` after they were written: the
+ *   endpoint's recent deliveries are what a shop looks at (audit R7).
  * - A run deletes `RETENTION_BATCH_SIZE` rows per statement and at most
  *   `RETENTION_MAX_BATCHES_PER_RUN` batches per table, so a backlog drains
  *   over several nights instead of one long statement holding locks.
@@ -52,6 +55,13 @@ export class RetentionConfig {
   @IntegerFromEnv()
   @EnvVariable('RETENTION_PRODUCT_EVENT_LOG_DAYS')
   productEventLogDays: number = 180;
+
+  @IsInt()
+  @Min(1)
+  @Max(3650)
+  @IntegerFromEnv()
+  @EnvVariable('RETENTION_WEBHOOK_DELIVERY_DAYS')
+  webhookDeliveryDays: number = 30;
 
   @IsInt()
   @Min(100)

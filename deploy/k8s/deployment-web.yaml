@@ -1,6 +1,8 @@
 # The web (Next.js standalone). Stateless: scale it freely. It reaches the
 # API inside the cluster through API_INTERNAL_URL and forwards the client
-# address it received from the Ingress on sign-in (one proxy hop).
+# address it received from the Ingress on sign-in (one proxy hop). Hardened
+# like the API (audit 2026-10-11, R25): no service-account token, read-only
+# root file system with emptyDir /tmp and Next's cache directory.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,6 +22,7 @@ spec:
         app.kubernetes.io/part-of: dukaanai
     spec:
       terminationGracePeriodSeconds: 30
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -53,6 +56,16 @@ spec:
               valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: GOOGLE_CLIENT_ID } }
             - name: GOOGLE_CLIENT_SECRET
               valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: GOOGLE_CLIENT_SECRET } }
+            # Idle connections outlive ingress-nginx's upstream keep-alive
+            # (60 s by default); Node's own 5 s made the controller reuse
+            # connections the server had just closed: 502s (audit R21).
+            - name: KEEP_ALIVE_TIMEOUT
+              value: "65000"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: next-cache
+              mountPath: /app/apps/web/.next/cache
           startupProbe:
             httpGet: { path: /api/health, port: http }
             periodSeconds: 5
@@ -65,8 +78,14 @@ spec:
             periodSeconds: 5
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
           resources:
             requests: { cpu: 250m, memory: 256Mi }
             limits: { memory: 512Mi }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }
+        - name: next-cache
+          emptyDir: { sizeLimit: 512Mi }

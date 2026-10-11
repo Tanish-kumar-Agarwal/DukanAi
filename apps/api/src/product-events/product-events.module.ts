@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { PrismaModule } from '../prisma/prisma.module';
-import { BullModule } from '@nestjs/bullmq';
 import { ProductEventPublisher } from './services/product-event-publisher.service';
 import { EventRouterService } from './services/event-router.service';
 import { ProductWebhookDispatcherService } from './services/webhook-dispatcher.service';
@@ -12,13 +11,14 @@ import { WebhookController } from './controllers/webhook/webhook.controller';
 import { OutboxModule } from '../common/outbox/outbox.module';
 import { defaultOutboundResolver, OUTBOUND_RESOLVER, OutboundUrlGuard } from '../common/net/outbound-url-guard';
 import { WebhookHttpClient } from './services/webhook-http-client';
+import { webhookDeliveryQueue } from './webhook-delivery.queue';
 
 @Module({
   imports: [
     PrismaModule,
     OutboxModule,
     // `internal-events` had no consumer (roadmap 4.6): its jobs only piled up in Redis.
-    BullModule.registerQueue({ name: 'webhook-delivery' })
+    webhookDeliveryQueue(),
   ],
   controllers: [ProductEventsController, WebhookController],
   providers: [

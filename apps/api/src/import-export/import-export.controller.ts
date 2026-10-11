@@ -66,24 +66,34 @@ export class ImportExportController {
     return this.imports.list(shopId, query);
   }
 
+  /** A job's status and counters; the server path of the stored file is never part of the answer. */
   @Get('jobs/:id')
   async getJobStatus(@Param('id') id: string, @CurrentShop() shopId: string) {
-    return this.imports.get(shopId, id);
+    return this.imports.status(shopId, id);
   }
 
-  /** The per-row report: action, what changes, errors and warnings (`?status=ERROR|SUCCESS|SKIPPED`). */
+  /**
+   * The per-row report: action, what changes, errors and warnings
+   * (`?status=ERROR|SUCCESS|SKIPPED`). Each row carries the cells of the
+   * imported file (customers' names, phones, opening balances), so the
+   * report, like the upload, is for management only (audit: every role
+   * could read it).
+   */
+  @Roles(...MANAGEMENT_ROLES)
   @Get('jobs/:id/rows')
   @PagedList()
   async getJobRows(@Param('id') id: string, @Query() query: ImportRowsQueryDto, @CurrentShop() shopId: string) {
     return this.imports.rows(shopId, id, query);
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Get('jobs/:id/errors')
   async getJobErrors(@Param('id') id: string, @CurrentShop() shopId: string) {
     return this.imports.errors(shopId, id, this.importExportFeatureConfig.exportListLimit);
   }
 
-  /** The whole report as a CSV download. */
+  /** The whole report as a CSV download (management only, as the rows). */
+  @Roles(...MANAGEMENT_ROLES)
   @Get('jobs/:id/report')
   @Header('Content-Type', 'text/csv; charset=utf-8')
   async getJobReport(@Param('id') id: string, @CurrentShop() shopId: string, @Res({ passthrough: true }) res: Response): Promise<string> {

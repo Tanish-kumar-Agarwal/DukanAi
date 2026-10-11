@@ -13,8 +13,53 @@ release notes of the tag.
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- Take a backup, then `migrate deploy`: `20261012090000_audit_fixes` (ledger accounts INPUT_GST and EXPENSES, the
+  drawer columns `Expense.shiftId`, `SupplierPayment.shiftId`, `Shift.cashPayouts`, `StockCountItem.countedAt`, indexes)
+  and `20261012090100_webhook_delivery_retention_index`. The API now refuses to start against a database that lacks a
+  migration of its build. The new enum values mean this release cannot be rolled back by image once a row uses them
+  (`prisma/MIGRATIONS.md`).
+- Production requires `METRICS_TOKEN` and `GRAFANA_ADMIN_PASSWORD` (`docker-compose.prod.yml` refuses to start without
+  them); monitoring ports listen on 127.0.0.1 only (reach Grafana through an SSH tunnel). Kubernetes: the Secret file
+  moves to `deploy/k8s/common/dukaanai-secrets.env`, and a release applies `deploy/k8s/migrate`, waits for the Job, then
+  applies `deploy/k8s`. Docker Compose 2.24.4 or newer.
+- Products whose MRP is below the selling price plus GST can no longer be billed (409 `PRICE_ABOVE_MRP`) until the
+  price or the MRP is corrected in Products (the POS names the product; an import reports each one as a warning,
+  `docs/ONBOARDING.md`). A blank MRP is set to the price with GST.
+- API clients: `POST /suppliers/:id/payments` and vendor-bill payments require an `idempotencyKey`; `PATCH
+  /users/:id/suspend` requires `{ "isActive": boolean }`; counter sales are CGST + SGST unless the request names a
+  `placeOfSupply`.
+- New settings (defaults are the production values): `CRON_TIMEZONE`, `BILLING_CASHIER_MAX_CUSTOM_TOTAL_AMOUNT`,
+  `BILLING_CASHIER_MAX_REFUND_AMOUNT`, `BILLING_CASHIER_RETURN_WINDOW_DAYS`, `INVENTORY_MANAGER_MAX_ADJUST_VALUE`,
+  `PURCHASE_BILL_PRICE_TOLERANCE_PERCENT`, `BULL_KEEP_JOBS_AGE_SECONDS`, `BULL_KEEP_JOBS_COUNT`,
+  `BULL_ENQUEUE_TIMEOUT_MS`, `EVENTS_WEBHOOK_DELIVERY_ATTEMPTS`, `EVENTS_WEBHOOK_RETRY_BACKOFF_MS`,
+  `EVENTS_WEBHOOK_MAX_ENDPOINTS_PER_SHOP`, `RETENTION_WEBHOOK_DELIVERY_DAYS`, `SMTP_TIMEOUT_MS`, `STORAGE_BACKUP_KEEP`,
+  `REDIS_COMMAND_TIMEOUT_MS`.
+
+### Security
+
+- A password-reset link could be sent to an attacker's mailbox: the database collation treats an accented lookalike
+  domain (`tést.local`) as the account's own (`test.local`). Addresses are now canonicalised (NFC, lower case, punycode
+  domain), every lookup is re-checked byte for byte and mail goes only to the stored address. Login no longer answers
+  faster for unknown accounts.
+- Cross-shop and authority gaps closed: product links to another shop's category, supplier or brand; socket sessions
+  of another shop or of a signed-out session; invitations of a suspended or removed user; account discovery through
+  invitations; cashiers clearing every notification; product revisions approved by their author or found under another
+  product; webhook SSRF through IPv6 forms; case-variant paths reaching `/API/metrics`.
+- The secret scanner now scans test files and committed templates (a global path allowlist had hidden them), with a
+  CI control that plants five secrets; environment files are kept out of the images.
+
 ### Added
 
+- Expenses reach the books and the drawer: a paid expense posts to the ledger, a cash one leaves the recorder's open
+  shift, and edits post the difference; reconciliation gains receivables and payables checks and runs in one consistent
+  snapshot.
+- Purchasing: vendor bills post input GST and the price difference, credit notes post when issued, a supplier's opening
+  balance is in the ledger, GRN acceptance updates the moving-average cost, stock transfers between locations, reject and
+  cancel for every procurement document, `GET /suppliers/summary`.
+- `GET /api/media/assets/:id/file` serves uploaded media to the shop that owns it.
+- `GET /notifications/unread-count`: the navbar badge counts every unread notification, not only the newest page.
 - Support and training (9.23): a cashier guide, an owner guide and an FAQ (`docs/guides/`), the support channel with
   response targets (`docs/SUPPORT.md`), and feature pause switches: `FEATURE_<NAME>_ENABLED=false` plus an API restart
   pauses one feature (credit sales, returns, cancellations, OCR, imports, documents, media, procurement, dashboard
@@ -26,6 +71,25 @@ release notes of the tag.
 
 ### Changed
 
+- Web: every page shows only the actions the signed-in role can perform (POS, customer writes, returns, exports,
+  OCR, employees, expenses, supplier payments, mark-all-read, quick actions); lists that were cut at 100 rows page through
+  every row; the invoices filter and report exports use the shop's business date, not the browser's; exports wait up to
+  two minutes and show the API's error; Smart Capture finds any customer by search; a cashier can edit a customer (the
+  credit limit is read-only); a shift cannot be closed with the counted cash left blank; the shop profile saves with a
+  blank email; labelled sign-in forms and announced errors; the inventory wastage tile says "Not tracked" instead of
+  an invented ₹0.
+- Billing rules: MRP is the tax-inclusive ceiling of a sale; a counter sale is an intra-state supply; cashiers have
+  refund, return-window and custom-line limits; damaged and expired returns are not restocked; returns after the GST
+  credit-note deadline are refused; a retried sale whose answer was lost shows the saved bill.
+- Every schedule runs in `CRON_TIMEZONE` (Asia/Kolkata) instead of the container's UTC: the nightly reconciliation,
+  analytics and retention no longer run during shop hours.
+- Supplier balances may go negative (an advance); a supplier with a balance cannot be deleted; a stock adjustment above
+  the manager's value limit needs approval; supplier payments need an idempotency key and cash ones leave the drawer.
+- Tooling: turbo 2, jest 30 everywhere, `@types/node` 22 (the runtime), fs-extra 11; the redlock beta is replaced by a
+  small Redis lock; the critical handlebars advisory in the test toolchain is fixed.
+- Deployment: the Kubernetes migration Job is its own kustomization applied before the app; the release workflow runs
+  only after CI passes and a tag pushes only its version tag; Prometheus is configured at start from the environment;
+  every container's logs rotate; the backup containers run as an unprivileged user; CI tests MySQL 8.0 and 8.4.
 - POS document numbers are GST serial numbers of at most 16 characters (CGST Rule 46(b)): `INV-2627-000001` and
   `RET-2627-000001` instead of `INV-2026-27-000001` (18). Numbers already issued keep their series; new documents start
   the compact one.
@@ -35,6 +99,21 @@ release notes of the tag.
 
 ### Fixed
 
+- Money and stock: a sale reused under its idempotency key after a lost answer could be billed twice; cashiers could
+  exceed their discount authority through rounding; one-paisa row differences on returns; a zero-value line blocked
+  completing an invoice; COGS drifted by paise over piecewise returns; stock counts ignored sales made while counting;
+  concurrent bill payments, credit-note allocations and GRN acceptances could apply twice; reservations used floating
+  point; the SKU sequence stopped at a number an explicit SKU held.
+- Books and reports: outstanding udhar netted customer advances; exports left out cess and cancelled documents; dates
+  such as 30 February were accepted; dashboard COGS disagreed with the ledger.
+- Operations: queues kept completed jobs forever; a Redis outage hung requests that enqueue or invalidate the cache;
+  outbox workers could settle a newer claim; cron locks expired under long runs; aborted requests went unlogged;
+  imports read whole files into memory; media moves failed across volumes; same-day backups overwrote each other;
+  storage indexes could be lost to concurrent writes; shop export and erasure missed child tables.
+- Backups: TLS to a managed database is verified, point-in-time restore refuses a target past the archive, binlog
+  pruning never removes a log a kept dump needs, files are created private.
+- Deployment: two draft releases on a tag, migration edits slipping past the gate on a push, Kubernetes releases
+  starting before the migration, monitoring published on every interface, an unauthenticated Prometheus scrape.
 - The release Trivy gate (9.14) failed on the first images built from main: every image now takes Debian's security
   updates at build time (`apt-get upgrade`; db-ops keeps its MySQL packages at the base release), the API and web
   runtime images no longer carry the npm / npx / corepack bundled with the Node image, and db-ops drops the unused

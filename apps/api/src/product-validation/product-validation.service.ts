@@ -7,6 +7,8 @@ import { DuplicateDetectionEngine } from './duplicate-detection.engine';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { MAX_LIST_TAKE } from '../common/pagination';
+import { enqueueWithin } from '../common/queues/enqueue';
+import { BullConfig } from '../config/domains/bull.config';
 
 @Injectable()
 export class ProductValidationService {
@@ -18,13 +20,17 @@ export class ProductValidationService {
     private readonly qualityEngine: QualityScoreEngine,
     private readonly duplicateEngine: DuplicateDetectionEngine,
     @InjectQueue('product-validation') private readonly validationQueue: Queue,
+    private readonly bullConfig: BullConfig,
   ) {}
 
   /**
    * Dispatches validation job to background (used heavily in imports/syncs).
+   * Bounded (audit R5): 503 QUEUE_UNAVAILABLE when Redis does not take it in
+   * time. A late add is harmless: validating a product again rewrites the same
+   * score and issues.
    */
   async queueValidation(shopId: string, productId: string) {
-    await this.validationQueue.add('validate-product', { shopId, productId });
+    await enqueueWithin(this.validationQueue, 'validate-product', { shopId, productId }, undefined, this.bullConfig.enqueueTimeoutMs);
   }
 
   /** Queues the shop's own products only; ids of other shops (or deleted products) are refused with 404. */

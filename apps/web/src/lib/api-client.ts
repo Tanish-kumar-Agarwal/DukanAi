@@ -117,10 +117,16 @@ export interface ProductInput {
   sku?: string;
   barcode?: string | null;
   description?: string;
+  /** Before GST: the POS adds GST and cess on top. */
   sellingPrice: number;
   costPrice: number;
-  /** Defaults to the selling price when omitted on create. */
-  mrp?: number;
+  /**
+   * Tax-inclusive MRP, at least the selling price plus GST (audit P1-2).
+   * Omitted on create (or `null` on update) the API stores the selling price
+   * plus GST.
+   */
+  mrp?: number | null;
+  /** Sent only when the form holds one: an edit never overwrites it with the selling price (audit W13). */
   wholesalePrice?: number;
   gstRate: GstRate;
   unit: ProductUnit;
@@ -139,8 +145,8 @@ function productPayload(data: Partial<ProductInput>): Record<string, unknown> {
   set('description', data.description?.trim());
   set('sellingPrice', data.sellingPrice);
   set('costPrice', data.costPrice);
-  set('mrp', data.mrp ?? (data.sellingPrice !== undefined ? data.sellingPrice : undefined));
-  set('wholesalePrice', data.wholesalePrice ?? (data.sellingPrice !== undefined ? data.sellingPrice : undefined));
+  set('mrp', data.mrp);
+  set('wholesalePrice', data.wholesalePrice);
   set('gstRate', data.gstRate);
   set('unit', data.unit);
   set('categoryId', data.categoryId);
@@ -174,6 +180,33 @@ function pageFromHeaders(headers: Record<string, unknown>, fallback: { skip: num
   return { total: read('x-total-count', fallback.count), skip: read('x-page-skip', fallback.skip), take: read('x-page-take', fallback.take) };
 }
 
+/** `MAX_LIST_TAKE` of the API's list routes (roadmap 5.6). */
+const MAX_PAGE_TAKE = 200;
+
+/**
+ * Every page of a capped list route: `?skip&take=200` until `X-Total-Count`
+ * rows are read, so a list is never cut silently at the default page of 100
+ * (audit W9). At most `maxPages` requests; `complete` is false when the
+ * bound stopped the read, and the caller says so on screen.
+ */
+async function fetchEveryPage<T>(
+  url: string,
+  map: (raw: Record<string, unknown>) => T,
+  maxPages = 25,
+): Promise<{ items: T[]; total: number; complete: boolean }> {
+  const items: T[] = [];
+  let total = 0;
+  for (let page = 0; page < maxPages; page += 1) {
+    const skip = items.length;
+    const res = await apiClient.get<unknown[]>(url, { params: { skip, take: MAX_PAGE_TAKE } });
+    const rows = Array.isArray(res.data) ? res.data : [];
+    total = pageFromHeaders(res.headers as Record<string, unknown>, { skip, take: MAX_PAGE_TAKE, count: skip + rows.length }).total;
+    items.push(...rows.map((row) => map(row as Record<string, unknown>)));
+    if (rows.length === 0 || items.length >= total) break;
+  }
+  return { items, total: Math.max(total, items.length), complete: items.length >= total };
+}
+
 export const productsApi = {
   /** `GET /products?q&limit&offset&categoryId&stock` (limit max 200). Returns the array body only. */
   list: (params?: ProductListParams) => productsApi.listPage(params).then((page) => page.items),
@@ -185,15 +218,6 @@ export const productsApi = {
       const items = (Array.isArray(res.data) ? res.data : []).map((item) => mapProduct(item as Record<string, unknown>));
       return { items, ...pageFromHeaders(res.headers as Record<string, unknown>, { skip: params?.offset ?? 0, take: params?.limit ?? items.length, count: items.length }) };
     });
-  },
-
-  /** `GET /search?q&limit` mapped onto the full Product shape (lean search rows). */
-  search: (query: string, options?: { signal?: AbortSignal; limit?: number }) => {
-    const config = options?.signal ? { signal: options.signal } : {};
-    const qs = buildQuery({ q: query, limit: options?.limit ?? 30 });
-    return apiClient
-      .get<unknown[]>(`/search${qs}`, config)
-      .then((res) => (Array.isArray(res.data) ? res.data : []).map((item) => mapProduct(item as Record<string, unknown>)));
   },
 
   get: (id: string) =>
@@ -450,8 +474,6 @@ export const customersApi = {
   list: (params: CustomerListParams = {}) =>
     get<unknown>(`/customers${toQueryString(params)}`).then((data) => toPaginated(data, mapCustomer)),
 
-  get: (id: string) => get<Record<string, unknown>>(`/customers/${id}`).then(mapCustomer),
-
   /** `GET /customers/:id` with the embedded last-10 invoices and ledger rows. */
   getDetail: (id: string) => get<Record<string, unknown>>(`/customers/${id}`).then(mapCustomerDetail),
 
@@ -487,12 +509,6 @@ export const customersApi = {
 
   /** `DELETE /customers/:id` (soft delete). `409 CUSTOMER_HAS_BALANCE` when the balance is not zero. */
   remove: (id: string) => del(`/customers/${id}`),
-
-  /** `POST /customers/search { query, take }` → array of customers. */
-  search: (query: string, take = 10) =>
-    post<unknown>('/customers/search', { query, take }).then((data) =>
-      (Array.isArray(data) ? data : []).map((item) => mapCustomer(item as Record<string, unknown>)),
-    ),
 };
 
 // ---------------------------------------------------------------------------
@@ -511,9 +527,11 @@ export interface BatchItem {
 }
 
 export const inventoryApi = {
-  listBatches: () => get<BatchItem[]>('/batches'),
-
-  listProducts: () => get<unknown[]>('/inventory/products'),
+  /**
+   * Every batch of the shop (`GET /batches` page by page): the expiry tiles and
+   * the search count all of them, not the first page (audit W9).
+   */
+  listBatches: () => fetchEveryPage<BatchItem>('/batches', (raw) => raw as unknown as BatchItem),
 };
 
 // ---------------------------------------------------------------------------
@@ -663,10 +681,19 @@ export type AnalyticsRange = 'today' | 'week' | 'month' | 'year';
 export type ExportKind = 'invoices' | 'invoice-items' | 'gst-summary';
 
 export interface AnalyticsPagePayload {
+  /** First and last business date of the window (`YYYY-MM-DD`, the shop's time zone). */
+  from?: string;
+  to?: string;
   kpis: {
     totalRevenue: number;
+    /** Gross profit minus the period's expenses. */
     netProfit: number;
+    grossProfit: number;
+    expenses: number;
+    /** What customers owe (positive balances only). */
     udharOutstanding: number;
+    /** What customers paid ahead (negative balances, as a positive figure). */
+    customerAdvances: number;
     avgOrderValue: number;
     revenueChangePct: number | null;
     profitChangePct: number | null;
@@ -875,6 +902,29 @@ async function getDashboard<T>(url: string, map: (payload: unknown) => T): Promi
   return map(data);
 }
 
+/**
+ * A report can take longer than the 15 s default (a year of invoices): exports
+ * get two minutes (audit W11).
+ */
+const EXPORT_REQUEST_TIMEOUT_MS = 120_000;
+
+/**
+ * A blob request's error body is a Blob too, which the error helpers cannot
+ * read: parse the API's JSON envelope back into `response.data` so the user
+ * sees the API's message (audit W11).
+ */
+async function withReadableErrorBody(error: unknown): Promise<unknown> {
+  const response = (error as { response?: { data?: unknown } } | null)?.response;
+  if (response && typeof Blob !== 'undefined' && response.data instanceof Blob) {
+    try {
+      response.data = JSON.parse(await response.data.text());
+    } catch {
+      // Not JSON: the status alone describes it.
+    }
+  }
+  return error;
+}
+
 /** Reads `filename="..."` from a Content-Disposition header, if present. */
 function filenameFromDisposition(header: unknown): string | null {
   if (typeof header !== 'string') return null;
@@ -905,10 +955,15 @@ export const analyticsApi = {
    * `from` / `to` are ISO dates (YYYY-MM-DD), business-day inclusive.
    */
   exportCsv: async (kind: ExportKind, from: string, to: string): Promise<void> => {
-    const response = await apiClient.get<Blob>(`/dashboard/export/${kind}.csv`, {
-      params: { from, to },
-      responseType: 'blob',
-    });
+    const response = await apiClient
+      .get<Blob>(`/dashboard/export/${kind}.csv`, {
+        params: { from, to },
+        responseType: 'blob',
+        timeout: EXPORT_REQUEST_TIMEOUT_MS,
+      })
+      .catch(async (error: unknown) => {
+        throw await withReadableErrorBody(error);
+      });
     const blob =
       response.data instanceof Blob ? response.data : new Blob([response.data as BlobPart], { type: 'text/csv' });
     const filename = filenameFromDisposition(response.headers?.['content-disposition']) ?? `${kind}_${from}_to_${to}.csv`;
@@ -986,8 +1041,8 @@ export interface InvitationResult {
 }
 
 export const employeesApi = {
-  /** `GET /users/employees` (capped page, array body). */
-  list: () => get<Array<Record<string, unknown>>>('/users/employees').then((users) => users.map(mapEmployee)),
+  /** `GET /users/employees`, every page (a capped list; audit W9). */
+  list: () => fetchEveryPage('/users/employees', mapEmployee).then((result) => result.items),
 
   /** `POST /invitations/generate`: the code reaches the invitee by email, never this client. */
   invite: (data: { email: string; role: string }) => post<InvitationResult>('/invitations/generate', data),
@@ -1017,8 +1072,18 @@ export interface SupplierView {
   status: 'Active' | 'Inactive';
 }
 
+/** `GET /suppliers/summary`: totals over every live supplier (the list is a capped page). */
+export interface SuppliersSummary {
+  /** Σ pendingPayables as a decimal string; an advance a supplier holds counts as negative. */
+  totalPayables: string;
+  count: number;
+  activeCount: number;
+}
+
 export const suppliersApi = {
   list: () => get<SupplierView[]>('/suppliers'),
+
+  summary: () => get<SuppliersSummary>('/suppliers/summary'),
 
   create: (data: {
     name: string;
@@ -1030,9 +1095,13 @@ export const suppliersApi = {
     openingBalance?: number;
   }) => post<SupplierView>('/suppliers', data),
 
-  /** `POST /suppliers/:id/payments`: CASH leaves the drawer, any other tender credits the bank account. */
-  recordPayment: (id: string, amount: number, tender: TenderType = 'CASH') =>
-    post<SupplierView>(`/suppliers/${id}/payments`, { amount, tender }),
+  /**
+   * `POST /suppliers/:id/payments`: CASH leaves the drawer, any other tender
+   * credits the bank account. `idempotencyKey` is required: one per payment
+   * the user means, reused on a retry so a lost answer never pays twice.
+   */
+  recordPayment: (id: string, amount: number, tender: TenderType, idempotencyKey: string) =>
+    post<SupplierView>(`/suppliers/${id}/payments`, { amount, tender, idempotencyKey }),
 
   /** `PATCH /suppliers/:id` (MANAGER+). */
   update: (
@@ -1133,7 +1202,10 @@ export interface ExpenseView {
   category: string;
   amount: number;
   status: 'Paid' | 'Pending';
+  /** How it was paid; `Unpaid` while pending. */
   mode: string;
+  /** The stored payment mode, also on a pending expense when one was chosen: what "Mark as Paid" records. */
+  paymentMode: string | null;
   date: string;
 }
 
@@ -1187,12 +1259,27 @@ export interface NotificationView {
   createdAt: string;
 }
 
+interface NotificationPage {
+  items: NotificationView[];
+  total: number;
+}
+
 export const notificationsApi = {
+  /** The newest page (the navbar's dropdown and unread badge). */
   list: () => get<NotificationView[]>('/notifications'),
+
+  /** `GET /notifications?skip&take` with `X-Total-Count`: the notifications page loads more on request (audit W9). */
+  listPage: (skip: number, take: number): Promise<NotificationPage> =>
+    apiClient.get<NotificationView[]>('/notifications', { params: { skip, take } }).then((res) => {
+      const items = Array.isArray(res.data) ? res.data : [];
+      return { items, total: pageFromHeaders(res.headers as Record<string, unknown>, { skip, take, count: skip + items.length }).total };
+    }),
 
   markRead: (id: string) => patch<NotificationView>(`/notifications/${id}/read`, {}),
 
   markAllRead: () => patch<{ updated: number }>('/notifications/read-all', {}),
+  /** Every unread notification of the shop (the list is a capped page). */
+  unreadCount: () => get<{ count: number }>('/notifications/unread-count'),
 };
 
 // ===========================================================================
@@ -1428,15 +1515,6 @@ export interface CreateInvoiceRequest {
   udharAmount?: number;
 }
 
-export interface CalculateInvoiceRequest {
-  items: InvoiceLineRequest[];
-  customerId?: string;
-  discountAmount?: number;
-  discountPercentage?: number;
-  discountType?: 'FIXED_AMOUNT' | 'PERCENTAGE';
-  discountReason?: string;
-}
-
 export interface CreateReturnRequest {
   idempotencyKey: string;
   invoiceId: string;
@@ -1653,9 +1731,6 @@ function mapCreateInvoiceResponse(raw: Raw): CreateInvoiceResponse {
 }
 
 export const billingApi = {
-  /** `POST /billing/calculate` — server-side preview (engine result + inter-state flags). */
-  calculate: (body: CalculateInvoiceRequest) => post<Raw>('/billing/calculate', body),
-
   /** `POST /billing/invoice` — idempotent; 200 on replay with the same payload. */
   createInvoice: (body: CreateInvoiceRequest, options?: { timeoutMs?: number }) =>
     apiClient

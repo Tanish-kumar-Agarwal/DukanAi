@@ -3,9 +3,10 @@
  * store them: the spelling the web's picker offers
  * (`apps/web/src/components/pos/indian-states.ts`, kept identical by
  * `states.spec.ts`). `BillingService.resolveInterState` compares the shop's
- * and the customer's state to choose IGST over CGST + SGST, so a misspelled
- * state is a wrong tax line, not a typo: imports refuse what this list does
- * not recognise (roadmap 9.20).
+ * state with an explicit place of supply to choose IGST over CGST + SGST
+ * (audit P1-3), so a misspelled state is a wrong tax line, not a typo:
+ * imports and the request DTOs refuse what this list does not recognise
+ * (roadmap 9.20, audit B3).
  */
 export const INDIAN_STATES: readonly string[] = [
   'Andaman and Nicobar Islands',
@@ -46,8 +47,8 @@ export const INDIAN_STATES: readonly string[] = [
   'West Bengal',
 ];
 
-/** Older or common spellings a shop's spreadsheet still carries. */
-const STATE_ALIASES: Readonly<Record<string, string>> = {
+/** Older or common spellings a shop's spreadsheet still carries (the web POS carries the same list). */
+export const STATE_ALIASES: Readonly<Record<string, string>> = {
   orissa: 'Odisha',
   pondicherry: 'Puducherry',
   'new delhi': 'Delhi',

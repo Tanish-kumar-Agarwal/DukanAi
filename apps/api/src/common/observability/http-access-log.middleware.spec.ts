@@ -53,4 +53,27 @@ describe('httpAccessLogMiddleware', () => {
     res.emit('finish');
     expect(lines[0]).toMatchObject({ status: 401, path: '/api/products', correlationId: 'corr-1' });
   });
+
+  it('logs a request whose connection closed before the answer as aborted, at warn (audit R13)', () => {
+    const warns: unknown[] = [];
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation((message: unknown) => {
+      warns.push(message);
+    });
+    try {
+      const aborted = fakeResponse(200);
+      httpAccessLogMiddleware(fakeRequest({ correlationId: 'corr-a' }), aborted, jest.fn());
+      aborted.emit('close');
+      expect(warns).toEqual([expect.objectContaining({ event: 'http', status: 'aborted', correlationId: 'corr-a' })]);
+
+      const finished = fakeResponse(200);
+      httpAccessLogMiddleware(fakeRequest({}), finished, jest.fn());
+      finished.emit('finish');
+      (finished as unknown as { writableFinished: boolean }).writableFinished = true;
+      finished.emit('close');
+      expect(warns).toHaveLength(1);
+      expect(lines).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });

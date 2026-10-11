@@ -360,7 +360,7 @@ async function setupShop(index) {
   for (const [i, p] of catalogue.entries()) {
     const product = expect(await call(shop.owner, 'POST', '/products', { name: p.name, sku: `DAY-${index}-${i + 1}-${s}`, costPrice: p.costPrice, sellingPrice: p.sellingPrice, mrp: p.mrp, wholesalePrice: p.costPrice + 5, unit: p.unit, gstRate: p.gstRate }, { action: 'product', idempotent: false, retries: 2 }), 201, `product ${p.name}`);
     const item = expect(await call(shop.owner, 'POST', '/inventory-domain', { productId: product.id }, { action: 'inventory-item', idempotent: false, retries: 2 }), 201, 'inventory item');
-    expect(await call(shop.owner, 'POST', `/inventory-domain/${item.id}/adjust`, { reason: 'OPENING_BALANCE', quantityChange: p.openingStock, notes: 'business day opening stock' }, { action: 'opening-stock', idempotent: false, retries: 2 }), 201, 'opening stock');
+    expect(await call(shop.owner, 'POST', `/inventory-domain/${item.id}/adjust`, { reason: 'OPENING_BALANCE', quantityChange: p.openingStock, notes: 'business day opening stock', idempotencyKey: `opening-${item.id}` }, { action: 'opening-stock', idempotent: false, retries: 2 }), 201, 'opening stock');
     shop.products.push({ id: product.id, name: p.name, sku: product.sku, price: p.sellingPrice, costPrice: p.costPrice, scarce: Boolean(p.scarce), itemId: item.id });
   }
   shop.customers = [];

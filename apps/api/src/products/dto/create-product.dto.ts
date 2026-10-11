@@ -2,6 +2,9 @@ import { IsString, IsOptional, IsNumber, IsBoolean, IsEnum, MaxLength, Min, Max 
 import { PartialType } from '@nestjs/swagger';
 import { ProductType, ProductStatus, ProductUnit, GstRate } from '@prisma/client';
 
+/** Largest price a product column holds (`Decimal(10, 2)`). */
+export const PRODUCT_MONEY_MAX = 99_999_999.99;
+
 export class CreateProductDto {
   @IsString()
   name: string;
@@ -34,17 +37,35 @@ export class CreateProductDto {
   @IsOptional()
   status?: ProductStatus;
 
-  @IsNumber()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  @Max(PRODUCT_MONEY_MAX)
   costPrice: number;
 
-  @IsNumber()
+  /** Before GST: the POS adds GST and cess on top (contract §2). */
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  @Max(PRODUCT_MONEY_MAX)
   sellingPrice: number;
 
-  @IsNumber()
-  mrp: number;
+  /**
+   * Maximum retail price, tax-inclusive (Legal Metrology, audit P1-2): at
+   * least the selling price plus GST and cess for one unit
+   * (`inclusiveUnitPrice`), else 400 PRICE_ABOVE_MRP. Omitted on create (or
+   * `null` on update) it is that inclusive price.
+   */
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  @Max(PRODUCT_MONEY_MAX)
+  @IsOptional()
+  mrp?: number | null;
 
-  @IsNumber()
-  wholesalePrice: number;
+  /** The selling price when omitted on create. */
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  @Max(PRODUCT_MONEY_MAX)
+  @IsOptional()
+  wholesalePrice?: number;
 
   @IsEnum(GstRate)
   @IsOptional()

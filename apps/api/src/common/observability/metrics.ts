@@ -18,6 +18,19 @@ export const httpRequestsTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+/**
+ * Requests whose connection closed before an answer was sent (audit R13):
+ * the client gave up, or the edge cut it at its upstream timeout. They never
+ * reach `http_requests_total` (no status was sent), so a slow route that the
+ * edge times out looked healthy.
+ */
+export const httpRequestsAbortedTotal = new Counter({
+  name: 'http_requests_aborted_total',
+  help: 'HTTP requests whose connection closed before the answer was sent (client or edge abort), by method and route pattern.',
+  labelNames: ['method', 'route'] as const,
+  registers: [metricsRegistry],
+});
+
 export const httpRequestDurationSeconds = new Histogram({
   name: 'http_request_duration_seconds',
   help: 'HTTP request latency in seconds, by method and route pattern.',

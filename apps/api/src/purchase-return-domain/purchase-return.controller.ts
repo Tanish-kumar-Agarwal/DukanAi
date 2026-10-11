@@ -47,6 +47,20 @@ export class PurchaseReturnController {
     return this.repository.approvePurchaseReturn(shopId, id, actorId, req.ip, body.comments, body.signature);
   }
 
+  /** PENDING_APPROVAL -> REJECTED by a manager other than the creator or submitter. */
+  @Roles(...MANAGEMENT_ROLES)
+  @Post(':id/reject')
+  async rejectReturn(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Body() body: ApprovalDecisionDto) {
+    return this.repository.rejectPurchaseReturn(shopId, id, actorId, body.comments);
+  }
+
+  /** DRAFT / SUBMITTED / PENDING_APPROVAL -> CANCELLED. */
+  @Roles(...MANAGEMENT_ROLES)
+  @Post(':id/cancel')
+  async cancelReturn(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Body() body: ApprovalDecisionDto) {
+    return this.repository.cancelPurchaseReturn(shopId, id, actorId, body.comments);
+  }
+
   @Roles(...MANAGEMENT_ROLES)
   @Post(':id/shipment')
   async shipReturn(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Body() body: DispatchShipmentDto, @Req() req: Request) {

@@ -1,6 +1,6 @@
 import { Injectable, Logger, Inject, OnApplicationBootstrap } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
-import { CronJob } from 'cron';
+import { createCronJob } from '../common/cron/cron-job';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { PrismaService } from '../prisma/prisma.service';
@@ -74,9 +74,13 @@ export class InventoryReconService implements OnApplicationBootstrap {
       this.logger.warn('InventoryRecon schedule not registered: CRON_ENABLED=false');
       return;
     }
-    const job = new CronJob(this.cronConfig.inventoryReconCron, () => {
-      void this.handleCron();
-    });
+    const job = createCronJob(
+      this.cronConfig.inventoryReconCron,
+      () => {
+        void this.handleCron();
+      },
+      this.cronConfig,
+    );
     this.schedulerRegistry.addCronJob('InventoryRecon', job);
     job.start();
   }

@@ -24,6 +24,36 @@ export interface OutboundEmail {
 /** The transport surface this service needs; nodemailer's Transporter satisfies it. */
 export type EmailTransport = Pick<Transporter, 'sendMail'>;
 
+/** Longest subject a message is sent with. */
+export const MAX_EMAIL_SUBJECT_LENGTH = 200;
+
+/**
+ * User-supplied text (a shop's name, a person's name) for a subject or a
+ * line of a body (audit R15): one line (CR, LF and every other control
+ * character become a space), collapsed, trimmed and capped. A shop named
+ * "Ravi\r\nBcc: ..." or "Ravi\n\nClick http://..." cannot add a header or
+ * lines of its own to a message DukaanAI sends.
+ */
+export function emailSafeText(value: string | null | undefined, maxLength = 100): string {
+  // eslint-disable-next-line no-control-regex
+  const flat = (value ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim();
+  const chars = [...flat];
+  return chars.length > maxLength ? `${chars.slice(0, maxLength - 1).join('')}…` : flat;
+}
+
+/** A recipient for a log line: the first character of the local part and the domain (`o***@example.com`). */
+export function maskEmail(address: string): string {
+  const at = address.lastIndexOf('@');
+  if (at <= 0) return '***';
+  return `${address[0]}***${address.slice(at)}`;
+}
+
+/** A body as plain text: CRLF and lone CR become LF; other control characters except tab go. */
+function plainTextBody(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '');
+}
+
 /**
  * Sends email through the configured SMTP transport. Without `SMTP_URL` it
  * runs in log mode: every message is written to the log at warn level so a
@@ -43,7 +73,12 @@ export class EmailService {
     private readonly config: EmailConfig,
     transport?: EmailTransport,
   ) {
-    this.transport = transport ?? (config.smtpUrl ? createTransport(config.smtpUrl) : null);
+    // Every step of a send is bounded (audit R8); options in the URL's query still win.
+    this.transport =
+      transport ??
+      (config.smtpUrl
+        ? createTransport({ url: config.smtpUrl, connectionTimeout: config.smtpTimeoutMs, greetingTimeout: config.smtpTimeoutMs, socketTimeout: config.smtpTimeoutMs })
+        : null);
     if (!this.transport) {
       this.logger.warn(
         isProductionEnv()
@@ -59,20 +94,26 @@ export class EmailService {
   }
 
   async send(message: OutboundEmail): Promise<void> {
+    // The subject is one line of bounded length and the body plain text, whatever a caller interpolated.
+    const subject = emailSafeText(message.subject, MAX_EMAIL_SUBJECT_LENGTH);
+    const text = plainTextBody(message.text);
+    // Log lines name the recipient masked (audit R15): logs leave the process (Loki, Sentry breadcrumbs).
+    const to = maskEmail(message.to);
     if (!this.transport) {
       emailMessagesTotal.inc({ purpose: message.purpose, outcome: 'logged' });
-      this.logger.warn(`[email not sent, SMTP_URL unset] to=${message.to} subject=${JSON.stringify(message.subject)}\n${message.text}`);
+      // Development only (production refuses the flows that need delivery): the body carries the link a developer needs.
+      this.logger.warn(`[email not sent, SMTP_URL unset] to=${to} subject=${JSON.stringify(subject)}\n${text}`);
       return;
     }
     try {
-      await this.transport.sendMail({ from: this.config.from, to: message.to, subject: message.subject, text: message.text });
+      await this.transport.sendMail({ from: this.config.from, to: message.to, subject, text });
     } catch (err) {
       emailMessagesTotal.inc({ purpose: message.purpose, outcome: 'failed' });
-      this.logger.error(`Email (${message.purpose}) to ${message.to} was not accepted by the relay: ${describeSmtpError(err)}`);
+      this.logger.error(`Email (${message.purpose}) to ${to} was not accepted by the relay: ${describeSmtpError(err)}`);
       throw err;
     }
     emailMessagesTotal.inc({ purpose: message.purpose, outcome: 'sent' });
-    this.logger.log(`Email sent to ${message.to}: ${message.subject}`);
+    this.logger.log(`Email (${message.purpose}) sent to ${to}`);
   }
 }
 

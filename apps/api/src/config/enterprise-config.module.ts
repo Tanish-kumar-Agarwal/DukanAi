@@ -91,29 +91,13 @@ function validateConfig<T extends object>(configClass: T): T {
     },
     {
       provide: RedisConfig,
-      useFactory: () => {
-        const config = new RedisConfig();
-        Object.assign(config, {
-          redisUrl: process.env.REDIS_URL,
-        });
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(RedisConfig)),
     },
     {
       provide: StorageConfig,
-      useFactory: () => {
-        const config = new StorageConfig();
-        Object.assign(config, {
-          storageRoot: process.env.STORAGE_ROOT,
-          s3Region: process.env.S3_REGION,
-          s3Endpoint: process.env.S3_ENDPOINT,
-          s3AccessKey: process.env.S3_ACCESS_KEY,
-          s3SecretKey: process.env.S3_SECRET_KEY,
-          s3Bucket: process.env.S3_BUCKET,
-          s3PublicUrl: process.env.S3_PUBLIC_URL,
-        });
-        return validateConfig(config);
-      },
+      // hydrateFromEnv reads exactly the @EnvVariable properties (the strings as
+      // before, STORAGE_BACKUP_KEEP as a strict integer).
+      useFactory: () => validateConfig(hydrateFromEnv(StorageConfig)),
     },
     {
       provide: AiConfig,

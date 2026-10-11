@@ -99,7 +99,7 @@ test.describe('callbackUrl (6.4) and navbar search (6.6)', () => {
     for (const forged of ['https://evil.example/steal', '//evil.example/steal', '/\\evil.example/steal', 'javascript:alert(1)', '/login']) {
       await page.goto(`/login?callbackUrl=${encodeURIComponent(forged)}`);
       await page.waitForURL('**/dashboard');
-      expect(new URL(page.url()).origin).toBe(new URL(process.env.E2E_WEB_URL ?? 'http://localhost:3010').origin);
+      expect(new URL(page.url()).origin).toBe(new URL(process.env.E2E_WEB_URL ?? `http://localhost:${process.env.E2E_WEB_PORT ?? 3010}`).origin);
     }
     await page.goto(`/login?callbackUrl=${encodeURIComponent('/products?q=chai')}`);
     await page.waitForURL('**/products?q=chai');

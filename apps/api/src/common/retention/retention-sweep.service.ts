@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
-import { CronJob } from 'cron';
+import { createCronJob } from '../cron/cron-job';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CronConfig } from '../../config/domains/cron.config';
 import { RetentionConfig } from '../../config/domains/retention.config';
@@ -12,7 +12,7 @@ import { retentionRowsPurgedTotal } from '../observability/metrics';
 const LOCK_TTL_MS = 15 * 60_000;
 const DAY_MS = 86_400_000;
 
-export const RETENTION_TABLES = ['RefreshToken', 'PasswordResetToken', 'OutboxEvent', 'SearchHistory', 'ProductEventLog'] as const;
+export const RETENTION_TABLES = ['RefreshToken', 'PasswordResetToken', 'OutboxEvent', 'SearchHistory', 'ProductEventLog', 'WebhookDelivery'] as const;
 export type RetentionTable = (typeof RETENTION_TABLES)[number];
 
 export interface RetentionOutcome {
@@ -26,7 +26,7 @@ export interface RetentionOutcome {
  * Retention sweep (roadmap 7.8). Once a night, under a cluster-wide lock,
  * deletes the rows no flow reads any more (`RetentionConfig` says how old):
  * expired refresh tokens and used / expired password-reset tokens, DONE
- * outbox rows, old SearchHistory and ProductEventLog rows. Every statement is
+ * outbox rows, old SearchHistory, ProductEventLog and WebhookDelivery rows. Every statement is
  * a bounded `DELETE ... LIMIT` on an index of the column it filters by
  * (`RefreshToken(expiresAt)`, `OutboxEvent(status, createdAt)`,
  * `SearchHistory(createdAt)`, `ProductEventLog(timestamp)`), so a sweep never
@@ -51,9 +51,13 @@ export class RetentionSweepService implements OnApplicationBootstrap {
       this.logger.warn('RetentionSweep schedule not registered: CRON_ENABLED=false');
       return;
     }
-    const job = new CronJob(this.cronConfig.retentionSweepCron, () => {
-      void this.sweep().catch((error: unknown) => this.logger.error(`Retention sweep crashed: ${(error as Error).message}`));
-    });
+    const job = createCronJob(
+      this.cronConfig.retentionSweepCron,
+      () => {
+        void this.sweep().catch((error: unknown) => this.logger.error(`Retention sweep crashed: ${(error as Error).message}`));
+      },
+      this.cronConfig,
+    );
     this.schedulerRegistry.addCronJob('RetentionSweep', job);
     job.start();
   }
@@ -71,6 +75,7 @@ export class RetentionSweepService implements OnApplicationBootstrap {
     const outboxBefore = before(this.retention.outboxDoneDays);
     const searchBefore = before(this.retention.searchHistoryDays);
     const eventsBefore = before(this.retention.productEventLogDays);
+    const deliveriesBefore = before(this.retention.webhookDeliveryDays);
 
     const steps: Record<RetentionTable, (limit: number) => Promise<number>> = {
       RefreshToken: (limit) => this.prisma.$executeRaw`DELETE FROM RefreshToken WHERE expiresAt < ${tokensBefore} LIMIT ${limit}`,
@@ -79,10 +84,13 @@ export class RetentionSweepService implements OnApplicationBootstrap {
       OutboxEvent: (limit) => this.prisma.$executeRaw`DELETE FROM OutboxEvent WHERE status = 'DONE' AND createdAt < ${outboxBefore} LIMIT ${limit}`,
       SearchHistory: (limit) => this.prisma.$executeRaw`DELETE FROM SearchHistory WHERE createdAt < ${searchBefore} LIMIT ${limit}`,
       ProductEventLog: (limit) => this.prisma.$executeRaw`DELETE FROM ProductEventLog WHERE timestamp < ${eventsBefore} LIMIT ${limit}`,
+      // One row per delivery attempt, payload included (audit R7). No createdAt
+      // index yet: a bounded batch on a table only webhook shops write.
+      WebhookDelivery: (limit) => this.prisma.$executeRaw`DELETE FROM WebhookDelivery WHERE createdAt < ${deliveriesBefore} LIMIT ${limit}`,
     };
 
     const outcome: RetentionOutcome = {
-      purged: { RefreshToken: 0, PasswordResetToken: 0, OutboxEvent: 0, SearchHistory: 0, ProductEventLog: 0 },
+      purged: { RefreshToken: 0, PasswordResetToken: 0, OutboxEvent: 0, SearchHistory: 0, ProductEventLog: 0, WebhookDelivery: 0 },
       truncated: [],
       durationMs: 0,
     };

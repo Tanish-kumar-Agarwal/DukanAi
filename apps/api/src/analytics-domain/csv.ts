@@ -2,11 +2,9 @@
  * Minimal RFC 4180 CSV writer helpers for the streaming report exports.
  * Pure functions: no Nest, no Prisma.
  */
+import { csvCell } from '../import-export/import-columns';
 
 export const CSV_LINE_BREAK = '\r\n';
-
-/** Leading characters spreadsheet apps interpret as formulas. */
-const FORMULA_PREFIX = /^[=+@\t\r]/;
 
 interface DecimalLike {
   toFixed(dp?: number): string;
@@ -25,7 +23,10 @@ function isDecimalLike(value: unknown): value is DecimalLike {
  * Serialises a single value for a CSV cell: `null`/`undefined` become empty,
  * dates become ISO strings, Decimals keep their exact string form. Fields
  * containing a comma, quote, CR or LF are quoted and inner quotes doubled.
- * Strings that would be read as formulas are prefixed with a quote.
+ * Strings go through the import report's `csvCell` rule: one a spreadsheet
+ * would run as a formula (a leading `=`, `+`, `-`, `@`, tab or CR) is
+ * prefixed with an apostrophe, a plain number such as `-5.00` is not (the
+ * guard here used to miss the leading `-`).
  */
 export function escapeCsvField(value: unknown): string {
   if (value === null || value === undefined) return '';
@@ -34,7 +35,7 @@ export function escapeCsvField(value: unknown): string {
   if (value instanceof Date) {
     text = value.toISOString();
   } else if (typeof value === 'string') {
-    text = FORMULA_PREFIX.test(value) ? `'${value}` : value;
+    return csvCell(value);
   } else if (typeof value === 'bigint') {
     text = value.toString();
   } else if (isDecimalLike(value)) {

@@ -4181,6 +4181,8 @@ model WebhookDelivery {
   endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
 
   @@index([endpointId, status])
+  // The retention sweep purges by age (RETENTION_WEBHOOK_DELIVERY_DAYS).
+  @@index([createdAt])
 }
 
 model DeadLetterEvent {

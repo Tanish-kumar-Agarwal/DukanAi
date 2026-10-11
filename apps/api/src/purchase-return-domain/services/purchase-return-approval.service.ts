@@ -29,10 +29,11 @@ export class PurchaseReturnApprovalService {
     });
     if (!pendingApproval) throw new BadRequestException({ message: 'No pending approvals for this purchase return', code: 'PURCHASE_RETURN_NOT_PENDING' });
 
-    if (action === 'APPROVE') {
-      const pr = await tx.purchaseReturn.findFirst({ where: { id, shopId }, select: { createdBy: true } });
-      const createdAudit = await tx.purchaseReturnAudit.findFirst({ where: { purchaseReturnId: id, shopId, actorId, action: { in: ['CREATED', 'SUBMITTED'] } }, select: { id: true } });
-      if (pr?.createdBy === actorId || createdAudit) throw new ForbiddenException({ message: 'The person who created or submitted a purchase return cannot approve it.', code: 'SEPARATION_OF_DUTIES' });
+    // Separation of duties for either decision: the creator or submitter withdraws a return with cancel instead.
+    const pr = await tx.purchaseReturn.findFirst({ where: { id, shopId }, select: { createdBy: true } });
+    const createdAudit = await tx.purchaseReturnAudit.findFirst({ where: { purchaseReturnId: id, shopId, actorId, action: { in: ['CREATED', 'SUBMITTED'] } }, select: { id: true } });
+    if (pr?.createdBy === actorId || createdAudit) {
+      throw new ForbiddenException({ message: `The person who created or submitted a purchase return cannot ${action === 'APPROVE' ? 'approve' : 'reject'} it.`, code: 'SEPARATION_OF_DUTIES' });
     }
 
     const nextStatus = action === 'APPROVE' ? 'APPROVED' : 'REJECTED';

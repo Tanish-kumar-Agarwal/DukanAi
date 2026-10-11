@@ -55,6 +55,8 @@ function fakeDb(shops: Shop[]) {
         return row;
       }),
     },
+    // The engine runs inside one REPEATABLE READ snapshot (release audit L5).
+    $transaction: jest.fn(async (work: (tx: unknown) => Promise<unknown>, _options: unknown): Promise<unknown> => work(db as unknown)),
     $disconnect: jest.fn(async () => undefined),
   };
   return { db, runs, client: db as unknown as PrismaClient };
@@ -133,6 +135,9 @@ describe('operator commands shipped in the image (roadmap 9.22)', () => {
       const h = harness([shop('s1')], (_id, date, tz) => report(date, tz, 'CLEAN'));
       await expect(runCli(h.command, ['--shop', 's1'])).resolves.toBe(0);
       expect(h.engine).toHaveBeenCalledWith(expect.anything(), { shopId: 's1', timeZone: 'Asia/Kolkata', businessDate: '2026-10-08', now: NOW });
+      // Every read of the run in one snapshot; the run row written after it.
+      expect(h.db.$transaction).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ isolationLevel: 'RepeatableRead', timeout: 120_000 }));
+      expect(h.db.$transaction.mock.invocationCallOrder[0]).toBeLessThan(h.db.reconciliationRun.create.mock.invocationCallOrder[0]);
       expect(h.runs).toEqual([expect.objectContaining({ shopId: 's1', businessDate: '2026-10-08', trigger: ReconciliationTrigger.CLI, status: ReconciliationRunStatus.CLEAN, driftCount: 0 })]);
       expect(h.out[0]).toBe('Shop s1 (Shop s1)');
       expect(h.out[1]).toBe('Reconciliation of 2026-10-08 (Asia/Kolkata), run run-1: CLEAN (0 drift(s))');

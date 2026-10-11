@@ -49,7 +49,8 @@ export const ToastProvider = ({ children }: { children: ReactNode }) => {
   return (
     <ToastContext.Provider value={{ toast, success, error, warning, info }}>
       {children}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm w-full">
+      {/* Announced to screen readers (audit W17): politely, an error at once (role="alert" on the item). */}
+      <div aria-live="polite" className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm w-full">
         <AnimatePresence>
           {toasts.map((t) => (
             <ToastItem key={t.id} toast={t} onDismiss={() => removeToast(t.id)} />
@@ -77,6 +78,7 @@ const ToastItem = ({ toast, onDismiss }: { toast: ToastOptions; onDismiss: () =>
 
   return (
     <motion.div
+      role={toast.type === 'error' ? 'alert' : undefined}
       initial={{ opacity: 0, y: 20, scale: 0.95 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95, transition: { duration: 0.2 } }}
@@ -84,7 +86,7 @@ const ToastItem = ({ toast, onDismiss }: { toast: ToastOptions; onDismiss: () =>
     >
       <div className="shrink-0 mt-0.5">{icons[toast.type]}</div>
       <p className="flex-1 text-sm font-medium text-gray-800 dark:text-gray-200">{toast.message}</p>
-      <button onClick={onDismiss} className="shrink-0 text-gray-400 hover:text-gray-600 transition-colors">
+      <button type="button" onClick={onDismiss} aria-label="Close" className="shrink-0 text-gray-400 hover:text-gray-600 transition-colors">
         <X size={16} />
       </button>
     </motion.div>

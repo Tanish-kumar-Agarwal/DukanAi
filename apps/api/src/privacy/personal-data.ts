@@ -56,6 +56,12 @@ const EXPLICIT: Record<string, PersonalDataClass> = {
   'EnterpriseInvoice.terms': 'freeText',
   'MediaAsset.originalName': 'file', 'MediaStorage.path': 'file', 'MediaStorage.cdnUrl': 'file', 'MediaThumbnail.path': 'file', 'MediaThumbnail.cdnUrl': 'file', 'MediaVersion.path': 'file',
   'ProductImage.url': 'file', 'SalesOrderAttachment.name': 'file',
+  // Child tables without a shop column (reached through their parent, `childModels`):
+  // the customer's own detail rows, the import report, the webhook log
+  'CustomerProfile.customFields': 'payload', 'CustomerProfile.website': 'identity', 'CustomerProfile.registrationNo': 'identity', 'CustomerProfile.profilePicture': 'file',
+  'CustomerAddress.postalCode': 'identity', 'CustomerAddress.district': 'identity',
+  // A report row's problems and planned changes quote the row's cells ("new customer Ramesh", '"98765" is not a phone number').
+  'ImportJobRow.errors': 'payload', 'ImportJobRow.changes': 'payload',
 };
 
 /** Not personal although the name matches; each with its reason. */
@@ -172,6 +178,127 @@ export interface TenantModel {
   table: string;
   idColumns: string[];
   shopColumn: string;
+}
+
+/**
+ * Models without a shop column that are deliberately outside a shop's data
+ * (audit F2), each with its reason. Every other model is tenant-owned or a
+ * child reachable from one (`childModels`); `personal-data.spec.ts` fails on
+ * a model that is none of the three.
+ */
+export const NOT_SHOP_DATA: Record<string, string> = {
+  Shop: 'the shop itself: exported and erased as its own row',
+  RefreshToken: "credentials (hashed session tokens) of the shop's people: never exported; deleted on erasure",
+  PasswordResetToken: 'credentials (hashed reset links): never exported; deleted on erasure',
+  IdempotencyRecord: 'consumer bookkeeping keyed by event ids: no shop, no personal data',
+};
+
+/** One join from a child row (or a row on its way) to its parent. */
+export interface ChildHop {
+  /** The parent's table and the columns the child's foreign key references. */
+  table: string;
+  parentColumns: string[];
+  /** The foreign-key columns on the row joined so far. */
+  childColumns: string[];
+}
+
+/**
+ * A model without a shop column whose rows belong to a shop through a
+ * required relation (audit F2 / F3): an invoice's lines through the invoice,
+ * a customer's audit trail through the customer, an import's report through
+ * the import, a webhook's deliveries through the endpoint. `hops` lead from
+ * the child (alias t0) to the first row that names the shop; `shopColumns`
+ * are that row's shop columns (one, or two for a stock transfer, which
+ * belongs to both its shops). `customerColumn` is the child's own
+ * `customerId` when it has one (a customer's erasure reaches it).
+ */
+export interface ChildModel {
+  name: string;
+  table: string;
+  idColumn: string;
+  hops: ChildHop[];
+  shopColumns: string[];
+  customerColumn?: string;
+  /** The models on the way to the shop, for the export manifest and the docs. */
+  via: string[];
+}
+
+function columnOf(model: Prisma.DMMF.Model, field: string): string {
+  return model.fields.find((f) => f.name === field)?.dbName ?? field;
+}
+
+function modelByName(name: string): Prisma.DMMF.Model | undefined {
+  return datamodel.models.find((m) => m.name === name);
+}
+
+function hasShopColumn(model: Prisma.DMMF.Model): boolean {
+  return model.fields.some((f) => f.name === 'shopId' && f.kind === 'scalar');
+}
+
+/** Required relations of a model to another model, in field order. */
+function requiredRelations(model: Prisma.DMMF.Model): Array<{ parent: Prisma.DMMF.Model; childColumns: string[]; parentColumns: string[] }> {
+  const out: Array<{ parent: Prisma.DMMF.Model; childColumns: string[]; parentColumns: string[] }> = [];
+  for (const field of model.fields) {
+    if (field.kind !== 'object' || !field.isRequired || !field.relationFromFields?.length) continue;
+    const parent = modelByName(field.type);
+    if (!parent || parent.name === model.name) continue;
+    out.push({ parent, childColumns: field.relationFromFields.map((f) => columnOf(model, f)), parentColumns: (field.relationToFields ?? []).map((f) => columnOf(parent, f)) });
+  }
+  return out;
+}
+
+/** The required relations of a model straight to Shop (a stock transfer has two). */
+function shopRelations(model: Prisma.DMMF.Model): string[] {
+  return requiredRelations(model).filter((r) => r.parent.name === 'Shop').map((r) => r.childColumns[0]);
+}
+
+/** Every model that is not tenant-owned but reaches one through required relations (shortest path first). */
+export function childModels(): ChildModel[] {
+  const out: ChildModel[] = [];
+  for (const model of datamodel.models) {
+    if (hasShopColumn(model) || NOT_SHOP_DATA[model.name]) continue;
+    const ids = model.fields.filter((f) => f.isId);
+    if (ids.length !== 1) continue;
+    const customer = model.fields.find((f) => f.name === 'customerId' && f.kind === 'scalar');
+    const base = { name: model.name, table: model.dbName ?? model.name, idColumn: ids[0].dbName ?? ids[0].name, ...(customer ? { customerColumn: customer.dbName ?? customer.name } : {}) };
+
+    const direct = shopRelations(model);
+    if (direct.length > 0) {
+      out.push({ ...base, hops: [], shopColumns: direct, via: ['Shop'] });
+      continue;
+    }
+    // Breadth first over required relations: the first row on the way that names the shop ends the path.
+    const queue: Array<{ at: Prisma.DMMF.Model; hops: ChildHop[]; via: string[] }> = [{ at: model, hops: [], via: [] }];
+    const seen = new Set<string>([model.name]);
+    let found: ChildModel | undefined;
+    while (queue.length > 0 && !found) {
+      const { at, hops, via } = queue.shift()!;
+      for (const relation of requiredRelations(at)) {
+        if (seen.has(relation.parent.name)) continue;
+        seen.add(relation.parent.name);
+        const nextHops = [...hops, { table: relation.parent.dbName ?? relation.parent.name, parentColumns: relation.parentColumns, childColumns: relation.childColumns }];
+        const nextVia = [...via, relation.parent.name];
+        if (hasShopColumn(relation.parent)) {
+          found = { ...base, hops: nextHops, shopColumns: [columnOf(relation.parent, 'shopId')], via: nextVia };
+          break;
+        }
+        const viaShop = shopRelations(relation.parent);
+        if (viaShop.length > 0) {
+          found = { ...base, hops: nextHops, shopColumns: viaShop, via: [...nextVia, 'Shop'] };
+          break;
+        }
+        queue.push({ at: relation.parent, hops: nextHops, via: nextVia });
+      }
+    }
+    if (found) out.push(found);
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Models that are neither tenant-owned, nor a child of one, nor excluded with a reason (the spec wants none). */
+export function unownedModels(): string[] {
+  const children = new Set(childModels().map((c) => c.name));
+  return datamodel.models.filter((m) => !hasShopColumn(m) && !NOT_SHOP_DATA[m.name] && !children.has(m.name)).map((m) => m.name);
 }
 
 /** Models that belong to one shop (a `shopId` column), with their table and key columns. */

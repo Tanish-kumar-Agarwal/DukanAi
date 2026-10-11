@@ -5,6 +5,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AnalyticsRepository } from '../repositories/analytics.repository';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 import { jobContext, requireJobShop } from '../../iam/tenant-context/job-context';
+import { Clock } from '../../common/time/clock';
+import { purchaseBusinessDates } from '../analytics-dates';
 
 @Processor('purchase-analytics')
 export class AnalyticsProcessorService extends WorkerHost {
@@ -14,6 +16,7 @@ export class AnalyticsProcessorService extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly repository: AnalyticsRepository,
     private readonly tenantContext: TenantContextService,
+    private readonly clock: Clock,
   ) {
     super();
   }
@@ -41,8 +44,9 @@ export class AnalyticsProcessorService extends WorkerHost {
 
   private async aggregateDailyDashboard(shopId: string) {
     this.logger.log(`Materializing daily analytics snapshot for Shop ${shopId}`);
-    
-    const today = new Date();
+
+    // The shop's business day, not the server's (release audit #26).
+    const { dateKey } = await purchaseBusinessDates(this.prisma, shopId, this.clock.now());
     
     const totalOrdersCount = await this.prisma.purchaseOrder.count({ where: { shopId } });
     const pendingOrdersCount = await this.prisma.purchaseOrder.count({ where: { shopId, status: 'SUBMITTED' } });
@@ -70,7 +74,7 @@ export class AnalyticsProcessorService extends WorkerHost {
     `;
     const averageLeadTimeDays = leadTimeRaw.length > 0 && leadTimeRaw[0].avg_days ? Math.ceil(Number(leadTimeRaw[0].avg_days)) : 0;
 
-    await this.repository.upsertDashboardSnapshot(shopId, today, {
+    await this.repository.upsertDashboardSnapshot(shopId, dateKey, {
       totalPurchases: totalPurchasesAgg._sum.totalAmount || 0,
       totalOrdersCount,
       pendingOrdersCount,
@@ -144,13 +148,13 @@ export class AnalyticsProcessorService extends WorkerHost {
 
   private async aggregateTrends(shopId: string) {
     this.logger.log(`Aggregating purchase trends for Shop ${shopId}`);
-    const today = new Date();
-    const normalizedDate = new Date(Date.UTC(today.getFullYear(), today.getMonth(), 1)); // Monthly
-    
+    // The shop's current month: keyed by its first calendar day, counted from the instant it began there.
+    const { monthKey: normalizedDate, monthStart } = await purchaseBusinessDates(this.prisma, shopId, this.clock.now());
+
     const monthlyAgg = await this.prisma.purchaseOrder.aggregate({
-      where: { 
-        shopId, 
-        createdAt: { gte: normalizedDate },
+      where: {
+        shopId,
+        createdAt: { gte: monthStart },
         status: { notIn: ['DRAFT', 'CANCELLED'] } 
       },
       _sum: { totalAmount: true },

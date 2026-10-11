@@ -6,17 +6,22 @@ import {
   Camera, X, Zap, Image as ImageIcon, ScanLine, FileText, CheckCircle2, 
   User, FolderOpen, ShieldCheck
 } from 'lucide-react';
-import { customersApi, storageApi, WALK_IN_CUSTOMER } from '@/lib/api-client';
+import { customersApi, storageApi, WALK_IN_CUSTOMER, type CustomerView } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
 import { jpegToPdf } from '@/lib/jpeg-pdf';
 import { dataUrlToBlob } from '@/lib/data-url';
 import { useToast } from '@/components/ui/Toast';
-import type { Customer } from '@/types';
+import { useDebounce } from '@/hooks/useDebounce';
+import { useSession } from 'next-auth/react';
+import { canUsePos, isManagement } from '@/components/customers/permissions';
 import { useRouter } from 'next/navigation';
 import { PENDING_SCAN_KEY } from '@/lib/smart-capture';
 import { DOCUMENT_PHOTO_MAX_EDGE, fitWithin } from '@/lib/photo';
 
 const JPEG_QUALITY = 0.9;
+/** Customers offered per search; the rest are reached by typing more (audit W8: the old list stopped at 25). */
+const CUSTOMER_MATCHES = 8;
+const WALK_IN_LABEL = 'Walk-in / General Upload';
 
 /**
  * A JPEG data URL from a picked photo, its long edge at most
@@ -48,12 +53,26 @@ function newBillId(): string {
  * built in the browser when asked. Nothing is claimed that the API did not do.
  */
 export default function SmartCapturePage() {
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedCustomer, setSelectedCustomer] = useState<string>('');
+  // The customer picker searches the API (`GET /customers?q`): every customer of the shop can be linked.
+  const [selected, setSelected] = useState<{ id: string; name: string } | null>(null);
+  const [customerQuery, setCustomerQuery] = useState('');
+  const [matches, setMatches] = useState<CustomerView[]>([]);
+  const [matchTotal, setMatchTotal] = useState(0);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [listOpen, setListOpen] = useState(false);
+  const [highlight, setHighlight] = useState(-1);
+  const debouncedQuery = useDebounce(customerQuery.trim(), 250);
+  const searchSeq = useRef(0);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const selectedCustomer = selected?.id ?? '';
   const { toast } = useToast();
   const router = useRouter();
+  const { data: session } = useSession();
+  // The scanner's `POST /ocr/scan-bill` is MANAGEMENT_ROLES (audit W12).
+  const allowOcr = isManagement(session?.user?.role);
+  /** `POST /storage/bills/...` is POS_ROLES: a VIEWER cannot file a bill. */
+  const allowSave = canUsePos(session?.user?.role);
   
   // Camera & Capture State
   const [isCameraOpen, setIsCameraOpen] = useState(false);
@@ -66,49 +85,88 @@ export default function SmartCapturePage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // Bumped by every open and stop: a camera that answers for an older request is stopped at once.
+  const cameraRequest = useRef(0);
+  const mounted = useRef(true);
 
-  const fetchCustomers = async () => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const data = await customersApi.list();
-      setCustomers(data.items);
-    } catch (err) {
-      console.error('Error fetching customers', err);
-      setCustomers([]);
-      setError('Could not load customers. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
+  // The newest customers when nothing is typed, else the matches; only the newest answer lands.
+  useEffect(() => {
+    if (selected) return;
+    const seq = ++searchSeq.current;
+    setSearching(true);
+    setSearchError(null);
+    customersApi
+      .list({ q: debouncedQuery || undefined, take: CUSTOMER_MATCHES })
+      .then((page) => {
+        if (seq !== searchSeq.current) return;
+        setMatches(page.items);
+        setMatchTotal(page.total);
+      })
+      .catch((err) => {
+        if (seq !== searchSeq.current) return;
+        setMatches([]);
+        setMatchTotal(0);
+        setSearchError(describeApiError(err, 'Searching customers (GET /customers)'));
+      })
+      .finally(() => {
+        if (seq === searchSeq.current) setSearching(false);
+      });
+  }, [debouncedQuery, selected]);
 
   useEffect(() => {
-    void fetchCustomers();
+    setHighlight(-1);
+  }, [matches]);
+
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) setListOpen(false);
+    };
+    document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
   }, []);
 
+  const chooseCustomer = (customer: { id: string; name: string } | null) => {
+    setSelected(customer);
+    setCustomerQuery('');
+    setListOpen(false);
+  };
+
   const stopStream = useCallback(() => {
+    cameraRequest.current += 1;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     setTorchOn(false);
   }, []);
 
-  // The camera never outlives the page.
-  useEffect(() => stopStream, [stopStream]);
+  // The camera never outlives the page, even when the permission prompt answers after it is gone (audit W18).
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      stopStream();
+    };
+  }, [stopStream]);
 
   const openCamera = async () => {
     setIsCameraOpen(true);
     setCapturedImage(null);
     setSuccessMsg('');
+    const request = ++cameraRequest.current;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
       });
+      if (!mounted.current || request !== cameraRequest.current) {
+        // Closed (or left) while the prompt was open: never keep the camera on.
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
       }
     } catch (err) {
+      if (!mounted.current || request !== cameraRequest.current) return;
       console.error('Error accessing camera:', err);
       toast('Camera permission denied or not available. You can pick a photo from the gallery instead.', 'error');
       setIsCameraOpen(true);
@@ -172,7 +230,26 @@ export default function SmartCapturePage() {
     }
   };
 
-  const customerName = () => customers.find((c) => String(c.id) === selectedCustomer)?.name ?? 'Walk-in / General';
+  const customerName = () => selected?.name ?? 'Walk-in / General';
+
+  // Option 0 is the walk-in upload, then the matches.
+  const pickerOptions: Array<{ id: string; name: string; phone?: string } | null> = [null, ...matches.map((c) => ({ id: c.id, name: c.name, phone: c.phone }))];
+  const onPickerKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setListOpen(true);
+      setHighlight((h) => (h + 1) % pickerOptions.length);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setListOpen(true);
+      setHighlight((h) => (h <= 0 ? pickerOptions.length - 1 : h - 1));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (listOpen && highlight >= 0) chooseCustomer(pickerOptions[highlight]);
+    } else if (e.key === 'Escape') {
+      setListOpen(false);
+    }
+  };
 
   const saveAction = async (action: 'photo' | 'pdf' | 'ocr') => {
     if (!capturedImage) return;
@@ -211,28 +288,6 @@ export default function SmartCapturePage() {
       setIsProcessing(false);
     }
   };
-  if (loading) {
-    return (
-      <div className="p-8 flex justify-center">
-        <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-[#3b82f6]" />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="p-8 text-center">
-        <p className="text-sm font-medium text-gray-800">Unable to load customers</p>
-        <p className="mt-1 text-xs text-gray-500">{error}</p>
-        <button
-          onClick={() => void fetchCustomers()}
-          className="mt-4 rounded-xl bg-[#3b82f6] px-4 py-2 text-sm font-bold text-white transition-all hover:bg-[#2563eb]"
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
 
   return (
     <div className="max-w-[1400px] mx-auto space-y-8 pb-10">
@@ -268,17 +323,70 @@ export default function SmartCapturePage() {
           </h2>
           
           <div className="mb-6">
-            <label className="block text-sm font-bold text-gray-700 mb-2">Select Customer (Optional)</label>
-            <select 
-              value={selectedCustomer}
-              onChange={(e) => setSelectedCustomer(e.target.value)}
-              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#3b82f6]/20 focus:border-[#3b82f6] transition-all"
-            >
-              <option value="">Walk-in / General Upload</option>
-              {customers.map(c => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+            <label htmlFor="capture-customer" className="block text-sm font-bold text-gray-700 mb-2">Select Customer (Optional)</label>
+            <div className="relative" ref={pickerRef}>
+              <input
+                id="capture-customer"
+                type="text"
+                role="combobox"
+                aria-expanded={listOpen}
+                aria-controls="capture-customer-list"
+                aria-autocomplete="list"
+                autoComplete="off"
+                value={selected ? selected.name : customerQuery}
+                onChange={(e) => {
+                  setSelected(null);
+                  setCustomerQuery(e.target.value);
+                  setListOpen(true);
+                }}
+                onFocus={() => setListOpen(true)}
+                onClick={() => setListOpen(true)}
+                onKeyDown={onPickerKey}
+                placeholder={`${WALK_IN_LABEL} — type a name or phone to search`}
+                className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#3b82f6]/20 focus:border-[#3b82f6] transition-all"
+              />
+              {listOpen && (
+                <ul
+                  id="capture-customer-list"
+                  role="listbox"
+                  aria-label="Customers"
+                  className="absolute left-0 right-0 z-30 mt-1 max-h-64 overflow-y-auto rounded-xl border border-gray-100 bg-white shadow-xl"
+                >
+                  {pickerOptions.map((option, index) => (
+                    <li
+                      key={option?.id ?? 'walk-in'}
+                      role="option"
+                      aria-selected={option ? selected?.id === option.id : selected === null}
+                      onMouseEnter={() => setHighlight(index)}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => chooseCustomer(option)}
+                      className={`cursor-pointer px-3 py-2 text-sm ${highlight === index ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
+                    >
+                      {option ? (
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-gray-800 truncate">{option.name}</span>
+                          <span className="text-[11px] text-gray-500 shrink-0">{option.phone}</span>
+                        </div>
+                      ) : (
+                        <span className="text-gray-600">{WALK_IN_LABEL}</span>
+                      )}
+                    </li>
+                  ))}
+                  {searching && matches.length === 0 && <li className="px-3 py-2 text-xs text-gray-400">Searching…</li>}
+                  {!searching && !searchError && matches.length === 0 && debouncedQuery && (
+                    <li className="px-3 py-2 text-xs text-gray-500">No customers match &ldquo;{debouncedQuery}&rdquo;.</li>
+                  )}
+                  {matchTotal > matches.length && (
+                    <li className="px-3 py-2 text-[11px] text-gray-400">
+                      {matchTotal - matches.length} more {debouncedQuery ? 'match' : 'customers'}: type a name or phone number to narrow the list.
+                    </li>
+                  )}
+                </ul>
+              )}
+            </div>
+            {searchError && (
+              <p role="alert" className="mt-1.5 text-[11px] text-red-600 font-medium">{searchError}</p>
+            )}
             <p className="text-xs text-gray-500 mt-2">A linked bill is filed under that customer&apos;s folder in the shop document storage.</p>
           </div>
 
@@ -425,7 +533,7 @@ export default function SmartCapturePage() {
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       {/* Option 1 */}
-                      <button onClick={() => void saveAction('photo')} className="bg-gray-900 hover:bg-gray-800 text-white rounded-2xl p-5 flex flex-col items-center justify-center gap-3 border border-gray-700 hover:border-blue-500 transition-all shadow-lg group">
+                      <button onClick={() => void saveAction('photo')} disabled={!allowSave} title={allowSave ? undefined : 'Viewers cannot store bills'} className="bg-gray-900 hover:bg-gray-800 text-white rounded-2xl p-5 flex flex-col items-center justify-center gap-3 border border-gray-700 hover:border-blue-500 transition-all shadow-lg group disabled:opacity-50 disabled:cursor-not-allowed">
                         <div className="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center group-hover:scale-110 transition-transform">
                           <ImageIcon size={24} className="text-blue-400" />
                         </div>
@@ -434,7 +542,7 @@ export default function SmartCapturePage() {
                       </button>
                       
                       {/* Option 2 */}
-                      <button onClick={() => void saveAction('pdf')} className="bg-gray-900 hover:bg-gray-800 text-white rounded-2xl p-5 flex flex-col items-center justify-center gap-3 border border-gray-700 hover:border-red-500 transition-all shadow-lg group">
+                      <button onClick={() => void saveAction('pdf')} disabled={!allowSave} title={allowSave ? undefined : 'Viewers cannot store bills'} className="bg-gray-900 hover:bg-gray-800 text-white rounded-2xl p-5 flex flex-col items-center justify-center gap-3 border border-gray-700 hover:border-red-500 transition-all shadow-lg group disabled:opacity-50 disabled:cursor-not-allowed">
                         <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center group-hover:scale-110 transition-transform">
                           <FileText size={24} className="text-red-400" />
                         </div>
@@ -443,7 +551,11 @@ export default function SmartCapturePage() {
                       </button>
 
                       {/* Option 3 */}
-                      <button onClick={() => void saveAction('ocr')} className="bg-[#1e1b4b] hover:bg-purple-900 text-white rounded-2xl p-5 flex flex-col items-center justify-center gap-3 border border-[#8B5CF6]/50 shadow-[0_0_20px_rgba(139,92,246,0.15)] hover:shadow-[0_0_30px_rgba(139,92,246,0.3)] transition-all group">
+                      <button
+                        onClick={() => void saveAction('ocr')}
+                        disabled={!allowOcr}
+                        title={allowOcr ? undefined : 'Only managers, admins and the owner can scan bills'}
+                        className="bg-[#1e1b4b] hover:bg-purple-900 text-white rounded-2xl p-5 flex flex-col items-center justify-center gap-3 border border-[#8B5CF6]/50 shadow-[0_0_20px_rgba(139,92,246,0.15)] hover:shadow-[0_0_30px_rgba(139,92,246,0.3)] transition-all group disabled:opacity-50 disabled:cursor-not-allowed">
                         <div className="w-12 h-12 rounded-full bg-purple-500/20 flex items-center justify-center group-hover:scale-110 transition-transform">
                           <ScanLine size={24} className="text-[#a78bfa]" />
                         </div>

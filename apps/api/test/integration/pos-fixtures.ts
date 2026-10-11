@@ -13,9 +13,11 @@ import { PrismaService } from '../../src/prisma/prisma.service';
 import { TenantContextService } from '../../src/iam/tenant-context/tenant-context.service';
 import { GlobalExceptionFilter } from '../../src/common/filters/global-exception.filter';
 import { waitForQueueConnections } from '../../src/common/lifecycle/queue-readiness';
+import { createHttpAdapter } from '../../src/common/http/http-adapter';
 import { InventoryDomainService } from '../../src/inventory-domain/services/inventory-domain.service';
 import { InventoryLocationService } from '../../src/inventory-domain/services/inventory-location.service';
 import { BillingActor } from '../../src/billing/billing.types';
+import { inclusiveUnitPrice } from '../../src/billing/utils/invoice-math.engine';
 
 export const num = (v: Prisma.Decimal | number | string | null | undefined) => Number(v ?? 0);
 
@@ -41,7 +43,8 @@ export async function bootApp(
   let builder = Test.createTestingModule({ imports: [AppModule] });
   if (configure) builder = configure(builder);
   const moduleRef = await builder.compile();
-  const app = moduleRef.createNestApplication();
+  // The same Express instance settings as main.ts (case-sensitive routing, audit R13).
+  const app = moduleRef.createNestApplication(createHttpAdapter());
   app.setGlobalPrefix('api');
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));
   app.useGlobalFilters(new GlobalExceptionFilter());
@@ -111,6 +114,8 @@ export interface ProductSpec {
   legacyStock?: number;
   reorderPoint?: number;
   isActive?: boolean;
+  /** Tax-inclusive MRP; the selling price plus GST and cess when absent (the products API default, audit P1-2). */
+  mrp?: number;
 }
 
 export async function createProduct(app: INestApplication, shop: TestShop, spec: ProductSpec): Promise<string> {
@@ -124,7 +129,7 @@ export async function createProduct(app: INestApplication, shop: TestShop, spec:
         barcode: `${spec.key}${shop.suffix}`,
         costPrice: spec.costPrice ?? 60,
         sellingPrice: spec.sellingPrice ?? 100,
-        mrp: spec.sellingPrice ?? 120,
+        mrp: spec.mrp ?? inclusiveUnitPrice(spec.sellingPrice ?? 100, spec.gstRate ?? 'EIGHTEEN', spec.cessRate ?? 0).toNumber(),
         wholesalePrice: spec.sellingPrice ?? 90,
         unit: spec.unit ?? 'PCS',
         gstRate: spec.gstRate ?? 'EIGHTEEN',

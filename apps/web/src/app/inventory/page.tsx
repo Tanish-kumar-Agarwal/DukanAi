@@ -13,12 +13,15 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { inventoryApi, type BatchItem } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
 import { LowStockPanel } from '@/components/inventory/LowStockPanel';
+import { PaginationControls } from '@/components/customers/PaginationControls';
 
 function formatBatchDate(date: string | null, options: Intl.DateTimeFormatOptions) {
   return date ? new Date(date).toLocaleDateString('en-IN', options) : 'Not recorded';
 }
 
 const LOW_STOCK_TAB = 'Low Stock';
+/** Rows per table page; the tiles and the search cover every batch (audit W9). */
+const PAGE_SIZE = 50;
 /** Only the tabs with a module behind them (roadmap 6.7): stock moves are recorded from Products › Update Stock. */
 const MAIN_TABS = ['Batches & Expiry', LOW_STOCK_TAB];
 
@@ -32,14 +35,19 @@ function InventoryPageContent() {
   const searchParams = useSearchParams();
   const tabParam = searchParams.get('tab');
   const [batches, setBatches] = useState<BatchItem[]>([]);
+  // Every batch is read page by page (`X-Total-Count`); a bound that stopped the read is said on screen.
+  const [batchTotal, setBatchTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [skip, setSkip] = useState(0);
 
   useEffect(() => {
     const loadBatches = async () => {
       try {
         setLoadError(null);
-        setBatches(await inventoryApi.listBatches());
+        const result = await inventoryApi.listBatches();
+        setBatches(result.items);
+        setBatchTotal(result.total);
       } catch (err) {
         setLoadError(describeApiError(err, 'Loading inventory batches (GET /batches)'));
       } finally {
@@ -49,6 +57,10 @@ function InventoryPageContent() {
     void loadBatches();
   }, []);
   const [searchTerm, setSearchTerm] = useState('');
+  // A new search starts on the first page.
+  useEffect(() => {
+    setSkip(0);
+  }, [searchTerm]);
   
   // Modals & Panels
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
@@ -103,6 +115,7 @@ function InventoryPageContent() {
     b.batchNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
     b.sku.toLowerCase().includes(searchTerm.toLowerCase())
   );
+  const pageBatches = processedBatches.slice(skip, skip + PAGE_SIZE);
 
   const handleAction = (action: string, batch: BatchItem, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -171,7 +184,8 @@ function InventoryPageContent() {
           </div>
           <div>
             <p className="text-xs text-gray-500 font-medium">Monthly Wastage</p>
-            <h3 className="text-xl font-bold text-gray-800 tracking-tight">₹0</h3>
+            {/* No module records wastage as a figure yet: say so rather than show an invented ₹0 (roadmap 6.1). */}
+            <h3 className="text-xl font-bold text-gray-800 tracking-tight" title="Wastage is not recorded as a separate figure yet">Not tracked</h3>
           </div>
         </Card>
       </div>
@@ -253,7 +267,7 @@ function InventoryPageContent() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {processedBatches.map((batch) => {
+                {pageBatches.map((batch) => {
                   const expDate = batch.expDate ? new Date(batch.expDate) : null;
                   const isExpired = Boolean(expDate && expDate <= today && batch.quantity > 0);
                   const isExpiringSoon = Boolean(!isExpired && expDate && expDate <= thirtyDaysFromNow && batch.quantity > 0);
@@ -340,6 +354,14 @@ function InventoryPageContent() {
               </tbody>
             </table>
           </div>
+          {batchTotal > batches.length && (
+            <p role="status" className="px-5 pt-3 text-xs font-medium text-orange-600">
+              Showing the first {batches.length.toLocaleString('en-IN')} of {batchTotal.toLocaleString('en-IN')} batches: the tiles and the search cover only these.
+            </p>
+          )}
+          {processedBatches.length > PAGE_SIZE && (
+            <PaginationControls skip={skip} take={PAGE_SIZE} total={processedBatches.length} onChange={setSkip} itemLabel="batches" />
+          )}
         </Card>
       )}
 

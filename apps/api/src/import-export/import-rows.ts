@@ -4,6 +4,7 @@ import { validateSync, ValidationError } from 'class-validator';
 import { canonicalState } from '../common/india/states';
 import { CreateCustomerDto } from '../customers/dto/create-customer.dto';
 import { CreateProductDto } from '../products/dto/create-product.dto';
+import { inclusiveUnitPrice } from '../billing/utils/invoice-math.engine';
 import { mapHeaders } from './import-columns';
 
 /**
@@ -208,6 +209,11 @@ export interface ProductImportValue {
   description?: string;
 }
 
+/** The row error when an MRP is below one unit's price with GST (audit P1-2). */
+export function mrpBelowMessage(mrp: number, inclusivePrice: number): string {
+  return `MRP ${mrp.toFixed(2)} is below the selling price plus GST (${inclusivePrice.toFixed(2)}); the MRP includes all taxes.`;
+}
+
 export function validateProductRow(rowNumber: number, raw: Record<string, string>): ValidatedRow<ProductImportValue> {
   const issues: RowIssue[] = [];
   const error = (field: string | undefined, message: string) => issues.push({ field, message, severity: 'error' });
@@ -237,10 +243,6 @@ export function validateProductRow(rowNumber: number, raw: Record<string, string
   const sellingPrice = money('sellingPrice', true);
   const mrp = money('mrp', false);
   const wholesalePrice = money('wholesalePrice', false);
-  if (sellingPrice !== undefined && mrp !== undefined && sellingPrice > mrp) {
-    // Legal Metrology: nothing is sold above its printed MRP (the products page rule, roadmap 6.2).
-    error('mrp', `MRP ${mrp} is below the selling price ${sellingPrice}.`);
-  }
   if (sellingPrice === 0) issues.push({ field: 'sellingPrice', message: 'The selling price is 0: the POS will sell it free.', severity: 'warning' });
 
   let unit: ProductUnit | undefined;
@@ -260,6 +262,15 @@ export function validateProductRow(rowNumber: number, raw: Record<string, string
     const value = Number(cell('cessRate').replace(/%$/, ''));
     if (!Number.isFinite(value) || value < 0 || value > 100) error('cessRate', `"${cell('cessRate')}" is not a cess percent (0 to 100).`);
     else cessRate = value;
+  }
+  // Legal Metrology: nothing is sold above its printed MRP, and the MRP
+  // includes GST while the selling price does not (audit P1-2). With the
+  // row's own GST slab the full rule applies here; without one the importer
+  // checks it against the slab that will apply (18% for a new product, the
+  // stored one for an update).
+  if (sellingPrice !== undefined && mrp !== undefined) {
+    const floor = gstRate ? inclusiveUnitPrice(sellingPrice, gstRate, cessRate ?? 0).toNumber() : sellingPrice;
+    if (mrp < floor) error('mrp', gstRate ? mrpBelowMessage(mrp, floor) : `MRP ${mrp} is below the selling price ${sellingPrice}.`);
   }
   let type: ProductType | undefined;
   if (cell('type')) {
@@ -291,7 +302,7 @@ export function validateProductRow(rowNumber: number, raw: Record<string, string
       type,
       costPrice,
       sellingPrice,
-      mrp: mrp ?? sellingPrice,
+      mrp,
       wholesalePrice: wholesalePrice ?? sellingPrice,
       gstRate,
       cessRate,

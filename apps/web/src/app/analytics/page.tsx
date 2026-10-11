@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useSession } from 'next-auth/react';
 import { Card } from '@/components/ui/Card';
 import {
   TrendingUp, TrendingDown, Users, Package, Wallet, Download, Calendar, BarChart3,
@@ -20,7 +21,8 @@ import {
 } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
 import { ErrorState } from '@/components/customers/States';
-import { formatDate, formatMoney, labelFor, PAYMENT_MODE_LABELS, toIsoDate } from '@/components/customers/format';
+import { formatBusinessDate, formatDate, formatMoney, labelFor, PAYMENT_MODE_LABELS } from '@/components/customers/format';
+import { isManagement } from '@/components/customers/permissions';
 
 // recharts is loaded after the shell (roadmap 6.8); each chart shows a placeholder until then.
 const chartLoading = () => <SkeletonBox className="h-full w-full rounded-lg" />;
@@ -43,13 +45,23 @@ const EXPORTS: Array<{ kind: ExportKind; label: string; description: string; ico
 
 const CHART_COLORS = ['#8B5CF6', '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#14B8A6'];
 
-/** The analytics API treats ranges as rolling windows of N days ending today. */
-function rangeDates(range: AnalyticsRange): { from: string; to: string } {
+/**
+ * The export window: the business days the page shows, as the API computed
+ * them in the shop's time zone (`from` / `to` of the analytics payload), else
+ * N days ending on the shop's business date from the summary. Never the
+ * browser's clock (audit W16).
+ */
+function rangeDates(
+  range: AnalyticsRange,
+  page: AnalyticsPagePayload | null,
+  summary: DashboardSummary | null,
+): { from: string; to: string } | null {
+  if (page?.from && page.to) return { from: page.from, to: page.to };
+  if (!summary?.businessDate) return null;
   const days = RANGE_OPTIONS.find((option) => option.value === range)?.days ?? 7;
-  const to = new Date();
-  const from = new Date(to);
-  from.setDate(to.getDate() - (days - 1));
-  return { from: toIsoDate(from), to: toIsoDate(to) };
+  const [year, month, day] = summary.businessDate.split('-').map(Number);
+  const from = new Date(Date.UTC(year, month - 1, day - (days - 1)));
+  return { from: from.toISOString().slice(0, 10), to: summary.businessDate };
 }
 
 function ChangeBadge({ pct, invert = false }: { pct: number | null; invert?: boolean }) {
@@ -88,6 +100,9 @@ function AnalyticsSkeleton() {
 
 export default function AnalyticsPage() {
   const { toast } = useToast();
+  const { data: session } = useSession();
+  // The CSV exports are EXPORT_ROLES (MANAGER and above): a cashier or viewer would only collect 403s (audit W12).
+  const allowExport = isManagement(session?.user?.role);
   const [range, setRange] = useState<AnalyticsRange>('week');
   const [data, setData] = useState<AnalyticsPagePayload | null>(null);
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
@@ -132,10 +147,11 @@ export default function AnalyticsPage() {
   }, [isExportOpen]);
 
   const rangeLabel = RANGE_OPTIONS.find((option) => option.value === range)?.label ?? 'This Week';
-  const exportDates = rangeDates(range);
+  // Only the window of the figures on screen (a range change clears it until the new page arrives).
+  const exportDates = data && !loading ? rangeDates(range, data, summary) : null;
 
   const handleExport = async (kind: ExportKind) => {
-    if (exporting) return;
+    if (exporting || !exportDates) return;
     setExporting(kind);
     try {
       await analyticsApi.exportCsv(kind, exportDates.from, exportDates.to);
@@ -184,58 +200,60 @@ export default function AnalyticsPage() {
             <Calendar className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
           </div>
 
-          <div className="relative" ref={exportRef}>
-            <button
-              type="button"
-              onClick={() => setIsExportOpen((open) => !open)}
-              aria-haspopup="menu"
-              aria-expanded={isExportOpen}
-              disabled={exporting !== null}
-              className="bg-[#060B26] hover:bg-gray-900 text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg transition-all disabled:opacity-60"
-            >
-              <Download size={18} />
-              {exporting ? 'Exporting…' : 'Export'}
-              <ChevronDown size={14} className={`transition-transform ${isExportOpen ? 'rotate-180' : ''}`} />
-            </button>
-            <AnimatePresence>
-              {isExportOpen && (
-                <motion.div
-                  role="menu"
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 8 }}
-                  className="absolute right-0 top-full z-50 mt-2 w-72 overflow-hidden rounded-xl border border-gray-100 bg-white shadow-2xl"
-                >
-                  <div className="border-b border-gray-100 bg-gray-50/60 px-4 py-2.5 text-[11px] text-gray-500">
-                    CSV for <span className="font-bold text-gray-700">{rangeLabel}</span>: {formatDate(exportDates.from)} – {formatDate(exportDates.to)}
-                  </div>
-                  {EXPORTS.map((item) => {
-                    const Icon = item.icon;
-                    const busy = exporting === item.kind;
-                    return (
-                      <button
-                        key={item.kind}
-                        role="menuitem"
-                        type="button"
-                        onClick={() => void handleExport(item.kind)}
-                        disabled={exporting !== null}
-                        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-purple-50 text-[#8B5CF6]">
-                          <Icon size={16} />
-                        </div>
-                        <div className="flex-1">
-                          <p className="text-sm font-bold text-gray-800">{item.label}</p>
-                          <p className="text-[11px] text-gray-500">{item.description}</p>
-                        </div>
-                        {busy && <span className="text-[10px] font-bold text-[#8B5CF6]">Downloading…</span>}
-                      </button>
-                    );
-                  })}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+          {allowExport && (
+            <div className="relative" ref={exportRef}>
+              <button
+                type="button"
+                onClick={() => setIsExportOpen((open) => !open)}
+                aria-haspopup="menu"
+                aria-expanded={isExportOpen}
+                disabled={exporting !== null}
+                className="bg-[#060B26] hover:bg-gray-900 text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg transition-all disabled:opacity-60"
+              >
+                <Download size={18} />
+                {exporting ? 'Exporting…' : 'Export'}
+                <ChevronDown size={14} className={`transition-transform ${isExportOpen ? 'rotate-180' : ''}`} />
+              </button>
+              <AnimatePresence>
+                {isExportOpen && (
+                  <motion.div
+                    role="menu"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 8 }}
+                    className="absolute right-0 top-full z-50 mt-2 w-72 overflow-hidden rounded-xl border border-gray-100 bg-white shadow-2xl"
+                  >
+                    <div className="border-b border-gray-100 bg-gray-50/60 px-4 py-2.5 text-[11px] text-gray-500">
+                      CSV for <span className="font-bold text-gray-700">{rangeLabel}</span>: {exportDates ? `${formatBusinessDate(exportDates.from)} – ${formatBusinessDate(exportDates.to)}` : 'loading the shop\'s dates…'}
+                    </div>
+                    {EXPORTS.map((item) => {
+                      const Icon = item.icon;
+                      const busy = exporting === item.kind;
+                      return (
+                        <button
+                          key={item.kind}
+                          role="menuitem"
+                          type="button"
+                          onClick={() => void handleExport(item.kind)}
+                          disabled={exporting !== null || !exportDates}
+                          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-purple-50 text-[#8B5CF6]">
+                            <Icon size={16} />
+                          </div>
+                          <div className="flex-1">
+                            <p className="text-sm font-bold text-gray-800">{item.label}</p>
+                            <p className="text-[11px] text-gray-500">{item.description}</p>
+                          </div>
+                          {busy && <span className="text-[10px] font-bold text-[#8B5CF6]">Downloading…</span>}
+                        </button>
+                      );
+                    })}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
         </div>
       </div>
 
@@ -271,7 +289,7 @@ export default function AnalyticsPage() {
               <div className="absolute -right-4 -top-4 w-24 h-24 bg-purple-500/10 rounded-full group-hover:scale-150 transition-transform duration-500" />
               <div className="flex justify-between items-start relative z-10">
                 <div>
-                  <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Net Profit</p>
+                  <p className="text-xs text-gray-500 font-bold uppercase tracking-wider" title="Gross profit (sales before GST minus the cost of goods sold) minus this period's expenses">Net Profit</p>
                   <h3 className="text-2xl font-black text-gray-800 mt-1">{formatMoney(data.kpis.netProfit)}</h3>
                 </div>
                 <div className="w-10 h-10 rounded-xl bg-purple-50 flex items-center justify-center text-[#8B5CF6]">

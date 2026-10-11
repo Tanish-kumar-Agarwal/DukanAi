@@ -124,6 +124,15 @@ describe('ObservabilityCollectorsService.refresh under outages', () => {
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(1); // only the probe
   });
 
+  it('concurrent scrapes share one refresh (single flight, audit R13)', async () => {
+    const { service, prisma } = build({ dbUp: true, redis: 'up' });
+    jest.spyOn(service, 'refreshQueues').mockResolvedValue(undefined);
+    await Promise.all([service.refresh(), service.refresh(), service.refresh()]);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(4); // one probe + three sources, not three times that
+    await service.refresh();
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(8); // a later scrape refreshes again
+  });
+
   it('measures the volumes under the storage root and the upload temp directory, also before they exist', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'volumes-'));
     try {

@@ -29,6 +29,7 @@ import type Redis from 'ioredis';
 import { REDIS_CLIENT } from './common/redis/redis.module';
 import { bullConnectionFromUrl } from './common/redis/redis-connection';
 import { buildCacheOptions } from './common/cache/cache-options';
+import { bullDefaultJobOptions } from './common/queues/job-options';
 import { RedisThrottlerStorage } from './common/throttling/redis-throttler.storage';
 import { buildThrottlerOptions } from './common/throttling/throttler-options';
 import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
@@ -101,15 +102,9 @@ import { ReconciliationModule } from './reconciliation/reconciliation.module';
       useFactory: (redisConfig: RedisConfig, bullConfig: BullConfig) => ({
         // Parsed once from REDIS_URL: TLS for rediss://, decoded credentials, db index.
         connection: bullConnectionFromUrl(redisConfig.redisUrl),
-        defaultJobOptions: {
-          removeOnComplete: bullConfig.removeOnComplete,
-          removeOnFail: bullConfig.removeOnFail,
-          attempts: bullConfig.defaultAttempts,
-          backoff: { 
-            type: bullConfig.backoffType as 'exponential' | 'fixed', 
-            delay: bullConfig.backoffDelay 
-          },
-        },
+        // Bounded removal of finished and failed jobs (audit R1); a queue with
+        // its own retry policy builds its options from the same function.
+        defaultJobOptions: bullDefaultJobOptions(bullConfig),
       }),
     }),
     // Per-IP rate limits with counters in Redis (shared by every instance);

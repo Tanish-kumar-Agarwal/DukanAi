@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSession } from 'next-auth/react';
 import { Card } from '@/components/ui/Card';
 import { 
@@ -13,7 +13,7 @@ import { useToast } from '@/components/ui/Toast';
 import { AnimatePresence, motion } from 'framer-motion';
 import { employeesApi, INVITABLE_ROLES, ROLE_LABELS, type EmployeeView } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
-import { AUTH_DISABLED } from '@/lib/auth-bypass';
+import { effectiveRole, outranks } from '@/components/customers/permissions';
 
 const ROLE_COLORS: Record<string, string> = {
   Owner: 'bg-yellow-100 text-yellow-700',
@@ -28,18 +28,23 @@ const STATUS_COLORS: Record<string, string> = {
   Suspended: 'bg-red-50 text-red-600 border-red-200',
 };
 
-/** `PATCH /users/:id/suspend` and `DELETE /users/:id` are OWNER/ADMIN; invitations are MANAGER and above. */
-const USER_ADMIN_ROLES = new Set(['OWNER', 'ADMIN', 'SUPER_ADMIN']);
+/**
+ * `PATCH /users/:id/suspend` and `DELETE /users/:id` are OWNER/ADMIN (the API
+ * lists no SUPER_ADMIN there), and only on a user who ranks strictly below
+ * the caller; invitations are MANAGER and above, for a role below the
+ * inviter's (audit W12). The auth bypass is the OWNER.
+ */
+const USER_ADMIN_ROLES = new Set(['OWNER', 'ADMIN']);
 const INVITE_ROLES = new Set(['MANAGER', 'OWNER', 'ADMIN', 'SUPER_ADMIN']);
 
 function canAdministerUsers(role: string | null | undefined): boolean {
-  if (AUTH_DISABLED) return true; // the bypass system user is an OWNER
-  return !!role && USER_ADMIN_ROLES.has(role.toUpperCase());
+  const effective = effectiveRole(role);
+  return !!effective && USER_ADMIN_ROLES.has(effective);
 }
 
 function canInvite(role: string | null | undefined): boolean {
-  if (AUTH_DISABLED) return true;
-  return !!role && INVITE_ROLES.has(role.toUpperCase());
+  const effective = effectiveRole(role);
+  return !!effective && INVITE_ROLES.has(effective);
 }
 
 /**
@@ -53,8 +58,11 @@ export default function EmployeesPage() {
   const { toast } = useToast();
   const { data: session } = useSession();
   const currentUserId = session?.user?.id ?? null;
-  const allowAdmin = canAdministerUsers(session?.user?.role);
-  const allowInvite = canInvite(session?.user?.role);
+  const myRole = session?.user?.role;
+  const allowAdmin = canAdministerUsers(myRole);
+  const allowInvite = canInvite(myRole);
+  // Only roles below the inviter's own: the API refuses the others.
+  const invitableRoles = useMemo(() => INVITABLE_ROLES.filter((role) => outranks(myRole, role.key)), [myRole]);
 
   const [employees, setEmployees] = useState<EmployeeView[]>([]);
   const [loading, setLoading] = useState(true);
@@ -104,6 +112,10 @@ export default function EmployeesPage() {
   // Form State - Invite
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState(INVITABLE_ROLES[0].key);
+  // The chosen role must stay one the inviter may grant (the session can arrive after the first render).
+  useEffect(() => {
+    if (invitableRoles.length > 0 && !invitableRoles.some((role) => role.key === inviteRole)) setInviteRole(invitableRoles[0].key);
+  }, [invitableRoles, inviteRole]);
   const [inviting, setInviting] = useState(false);
 
   // Derived Stats (all from the API rows; nothing invented)
@@ -138,7 +150,7 @@ export default function EmployeesPage() {
       toast(`Invitation emailed to ${result.email} (${ROLE_LABELS[result.role] ?? result.role}); it expires ${new Date(result.expiresAt).toLocaleDateString('en-IN')}.`, 'success');
       setIsInviteModalOpen(false);
       setInviteEmail('');
-      setInviteRole(INVITABLE_ROLES[0].key);
+      setInviteRole(invitableRoles[0]?.key ?? INVITABLE_ROLES[0].key);
     } catch (err) {
       toast(describeApiError(err, 'Inviting a staff member (POST /invitations/generate)'), 'error');
     } finally {
@@ -200,6 +212,8 @@ export default function EmployeesPage() {
 
   /** The API refuses acting on yourself; the menu says so instead of offering it. */
   const isSelf = (employee: EmployeeView) => currentUserId !== null && employee.id === currentUserId;
+  /** Suspend / remove only a user the caller outranks (the API's `outranks`), never yourself. */
+  const canManage = (employee: EmployeeView) => allowAdmin && !isSelf(employee) && outranks(myRole, employee.roleKey);
 
   if (loading) return <div className="p-12 text-center text-gray-500">Loading employees...</div>;
 
@@ -400,7 +414,7 @@ export default function EmployeesPage() {
                             >
                               View Profile
                             </button>
-                            {allowAdmin && !self && (
+                            {canManage(emp) && (
                               <>
                                 <div className="h-px bg-gray-100 w-full" />
                                 <button 
@@ -422,6 +436,9 @@ export default function EmployeesPage() {
                             )}
                             {allowAdmin && self && (
                               <p className="px-4 py-2.5 text-[11px] text-gray-400">You cannot suspend or remove your own account.</p>
+                            )}
+                            {allowAdmin && !self && !canManage(emp) && (
+                              <p className="px-4 py-2.5 text-[11px] text-gray-400">You can only suspend or remove a role below your own.</p>
                             )}
                           </motion.div>
                         )}
@@ -455,7 +472,7 @@ export default function EmployeesPage() {
           <div>
             <label className="text-sm font-medium">Role</label>
             <select value={inviteRole} onChange={e=>setInviteRole(e.target.value)} className="w-full mt-1 border rounded-lg p-2 bg-white">
-              {INVITABLE_ROLES.map((role) => <option key={role.key} value={role.key}>{role.label}</option>)}
+              {invitableRoles.map((role) => <option key={role.key} value={role.key}>{role.label}</option>)}
             </select>
             <p className="text-xs text-gray-500 mt-2">You can only invite roles below your own. The invitee receives an email with a code and joins with their own name and password.</p>
           </div>
@@ -529,7 +546,7 @@ export default function EmployeesPage() {
                 </div>
               </div>
               
-              {allowAdmin && !isSelf(selectedEmployee) && (
+              {canManage(selectedEmployee) && (
                 <button 
                   disabled={busyId === selectedEmployee.id}
                   onClick={() => void handleSetActive(selectedEmployee, !selectedEmployee.isActive)}

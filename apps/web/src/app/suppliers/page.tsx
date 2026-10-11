@@ -11,15 +11,20 @@ import { SlidingPanel } from '@/components/ui/SlidingPanel';
 import { useToast } from '@/components/ui/Toast';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useSession } from 'next-auth/react';
-import { suppliersApi, type SupplierView } from '@/lib/api-client';
+import { suppliersApi, type SupplierView, type SuppliersSummary } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
+import { generateUuid } from '@/lib/uuid';
 import type { TenderType } from '@/types';
 
-/** `PATCH /suppliers/:id` is MANAGER and above, `DELETE /suppliers/:id` OWNER/ADMIN (contract). */
+/** `PATCH /suppliers/:id` and `POST /suppliers/:id/payments` are MANAGER and above, `DELETE /suppliers/:id` OWNER/ADMIN (contract). */
 const EDIT_ROLES = new Set(['MANAGER', 'ADMIN', 'OWNER', 'SUPER_ADMIN']);
 const DELETE_ROLES = new Set(['ADMIN', 'OWNER', 'SUPER_ADMIN']);
 const hasRole = (roles: Set<string>, role: string | null | undefined) => AUTH_DISABLED || (!!role && roles.has(role.toUpperCase()));
+
+/** What the shop owes a supplier; below zero the supplier holds an advance (goods returned after they were paid for). */
+const formatPayable = (amount: number) =>
+  amount < 0 ? `₹${Math.abs(amount).toLocaleString('en-IN')} advance` : `₹${amount.toLocaleString('en-IN')}`;
 
 const PAYMENT_MODES: Array<{ label: string; tender: TenderType }> = [
   { label: 'Bank Transfer (NEFT/RTGS)', tender: 'BANK_TRANSFER' },
@@ -35,6 +40,14 @@ export default function SuppliersPage() {
   const allowDelete = hasRole(DELETE_ROLES, session?.user?.role);
   const [suppliers, setSuppliers] = useState<SupplierView[]>([]);
   const [loading, setLoading] = useState(true);
+  /** Totals over every supplier: the list holds one page of them. */
+  const [summary, setSummary] = useState<SuppliersSummary | null>(null);
+
+  const refreshSummary = React.useCallback(() => {
+    suppliersApi.summary()
+      .then(setSummary)
+      .catch(() => setSummary(null));
+  }, []);
 
   useEffect(() => {
     suppliersApi.list()
@@ -44,7 +57,8 @@ export default function SuppliersPage() {
         toast(describeApiError(err, 'Loading suppliers (GET /suppliers)'), 'error');
       })
       .finally(() => setLoading(false));
-  }, [toast]);
+    refreshSummary();
+  }, [toast, refreshSummary]);
   const [searchTerm, setSearchTerm] = useState('');
   
   // Modals & Panels
@@ -84,6 +98,14 @@ export default function SuppliersPage() {
   const [newOpeningBalance, setNewOpeningBalance] = useState('');
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentTender, setPaymentTender] = useState<TenderType>('BANK_TRANSFER');
+  /** One idempotency key per opening of the payment dialog: a retry after a lost answer replays the same payment. */
+  const [paymentKey, setPaymentKey] = useState<string>('');
+  const [paying, setPaying] = useState(false);
+
+  const openPayment = () => {
+    setPaymentKey(generateUuid());
+    setIsPaymentModalOpen(true);
+  };
 
   // Form State - Edit
   const [editName, setEditName] = useState('');
@@ -105,10 +127,10 @@ export default function SuppliersPage() {
     setIsEditModalOpen(true);
   };
 
-  // Derived Stats
-  const totalSuppliers = suppliers.length;
-  const activeSuppliers = suppliers.filter(s => s.status === 'Active').length;
-  const totalPayables = suppliers.reduce((acc, curr) => acc + curr.pendingPayables, 0);
+  // Derived Stats: from the API's totals over every supplier (the list is one page); the page's rows until they arrive.
+  const totalSuppliers = summary ? summary.count : suppliers.length;
+  const activeSuppliers = summary ? summary.activeCount : suppliers.filter(s => s.status === 'Active').length;
+  const totalPayables = summary ? Number(summary.totalPayables) : suppliers.reduce((acc, curr) => acc + curr.pendingPayables, 0);
 
   // Filter Logic
   let processedSuppliers = suppliers.filter(s => 
@@ -139,6 +161,7 @@ export default function SuppliersPage() {
       });
 
       setSuppliers([created, ...suppliers]);
+      refreshSummary();
       toast('Supplier added successfully', 'success');
       setIsAddModalOpen(false);
 
@@ -150,20 +173,28 @@ export default function SuppliersPage() {
 
   const handleRecordPayment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedSupplier || !paymentAmount || Number(paymentAmount) <= 0) return;
+    if (paying || !selectedSupplier || !paymentAmount || Number(paymentAmount) <= 0) return;
+    const key = paymentKey || generateUuid();
+    if (!paymentKey) setPaymentKey(key);
 
+    setPaying(true);
     try {
-      const updated = await suppliersApi.recordPayment(selectedSupplier.id, Number(paymentAmount), paymentTender);
+      // The same key on every attempt of this dialog: the API replays a payment it already recorded.
+      const updated = await suppliersApi.recordPayment(selectedSupplier.id, Number(paymentAmount), paymentTender, key);
 
-      setSuppliers(suppliers.map(s => (s.id === updated.id ? updated : s)));
+      setSuppliers((rows) => rows.map(s => (s.id === updated.id ? updated : s)));
+      refreshSummary();
       toast(`₹${paymentAmount} paid to ${selectedSupplier.name}`, 'success');
       setIsPaymentModalOpen(false);
       setPaymentAmount('');
+      setPaymentKey('');
 
       // Update local selected supplier state to reflect in side panel instantly
       setSelectedSupplier(updated);
     } catch (err) {
       toast(describeApiError(err, 'Recording supplier payment (POST /suppliers/:id/payments)'), 'error');
+    } finally {
+      setPaying(false);
     }
   };
 
@@ -184,6 +215,7 @@ export default function SuppliersPage() {
       });
       setSuppliers((rows) => rows.map((s) => (s.id === updated.id ? updated : s)));
       setSelectedSupplier(updated);
+      refreshSummary();
       toast(`${updated.name} updated`, 'success');
       setIsEditModalOpen(false);
     } catch (err) {
@@ -201,6 +233,7 @@ export default function SuppliersPage() {
     try {
       await suppliersApi.delete(target.id);
       setSuppliers((rows) => rows.filter((s) => s.id !== target.id));
+      refreshSummary();
       if (selectedSupplier?.id === target.id) { setSelectedSupplier(null); setIsSidePanelOpen(false); }
       toast(`${target.name} deleted`, 'success');
       setPendingDelete(null);
@@ -221,7 +254,7 @@ export default function SuppliersPage() {
         setIsSidePanelOpen(true);
         break;
       case 'Pay Supplier':
-        setIsPaymentModalOpen(true);
+        openPayment();
         break;
       case 'Record Purchase':
         // Purchases are recorded through purchase orders and goods receipts, which this app does not expose yet.
@@ -282,7 +315,7 @@ export default function SuppliersPage() {
           </div>
           <div>
             <p className="text-xs text-gray-500 font-medium">Total Pending Payables</p>
-            <h3 className="text-xl font-bold text-gray-800 tracking-tight">₹{totalPayables.toLocaleString('en-IN')}</h3>
+            <h3 className="text-xl font-bold text-gray-800 tracking-tight">{formatPayable(totalPayables)}</h3>
           </div>
         </Card>
       </div>
@@ -388,7 +421,7 @@ export default function SuppliersPage() {
                   </td>
                   <td className="px-6 py-4">
                     <span className={`font-bold ${supplier.pendingPayables > 0 ? 'text-red-500' : 'text-green-500'}`}>
-                      ₹{supplier.pendingPayables.toLocaleString('en-IN')}
+                      {formatPayable(supplier.pendingPayables)}
                     </span>
                   </td>
                   <td className="px-6 py-4 text-gray-500 font-medium">
@@ -418,7 +451,7 @@ export default function SuppliersPage() {
                           exit={{ opacity: 0, scale: 0.95 }}
                           className="absolute right-8 top-10 w-48 bg-white border border-gray-100 shadow-xl rounded-xl z-50 overflow-hidden text-left"
                         >
-                          {['View Details', 'Pay Supplier', 'Record Purchase', ...(allowEdit ? ['Edit Supplier'] : [])].map(action => (
+                          {['View Details', ...(allowEdit ? ['Pay Supplier'] : []), 'Record Purchase', ...(allowEdit ? ['Edit Supplier'] : [])].map(action => (
                             <button 
                               key={action}
                               onClick={(e) => handleAction(action, supplier, e)}
@@ -466,7 +499,7 @@ export default function SuppliersPage() {
             <div><label className="text-sm font-medium">Contact Person</label><input value={newContact} onChange={e=>setNewContact(e.target.value)} className="w-full mt-1 border rounded-lg p-2" placeholder="e.g. Rajeev" /></div>
             <div><label className="text-sm font-medium">Phone Number *</label><input value={newPhone} onChange={e=>setNewPhone(e.target.value)} required pattern="[0-9]{10}" maxLength={10} className="w-full mt-1 border rounded-lg p-2" placeholder="10-digit number" /></div>
           </div>
-          <div><label className="text-sm font-medium">Opening Balance (Payable ₹)</label><input value={newOpeningBalance} onChange={e=>setNewOpeningBalance(e.target.value)} type="number" className="w-full mt-1 border rounded-lg p-2" placeholder="0" /></div>
+          <div><label className="text-sm font-medium">Opening Balance (Payable ₹)</label><input value={newOpeningBalance} onChange={e=>setNewOpeningBalance(e.target.value)} type="number" step="0.01" min="0" className="w-full mt-1 border rounded-lg p-2" placeholder="0" /></div>
           <div className="flex justify-end gap-2 pt-4 border-t mt-6">
             <button type="button" onClick={() => setIsAddModalOpen(false)} className="px-4 py-2 border rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
             <button type="submit" className="px-4 py-2 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-lg text-sm font-bold shadow-lg shadow-purple-500/30">Save Supplier</button>
@@ -479,7 +512,7 @@ export default function SuppliersPage() {
         <form onSubmit={handleRecordPayment} className="space-y-4">
           <div className="bg-red-50 text-red-600 p-3 rounded-xl border border-red-100 flex items-center justify-between">
             <span className="text-xs font-bold uppercase">Pending Amount</span>
-            <span className="font-black text-lg">₹{selectedSupplier?.pendingPayables.toLocaleString('en-IN')}</span>
+            <span className="font-black text-lg">{formatPayable(selectedSupplier?.pendingPayables ?? 0)}</span>
           </div>
           <div>
             <label className="text-sm font-medium">Amount to Pay (₹) *</label>
@@ -487,8 +520,10 @@ export default function SuppliersPage() {
               value={paymentAmount} 
               onChange={e=>setPaymentAmount(e.target.value)} 
               type="number" 
+              step="0.01"
+              min="0.01"
               required 
-              max={selectedSupplier?.pendingPayables || undefined}
+              max={selectedSupplier && selectedSupplier.pendingPayables > 0 ? selectedSupplier.pendingPayables : undefined}
               className="w-full mt-1 border rounded-lg p-3 text-lg font-bold" 
               placeholder="0" 
             />
@@ -502,7 +537,7 @@ export default function SuppliersPage() {
           </div>
           <div className="flex justify-end gap-2 pt-4 border-t mt-6">
             <button type="button" onClick={() => setIsPaymentModalOpen(false)} className="px-4 py-2 border rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
-            <button type="submit" className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg text-sm font-bold shadow-lg shadow-green-500/30">Confirm Payment</button>
+            <button type="submit" disabled={paying} aria-busy={paying} className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg text-sm font-bold shadow-lg shadow-green-500/30 disabled:opacity-60">Confirm Payment</button>
           </div>
         </form>
       </Modal>
@@ -580,11 +615,11 @@ export default function SuppliersPage() {
                   <div className="bg-red-50 p-4 rounded-xl border border-red-100 col-span-2 flex items-center justify-between">
                     <div>
                       <p className="text-xs text-red-500 mb-1 font-bold uppercase tracking-wider">Pending Payables</p>
-                      <p className="font-black text-red-600 text-2xl">₹{selectedSupplier.pendingPayables.toLocaleString('en-IN')}</p>
+                      <p className="font-black text-red-600 text-2xl">{formatPayable(selectedSupplier.pendingPayables)}</p>
                     </div>
                     {selectedSupplier.pendingPayables > 0 && (
                       <button 
-                        onClick={() => { setIsSidePanelOpen(false); setIsPaymentModalOpen(true); }}
+                        onClick={() => { setIsSidePanelOpen(false); openPayment(); }}
                         className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-md hover:bg-red-700 transition-colors"
                       >
                         Pay Now

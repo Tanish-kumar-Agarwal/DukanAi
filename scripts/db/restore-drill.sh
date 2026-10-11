@@ -60,6 +60,10 @@ assert_identifier "$DRILL_DB"
 assert_identifier "$PITR_DB"
 WORK="$(mktemp -d)"
 started="$(date +%s)"
+# The drill's backups stamp the drill's own status directory (audit F5): a
+# drill that wrote into the operator's BACKUP_STATUS_DIR made a stale
+# production backup look fresh and silenced DukaanAiBackupStale.
+export BACKUP_STATUS_DIR="$WORK/status"
 cleanup() {
   if [ "$KEEP" = 1 ]; then
     printf '\n--keep: scratch databases %s and %s left in place; backup and binary logs in %s\n' "$DRILL_DB" "$PITR_DB" "$WORK"
@@ -77,9 +81,11 @@ backup="$(bash "$REPO/scripts/db/backup.sh" --out "$WORK" --keep 0 --label drill
 step "2/10 Restore into scratch database $DRILL_DB"
 bash "$REPO/scripts/db/restore.sh" "$backup" --database "$DRILL_DB" --create --yes
 
-# The scratch database's URL for the Prisma CLI, credentials percent-encoded.
-enc() { node -e "process.stdout.write(encodeURIComponent(process.argv[1]))" "$1"; }
-DRILL_URL="mysql://$(enc "$DB_USER"):$(enc "$DB_PASS")@$DB_HOST:$DB_PORT/$DRILL_DB"
+# The scratch database's URL for the Prisma CLI, credentials percent-encoded,
+# with the TLS parameters of DATABASE_URL. Credentials and URLs travel in the
+# environment, never on a command line (`ps` shows every argument: audit P3).
+enc() { ENC_VALUE="$1" node -e "process.stdout.write(encodeURIComponent(process.env.ENC_VALUE))"; }
+DRILL_URL="mysql://$(enc "$DB_USER"):$(enc "$DB_PASS")@$DB_HOST:$DB_PORT/$DRILL_DB${DB_URL_TLS_QUERY:+?$DB_URL_TLS_QUERY}"
 
 step "3/10 prisma migrate status on $DRILL_DB (every migration applied, nothing pending)"
 status="$(cd "$REPO/apps/api" && DATABASE_URL="$DRILL_URL" npx prisma migrate status 2>&1)" || { printf '%s\n' "$status"; die "migrate status failed"; }
@@ -87,7 +93,8 @@ printf '%s\n' "$status" | tail -n 3
 printf '%s\n' "$status" | grep -q "Database schema is up to date" || die "the restored database has pending or unknown migrations"
 
 step "4/10 prisma migrate diff: restored schema == prisma/schema.prisma"
-( cd "$REPO/apps/api" && DATABASE_URL="$DRILL_URL" npx prisma migrate diff --from-url "$DRILL_URL" --to-schema-datamodel prisma/schema.prisma --exit-code ) \
+# --from-schema-datasource reads the URL from DATABASE_URL (the schema's datasource), not from argv.
+( cd "$REPO/apps/api" && DATABASE_URL="$DRILL_URL" npx prisma migrate diff --from-schema-datasource prisma/schema.prisma --to-schema-datamodel prisma/schema.prisma --exit-code ) \
   || die "the restored schema differs from schema.prisma"
 
 # Every base table of DB_A has the same row count in DB_B; tables named in
@@ -172,7 +179,7 @@ if [ -z "$recon_shop" ]; then
   recon_result="reconciliation skipped (the copy holds no invoice)"
   printf '  %s\n' "$recon_result"
 else
-  SOURCE_URL="mysql://$(enc "$DB_USER"):$(enc "$DB_PASS")@$DB_HOST:$DB_PORT/$DB_NAME"
+  SOURCE_URL="mysql://$(enc "$DB_USER"):$(enc "$DB_PASS")@$DB_HOST:$DB_PORT/$DB_NAME${DB_URL_TLS_QUERY:+?$DB_URL_TLS_QUERY}"
   reconcile_json() {
     local out rc
     out="$(cd "$REPO/apps/api" && DATABASE_URL="$1" npm run --silent reconcile -- --shop "$recon_shop" --json 2>"$WORK/reconcile.err")" && rc=0 || rc=$?

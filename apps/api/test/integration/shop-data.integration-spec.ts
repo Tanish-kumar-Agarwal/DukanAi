@@ -24,8 +24,9 @@ import * as path from 'path';
 import { eraseCustomer, eraseShop, exportShop, ShopDataError, suspendShop } from '../../src/privacy/shop-data';
 import { tenantModels, inventory } from '../../src/privacy/personal-data';
 import { PrismaService } from '../../src/prisma/prisma.service';
-import { bootApp, createProduct, createShop, receiveStock, tenantRunner, TestShop } from './pos-fixtures';
-import { httpAs, ownerOf } from '../security/security-fixtures';
+import request from 'supertest';
+import { bootApp, createProduct, createShop, httpTarget, receiveStock, tenantRunner, TestShop } from './pos-fixtures';
+import { bearerToken, httpAs, ownerOf } from '../security/security-fixtures';
 
 jest.setTimeout(180_000);
 
@@ -224,5 +225,122 @@ describe('shop data requests (roadmap 9.24)', () => {
     expect(o.name).toBe(`owing ${marker}`);
     expect((await owner.get('/api/billing/invoices')).status).toBe(200);
     expect(Role.OWNER).toBe('OWNER');
+  });
+
+  // -------------------------------------------------------------------------
+  // Audit F2 / F3: the child tables (no shopId) are exported and erased through their parents.
+  // -------------------------------------------------------------------------
+
+  /** Every text column of EVERY table (information_schema, not the inventory) where `marker` still appears. */
+  async function anywhere(marker: string): Promise<string[]> {
+    const columns = await db.$queryRawUnsafe<Array<{ t: string; c: string }>>(
+      "SELECT TABLE_NAME AS t, COLUMN_NAME AS c FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND DATA_TYPE IN ('char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext', 'json')",
+    );
+    const hits: string[] = [];
+    for (const { t, c } of columns) {
+      const found = await db.$queryRawUnsafe<Array<{ n: bigint }>>(`SELECT COUNT(*) AS n FROM \`${t}\` WHERE CAST(\`${c}\` AS CHAR) LIKE ?`, `%${marker}%`);
+      if (Number(found[0].n) > 0) hits.push(`${t}.${c}`);
+    }
+    return hits.sort();
+  }
+
+  const realUploads = path.resolve('uploads');
+  const filesOf = async (shopId: string) => (existsSync(path.join(realUploads, 'imports')) ? (await fs.readdir(path.join(realUploads, 'imports'))).filter((n) => n.startsWith(`${shopId}-`)) : []);
+
+  /** Customers created and edited over HTTP (so CustomerAudit rows exist) and a customer import (so ImportJobRow rows and an import file exist). */
+  async function customersThroughTheApi(shop: TestShop, marker: string, phone: string) {
+    const owner = await httpAs(app, shop, ownerOf(shop));
+    const created = await owner.post('/api/customers').send({ name: `Api ${marker}`, phone, email: `api.${marker.toLowerCase()}@mail.test`, address: `${marker} lane`, notes: `vip ${marker}` });
+    expect(created.status).toBe(201);
+    expect((await owner.patch(`/api/customers/${created.body.id}`).send({ notes: `edited ${marker}` })).status).toBe(200);
+    const token = await bearerToken(app, shop, ownerOf(shop));
+    // The imported customer has its own number (written with a space, as spreadsheets do); the other row is someone else.
+    const importPhone = `9${phone.slice(1)}`;
+    const csv = ['name,phone,email,notes', `Imp ${marker},${importPhone.slice(0, 5)} ${importPhone.slice(5)},imp.${marker.toLowerCase()}@mail.test,imported ${marker}`, `Other Person,6${phone.slice(1)},,plain`].join('\n');
+    const upload = await request(httpTarget(app)).post('/api/imports/customers/upload').set('Authorization', `Bearer ${token}`).attach('file', Buffer.from(csv), { filename: 'customers.csv', contentType: 'text/csv' });
+    expect(upload.status).toBe(201);
+    for (let i = 0; i < 300; i++) {
+      const job = await owner.get(`/api/imports/jobs/${upload.body.jobId}`);
+      if (!['PENDING', 'PROCESSING'].includes(job.body.status)) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    const audits = await db.$queryRawUnsafe<Array<{ n: bigint }>>('SELECT COUNT(*) AS n FROM `CustomerAudit` WHERE `customerId` = ?', created.body.id);
+    expect(Number(audits[0].n)).toBeGreaterThanOrEqual(2); // created + updated
+    return { customerId: created.body.id as string, jobId: upload.body.jobId as string };
+  }
+
+  /** Rows of the child tables nothing in the API writes yet: a photo's EXIF, a webhook's delivery log, a revision's review. */
+  async function childRowsWith(shop: TestShop, marker: string, productId: string) {
+    await run().system(async () => {
+      const prisma = app.get(PrismaService);
+      const asset = await prisma.mediaAsset.create({ data: { shopId: shop.shopId, hash: randomUUID(), mimeType: 'image/jpeg', extension: 'jpg', sizeBytes: 1, originalName: 'shelf.jpg' } });
+      await prisma.mediaMetadata.create({ data: { assetId: asset.id, exifData: { gps: `taken at ${marker}` } } });
+      const endpoint = await prisma.webhookEndpoint.create({ data: { shopId: shop.shopId, url: 'https://hooks.example.com/x', secret: randomUUID(), events: ['*'] } });
+      await prisma.webhookDelivery.create({ data: { endpointId: endpoint.id, eventId: randomUUID(), eventType: 'CustomerCreated', payload: { name: marker }, status: 'FAILED', errorMessage: `refused ${marker}` } });
+      const branch = await prisma.revisionBranch.create({ data: { productId, name: `main-${randomUUID().slice(0, 6)}`, baseRevId: 'base' } });
+      const revision = await prisma.productRevision.create({ data: { productId, branchId: branch.id, shopId: shop.shopId, versionNumber: 1, isSnapshot: true, data: {}, contentHash: 'h', authorId: shop.ownerId } });
+      await prisma.revisionApproval.create({ data: { revisionId: revision.id, reviewerId: shop.ownerId, status: 'APPROVED', comments: `ok ${marker}`, digitalSignature: `signed ${marker}` } });
+    });
+  }
+  const run = () => tenantRunner(app);
+
+  it('the export carries the child tables: the lines of every invoice as data and CSV (audit F2)', async () => {
+    const marker = `Fx${Date.now()}`;
+    const { shop } = await populatedShop('expchild', marker);
+    const out = await exportShop(db, { ...paths(), shopId: shop.shopId, outDir: path.join(tmp, 'children'), now: now(), archive: false });
+    expect(out.tables.InvoiceItem).toBe(2);
+    const lines = readFileSync(path.join(out.directory, 'data', 'InvoiceItem.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(2);
+    const csv = readFileSync(path.join(out.directory, 'csv', 'invoice-items.csv'), 'utf8').trim().split('\r\n');
+    expect(csv).toHaveLength(3); // header + two lines
+    expect(out.tables.CustomerAudit ?? 0).toBeGreaterThanOrEqual(0);
+    expect(Object.keys(out.tables)).toEqual(expect.arrayContaining(['ImportJobRow', 'WebhookDelivery', 'MediaMetadata', 'RevisionApproval', 'StockTransfer']));
+  });
+
+  it('a shop erasure leaves the marker in no text column of any table: audit trails, import rows, EXIF, webhook log, reviews and import files go too (audit F3)', async () => {
+    const marker = `Ex${Date.now()}`;
+    const { shop, productId } = await populatedShop('erasechild', marker);
+    const phone = `7${String(Date.now()).slice(-9)}`;
+    await customersThroughTheApi(shop, marker, phone);
+    await childRowsWith(shop, marker, productId);
+    expect(await filesOf(shop.shopId)).toHaveLength(1);
+    const before = await anywhere(marker);
+    expect(before).toEqual(expect.arrayContaining(['CustomerAudit.newPayload', 'ImportJobRow.rawData', 'MediaMetadata.exifData', 'WebhookDelivery.payload', 'RevisionApproval.comments']));
+
+    await suspendShop(db, shop.shopId, now());
+    const receipt = await eraseShop(db, { storageRoot: paths().storageRoot, uploadsRoot: realUploads, workingDirectory: process.cwd(), shopId: shop.shopId, now: now(), dryRun: false });
+    expect(receipt.rows).toMatchObject({ CustomerAudit: expect.any(Number), ImportJobRow: expect.any(Number), MediaMetadata: 1, WebhookDelivery: 1, RevisionApproval: 1 });
+    expect(await anywhere(marker)).toEqual([]);
+    expect(await filesOf(shop.shopId)).toEqual([]);
+  });
+
+  it("a customer's erasure reaches their audit trail, the import rows and the import file that hold them, and no one else's (audit F3)", async () => {
+    const marker = `Cy${Date.now()}`;
+    const other = `Ot${Date.now()}`;
+    const shop = await createShop(app, 'custchild', { creditLimit: 100000 });
+    const phone = `8${String(Date.now()).slice(-9)}`;
+    const { jobId } = await customersThroughTheApi(shop, marker, phone);
+    const owner = await httpAs(app, shop, ownerOf(shop));
+    const keep = await owner.post('/api/customers').send({ name: `Keep ${other}`, phone: `7${String(Date.now()).slice(-9).split('').reverse().join('')}`, notes: `stays ${other}` });
+    expect(keep.status).toBe(201);
+    const [imported] = await db.$queryRawUnsafe<Array<{ id: string }>>('SELECT `id` FROM `Customer` WHERE `shopId` = ? AND `name` = ?', shop.shopId, `Imp ${marker}`);
+    expect(imported).toBeDefined();
+
+    // The API-made customer: its own row, its CustomerAudit rows.
+    const apiCustomer = (await db.$queryRawUnsafe<Array<{ id: string }>>('SELECT `id` FROM `Customer` WHERE `shopId` = ? AND `name` = ?', shop.shopId, `Api ${marker}`))[0];
+    await eraseCustomer(db, { storageRoot: paths().storageRoot, uploadsRoot: realUploads, shopId: shop.shopId, customerId: apiCustomer.id, now: now(), dryRun: false });
+    const auditLeft = await db.$queryRawUnsafe<Array<{ n: bigint }>>('SELECT COUNT(*) AS n FROM `CustomerAudit` WHERE `customerId` = ? AND (`previousPayload` IS NOT NULL OR `newPayload` IS NOT NULL OR `ipAddress` IS NOT NULL)', apiCustomer.id);
+    expect(Number(auditLeft[0].n)).toBe(0);
+
+    // The imported customer (same phone in the file, spelled with a space): row, audit trail, report rows and the file.
+    const receipt = await eraseCustomer(db, { storageRoot: paths().storageRoot, uploadsRoot: realUploads, shopId: shop.shopId, customerId: imported.id, now: now(), dryRun: false });
+    expect(receipt.rows.ImportJobRow).toBeGreaterThanOrEqual(1);
+    expect(receipt.files.removed).toBeGreaterThanOrEqual(1);
+    expect(await anywhere(marker)).toEqual([]);
+    expect(await filesOf(shop.shopId)).toEqual([]);
+    // The other row of the same import, and the other customer, are untouched.
+    const rows = await db.$queryRawUnsafe<Array<{ rawData: unknown }>>('SELECT `rawData` FROM `ImportJobRow` WHERE `importJobId` = ? AND `rowNumber` > 0 ORDER BY `rowNumber`', jobId);
+    expect(rows.map((r) => JSON.stringify(r.rawData))).toEqual([expect.not.stringContaining('Imp '), expect.stringContaining('Other Person')]);
+    expect((await anywhere(other)).length).toBeGreaterThan(0);
   });
 });

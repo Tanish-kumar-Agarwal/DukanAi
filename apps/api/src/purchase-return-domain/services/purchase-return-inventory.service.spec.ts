@@ -2,7 +2,6 @@ import { LedgerAccount, LedgerEntryType, Prisma } from '@prisma/client';
 import { PurchaseReturnInventoryService } from './purchase-return-inventory.service';
 import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 import { InventoryLocationService } from '../../inventory-domain/services/inventory-location.service';
-import { LedgerPostingService } from '../../ledger/ledger-posting.service';
 import { SupplierPayablesService } from '../../ledger/supplier-payables.service';
 
 const D = (v: string | number) => new Prisma.Decimal(v);
@@ -12,7 +11,7 @@ describe('PurchaseReturnInventoryService', () => {
   let engine: { mutateStock: jest.Mock };
   let locations: { resolveWarehouseBin: jest.Mock };
   let ledger: { post: jest.Mock };
-  let payables: { addPayable: jest.Mock; reducePayable: jest.Mock };
+  let payables: { postWithPayable: jest.Mock };
   let tx: Record<string, never>;
 
   const mutationResult = (bypassed: boolean) => ({
@@ -26,12 +25,11 @@ describe('PurchaseReturnInventoryService', () => {
     engine = { mutateStock: jest.fn().mockResolvedValue(mutationResult(false)) };
     locations = { resolveWarehouseBin: jest.fn().mockResolvedValue('loc-1') };
     ledger = { post: jest.fn().mockResolvedValue({ posted: true, postingId: 'lp-1' }) };
-    payables = { addPayable: jest.fn().mockResolvedValue(undefined), reducePayable: jest.fn().mockResolvedValue(undefined) };
+    payables = { postWithPayable: jest.fn((_tx, _supplierId, posting) => ledger.post(_tx, posting)) };
     tx = {};
     service = new PurchaseReturnInventoryService(
       engine as unknown as InventoryMutationEngine,
       locations as unknown as InventoryLocationService,
-      ledger as unknown as LedgerPostingService,
       payables as unknown as SupplierPayablesService,
     );
   });
@@ -113,5 +111,20 @@ describe('PurchaseReturnInventoryService', () => {
     expect(engine.mutateStock).toHaveBeenCalledTimes(1);
     expect(ledger.post).toHaveBeenCalledTimes(1);
     expect(ledger.post.mock.calls[0][1].source).toEqual({ type: 'PURCHASE_RETURN', id: 'pr-1' });
+  });
+
+  it('takes each line out of the warehouse its receipt put it in, and lowers the payable through the payables authority', async () => {
+    locations.resolveWarehouseBin.mockImplementation((_tx: unknown, _shop: string, warehouseId: string | null) => Promise.resolve(`bin-of-${warehouseId}`));
+    await service.processInventoryReversal(tx as unknown as Prisma.TransactionClient, 'shop-1', {
+      id: 'pr-1', warehouseId: 'wh-header', createdBy: 'user-1', supplierId: 'sup-1',
+      lines: [
+        { id: 'l1', productId: 'p-1', returnQuantity: D('1'), unitPrice: D('10'), warehouseId: 'wh-2' },
+        { id: 'l2', productId: 'p-2', returnQuantity: D('1'), unitPrice: D('5') },
+      ],
+    });
+    expect(engine.mutateStock.mock.calls.map((c) => c[1].locationId)).toEqual(['bin-of-wh-2', 'bin-of-wh-header']);
+    const [, supplierId, , delta] = payables.postWithPayable.mock.calls[0];
+    expect(supplierId).toBe('sup-1');
+    expect(delta.toFixed(2)).toBe('-15.00');
   });
 });

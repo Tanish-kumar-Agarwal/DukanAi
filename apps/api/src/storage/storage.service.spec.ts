@@ -30,9 +30,15 @@ describe('StorageService (roadmap 7.5)', () => {
           where.id === ownCustomer && where.shopId === shopId ? { id: ownCustomer } : null,
         ),
       },
+      invoice: {
+        // inv-own was sold to the own customer, inv-walk to nobody; anything else is not this shop's.
+        findFirst: jest.fn(async ({ where }: { where: { id: string; shopId: string } }) =>
+          where.shopId !== shopId ? null : ['inv-own', 'i1'].includes(where.id) ? { customerId: ownCustomer } : where.id === 'inv-walk' ? { customerId: null } : null,
+        ),
+      },
     };
     const tenant = { getShopId: () => shopId, getUserId: () => 'user-1' };
-    service = new StorageService(new StorageConfig(), prisma as never, tenant as never, builder, { send: jest.fn() } as never);
+    service = new StorageService(Object.assign(new StorageConfig(), { backupKeep: 2 }), prisma as never, tenant as never, builder, { send: jest.fn() } as never);
   });
 
   afterEach(async () => {
@@ -94,9 +100,66 @@ describe('StorageService (roadmap 7.5)', () => {
     expect(await fs.pathExists(path.join(root, shopId, deleted.newPath))).toBe(true);
 
     const backup = await service.createBackup('Daily');
-    expect(backup.path).toMatch(/^Backups\/Daily\/backup_\d{4}_\d{2}_\d{2}\.zip$/);
+    expect(backup.path).toMatch(/^Backups\/Daily\/backup_\d{8}_\d{6}_[0-9a-f]{6}\.zip$/);
     expect(backup.size).toBeGreaterThan(0);
     expect(JSON.stringify([folder, deleted, backup])).not.toContain(root);
+  });
+
+  it('every backup run writes its own zip, and only the newest STORAGE_BACKUP_KEEP stay (audit P3)', async () => {
+    await service.createCustomerFolder(ownCustomer);
+    const runs = [];
+    for (let i = 0; i < 3; i++) {
+      runs.push(await service.createBackup('Daily'));
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    expect(new Set(runs.map((r) => r.path)).size).toBe(3);
+    const dir = path.join(root, shopId, 'Backups', 'Daily');
+    const left = (await fs.readdir(dir)).sort();
+    expect(left).toHaveLength(2); // backupKeep = 2
+    expect(left).toEqual(expect.arrayContaining([path.basename(runs[1].path), path.basename(runs[2].path)]));
+    expect(left.some((n) => n.endsWith('.partial'))).toBe(false);
+  });
+
+  it('a backup that fails reports the failure and leaves no zip (audit P3)', async () => {
+    await service.createCustomerFolder(ownCustomer);
+    // The archive cannot read what it is asked to zip.
+    const unreadable = path.join(root, shopId, 'Logs');
+    await fs.ensureDir(unreadable);
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const archiverModule = require('archiver/lib/core.js') as { prototype: { finalize: () => Promise<void> } };
+    const finalize = jest.spyOn(archiverModule.prototype, 'finalize').mockImplementation(function (this: { emit: (e: string, err: Error) => void }) {
+      this.emit('error', new Error('simulated archive failure'));
+      return Promise.resolve();
+    });
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    try {
+      await expect(service.createBackup('Daily')).rejects.toThrow('simulated archive failure');
+    } finally {
+      finalize.mockRestore();
+    }
+    const dir = path.join(root, shopId, 'Backups', 'Daily');
+    expect(await fs.readdir(dir)).toEqual([]);
+  });
+
+  it('an invoice document needs one of the shop invoices, sold to that customer (T6d)', async () => {
+    const pdf = () => file('i.pdf', '%PDF-x', 'application/pdf');
+    await expect(service.storeInvoice(ownCustomer, 'inv-foreign', pdf(), {}, undefined)).rejects.toMatchObject({ response: { code: 'STORAGE_INVOICE_NOT_FOUND' } });
+    await expect(service.storeInvoice(WALK_IN_CUSTOMER_ID, 'inv-own', pdf(), {}, undefined)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.storeInvoice(ownCustomer, 'inv-walk', pdf(), {}, undefined)).rejects.toBeInstanceOf(NotFoundException);
+    expect(await fs.pathExists(path.join(root, shopId, 'Customers'))).toBe(false);
+    await service.storeInvoice(ownCustomer, 'inv-own', pdf(), {}, undefined);
+    await service.storeInvoice(WALK_IN_CUSTOMER_ID, 'inv-walk', pdf(), {}, undefined);
+  });
+
+  it('concurrent index updates of one shop all land; a damaged index is refused, never reset (audit P3)', async () => {
+    await Promise.all(Array.from({ length: 12 }, (_, i) => service.updateCustomerIndex({ customerId: `c${i}`, name: `C${i}` })));
+    const indexPath = path.join(root, shopId, 'System', 'customer_index.json');
+    expect(((await fs.readJson(indexPath)) as unknown[]).length).toBe(12);
+
+    await fs.writeFile(indexPath, '{"not": "an array"');
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    await expect(service.updateCustomerIndex({ customerId: 'c99' })).rejects.toMatchObject({ response: { code: 'STORAGE_INDEX_CORRUPT' } });
+    expect(await fs.readFile(indexPath, 'utf8')).toBe('{"not": "an array"');
   });
 });
 
@@ -137,7 +200,7 @@ describe('StorageService on a full volume (roadmap 9.18)', () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'dukaanai-full-'));
     const builder = new StoragePathBuilder(Object.assign(new StorageConfig(), { storageRoot: root }));
     const tenant = { getShopId: () => shopId, getUserId: () => 'user-1' };
-    service = new StorageService(new StorageConfig(), { customer: { findFirst: jest.fn() } } as never, tenant as never, builder, { send: jest.fn() } as never);
+    service = new StorageService(new StorageConfig(), { customer: { findFirst: jest.fn() }, invoice: { findFirst: jest.fn(async () => ({ customerId: null })) } } as never, tenant as never, builder, { send: jest.fn() } as never);
   });
   afterEach(async () => {
     jest.restoreAllMocks();

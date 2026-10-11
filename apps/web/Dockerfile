@@ -2,12 +2,13 @@
 # DukaanAI web (Next.js 16, standalone output). Roadmap 7.3.
 #
 # Build from the repository root:
-#   docker build -f apps/web/Dockerfile \
-#     --build-arg NEXT_PUBLIC_API_URL=https://api.example.com/api -t dukaanai-web .
+#   docker build -f apps/web/Dockerfile -t dukaanai-web .
 #
-# NEXT_PUBLIC_* values are inlined into the browser bundle at build time, so
-# the API URL the browser calls is a build argument; everything server-side
-# (NEXTAUTH_SECRET, NEXTAUTH_URL, API_INTERNAL_URL, Google OAuth) is runtime
+# One image serves every environment (roadmap 9.9): the API URL the browser
+# calls is API_PUBLIC_URL, read by the server at RUN time and handed to the
+# page; the NEXT_PUBLIC_API_URL build argument is only the fallback of a
+# container started without it. Everything server-side (NEXTAUTH_SECRET,
+# NEXTAUTH_URL, API_PUBLIC_URL, API_INTERNAL_URL, Google OAuth) is runtime
 # environment. NEXT_PUBLIC_AUTH_DISABLED is never set here: next.config.js
 # refuses a production build with it. Node pinned like apps/api/Dockerfile,
 # and patched like it (roadmap 9.14): Debian security updates at build time,
@@ -36,7 +37,12 @@ ARG NEXT_PUBLIC_API_URL=http://localhost:3002/api
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} NEXT_STANDALONE=true NODE_ENV=production
 COPY packages/invoice-math packages/invoice-math
 COPY apps/web apps/web
-RUN npm run build -w @dukaanai/invoice-math \
+# No env file reaches the build or the image (audit 2026-10-11, R5): Next
+# loads apps/web/.env.production into the build and the standalone output
+# copies it. .dockerignore keeps every .env* but the examples out of the
+# context; this removes whatever a different context would bring.
+RUN find apps/web packages -maxdepth 2 -name '.env*' ! -name '.env.example' -type f -print -delete \
+  && npm run build -w @dukaanai/invoice-math \
   && npm run build -w dukaanai-web
 
 # ---- runtime: the traced standalone server plus static assets, non-root ----

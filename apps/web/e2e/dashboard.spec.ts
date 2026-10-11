@@ -44,7 +44,7 @@ async function stockedProduct(request: APIRequestContext, stock: number): Promis
     gstRate: 'EIGHTEEN',
     costPrice: 60,
     sellingPrice: 100,
-    mrp: 100,
+    mrp: 118, // tax-inclusive: 100 + 18% GST (audit P1-2)
     wholesalePrice: 90,
   });
   const item = await api<{ id: string }>(request, 'POST', '/inventory-domain', { productId: product.id });

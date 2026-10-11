@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import {
   LayoutDashboard, ShoppingCart, PackageSearch, UserCheck, Users,
   ClipboardList, Receipt, UserCircle, BarChart3, Bell,
@@ -12,6 +13,7 @@ import {
 import { clsx } from '@/lib/utils';
 import { useAppStore } from '@/store';
 import { Modal } from '@/components/ui/Modal';
+import { canUsePos, isManagement } from '@/components/customers/permissions';
 
 interface NavItem {
   name: string;
@@ -19,21 +21,23 @@ interface NavItem {
   icon: React.ComponentType<{ size?: number | string; className?: string }>;
   badge?: string;
   badgeColor?: string;
+  /** Shown only to the roles the page's API accepts (audit W12); absent = every signed-in role. */
+  allowed?: (role: string | null | undefined) => boolean;
 }
 
 const navigation: NavItem[] = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-  { name: 'Billing (POS)', href: '/billing', icon: ShoppingCart },
+  { name: 'Billing (POS)', href: '/billing', icon: ShoppingCart, allowed: canUsePos },
   { name: 'Invoices', href: '/invoices', icon: FileText },
   { name: 'Shifts', href: '/shifts', icon: Clock },
   { name: 'Products / Stock', href: '/products', icon: PackageSearch },
   { name: 'Customers (Udhar)', href: '/customers', icon: UserCheck },
-  { name: 'AI OCR Scanner', href: '/ai-scanner', icon: ScanLine, badge: 'Magic', badgeColor: 'bg-green-500' },
+  { name: 'AI OCR Scanner', href: '/ai-scanner', icon: ScanLine, badge: 'Magic', badgeColor: 'bg-green-500', allowed: isManagement },
   { name: 'Smart Bill Capture', href: '/smart-capture', icon: Camera, badge: 'Mobile', badgeColor: 'bg-blue-500' },
   { name: 'Suppliers', href: '/suppliers', icon: Users },
   { name: 'Inventory', href: '/inventory', icon: ClipboardList },
   { name: 'Expenses', href: '/expenses', icon: Receipt },
-  { name: 'Employees', href: '/employees', icon: UserCircle },
+  { name: 'Employees', href: '/employees', icon: UserCircle, allowed: isManagement },
   { name: 'Reports & Analytics', href: '/analytics', icon: BarChart3 },
   { name: 'Notifications', href: '/notifications', icon: Bell },
   { name: 'Settings', href: '/settings', icon: Settings },
@@ -45,6 +49,10 @@ function isActivePath(pathname: string, href: string): boolean {
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { data: session, status } = useSession();
+  const role = session?.user?.role;
+  // Until the session is read every link shows, so an owner's menu never flickers.
+  const shows = (item: NavItem) => status === 'loading' || !item.allowed || item.allowed(role);
   const { sidebarOpen, toggleSidebar } = useAppStore();
   const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
 
@@ -92,7 +100,7 @@ export function Sidebar() {
 
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto px-4 pb-4 space-y-1 scrollbar-hide" aria-label="Main">
-          {navigation.map((item) => {
+          {navigation.filter(shows).map((item) => {
             const Icon = item.icon;
             const isActive = isActivePath(pathname, item.href);
             return (

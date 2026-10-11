@@ -26,7 +26,9 @@
  * from the environment and the working directory (`/app/apps/api` in the
  * image), as the API reads them; `--storage-root` / `--uploads` override.
  */
-import { readFileSync, existsSync } from 'fs';
+import { createReadStream, readFileSync, existsSync } from 'fs';
+import { createHash } from 'crypto';
+import { spawnSync } from 'child_process';
 import * as path from 'path';
 import { parseArgs } from 'node:util';
 import { PrismaClient } from '@prisma/client';
@@ -60,8 +62,13 @@ const DEFAULT_DEPS: ShopDataDeps = {
   cwd: () => process.cwd(),
 };
 
-/** The export a shop erasure names must be of the same shop and intact (its .sha256 sidecar). */
-function checkExportArchive(archive: string, shopId: string): void {
+/**
+ * The export a shop erasure names must be of the same shop and intact
+ * (audit F8): the archive's SHA-256 must equal its `.sha256` sidecar (a
+ * truncated or swapped archive is refused), and the manifest inside it must
+ * name this shop and the export format. The file name alone proved nothing.
+ */
+export async function checkExportArchive(archive: string, shopId: string): Promise<void> {
   const base = path.basename(archive);
   if (!base.startsWith(`dukaanai-export-${shopId}-`) || !base.endsWith('.tar.gz')) {
     throw new CliUsageError(`--export must be this shop's export archive (dukaanai-export-${shopId}-<stamp>.tar.gz), got ${base}`);
@@ -70,6 +77,23 @@ function checkExportArchive(archive: string, shopId: string): void {
   if (!existsSync(`${archive}.sha256`)) throw new CliUsageError(`--export ${archive} has no .sha256 sidecar`);
   const recorded = readFileSync(`${archive}.sha256`, 'utf8').split(/\s+/)[0];
   if (!/^[0-9a-f]{64}$/.test(recorded)) throw new CliUsageError(`${archive}.sha256 is not a SHA-256 sidecar`);
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(archive)) hash.update(chunk as Buffer);
+  const actual = hash.digest('hex');
+  if (actual !== recorded) throw new CliUsageError(`--export ${archive} does not match its .sha256 sidecar (archive ${actual}, sidecar ${recorded}): the export is damaged; take a new one`);
+  const directory = base.slice(0, -'.tar.gz'.length);
+  const tar = spawnSync('tar', ['-xzOf', archive, `${directory}/manifest.json`], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  type Manifest = { format?: unknown; shop?: { id?: unknown } };
+  let manifest: Manifest | null;
+  try {
+    manifest = tar.status === 0 ? (JSON.parse(tar.stdout) as Manifest) : null;
+  } catch {
+    manifest = null;
+  }
+  if (!manifest) throw new CliUsageError(`--export ${archive} holds no readable ${directory}/manifest.json`);
+  if (manifest.format !== 'dukaanai-shop-export/1' || manifest.shop?.id !== shopId) {
+    throw new CliUsageError(`--export ${archive} is not an export of shop ${shopId} (its manifest names ${String(manifest.shop?.id)})`);
+  }
 }
 
 function printReceipt(out: (line: string) => void, receipt: ErasureReceipt): void {
@@ -112,7 +136,7 @@ export function shopDataCommand(overrides: Partial<ShopDataDeps> = {}): CliComma
     if (action === 'export' && !values.out) throw new CliUsageError('--out <dir> is required for export');
     if (action === 'erase' && !values.export) throw new CliUsageError('--export <archive> is required: a shop is erased only after its export was taken (docs/privacy/DATA_REQUESTS.md)');
     if (action === 'erase-customer' && !values.customer) throw new CliUsageError('--customer <id> is required');
-    if (action === 'erase') checkExportArchive(path.resolve(values.export!), values.shop);
+    if (action === 'erase') await checkExportArchive(path.resolve(values.export!), values.shop);
 
     const cwd = deps.cwd();
     const paths: ShopDataPaths = {
@@ -147,7 +171,7 @@ export function shopDataCommand(overrides: Partial<ShopDataDeps> = {}): CliComma
       const receipt =
         action === 'erase'
           ? await eraseShop(db, { ...paths, shopId: values.shop, now, dryRun: !values.yes })
-          : await eraseCustomer(db, { storageRoot: paths.storageRoot, shopId: values.shop, customerId: values.customer!, now, dryRun: !values.yes });
+          : await eraseCustomer(db, { storageRoot: paths.storageRoot, uploadsRoot: paths.uploadsRoot, shopId: values.shop, customerId: values.customer!, now, dryRun: !values.yes });
       emit(receipt, () => printReceipt(deps.out, receipt));
       return 0;
     } catch (error) {

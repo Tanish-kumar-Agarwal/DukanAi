@@ -16,12 +16,16 @@ export interface ClaimedOutboxRow {
   retryCount: number;
 }
 
-/** OutboxEvent.error is a plain Prisma String, i.e. VARCHAR(191) on MySQL. */
 /** `OutboxEvent.error` is TEXT (roadmap 8.1); the cap keeps a runaway stack trace out of the row. */
 const MAX_ERROR_LENGTH = 4000;
 
 /** Statuses a relay may have left a row in without finishing it (PROCESSING is the pre-4.7 claim). */
 export const OUTBOX_CLAIMED_STATUSES = ['CLAIMED', 'PROCESSING'] as const;
+
+/** A claim as its job knows it: the row's retryCount when it was claimed (the `<id>.<retryCount>` job id). */
+export interface OutboxClaim {
+  retryCount: number;
+}
 
 /**
  * The one outbox semantic (roadmap 4.7, audit P2-7 / relay gap locks /
@@ -107,35 +111,55 @@ export class OutboxClaimService {
     `;
   }
 
-  async markDone(id: string): Promise<void> {
-    await this.prisma.outboxEvent.updateMany({ where: { id }, data: { status: 'DONE', processedAt: new Date(), error: null } });
+  /**
+   * Which rows a settle may change (audit R10): only one still claimed, and,
+   * when the caller names its claim, only that claim (the retryCount its job
+   * was enqueued with, which the reaper bumps when it hands a stale claim
+   * back). A worker that outlived the stale window, or a replayed job, can no
+   * longer end a row another claim is working on or one already DONE.
+   */
+  private settleWhere(id: string, claim?: OutboxClaim): Prisma.OutboxEventWhereInput {
+    return { id, status: { in: [...OUTBOX_CLAIMED_STATUSES] }, ...(claim ? { retryCount: claim.retryCount } : {}) };
+  }
+
+  /** Ends the claim as DONE; false when the row was no longer this claim's. */
+  async markDone(id: string, claim?: OutboxClaim): Promise<boolean> {
+    const updated = await this.prisma.outboxEvent.updateMany({ where: this.settleWhere(id, claim), data: { status: 'DONE', processedAt: new Date(), error: null } });
+    return updated.count === 1;
   }
 
   /** A permanent failure: the row stays FAILED until an operator retries it. */
-  async markFailed(id: string, error: string): Promise<void> {
-    await this.prisma.outboxEvent.updateMany({
-      where: { id },
+  async markFailed(id: string, error: string, claim?: OutboxClaim): Promise<boolean> {
+    const updated = await this.prisma.outboxEvent.updateMany({
+      where: this.settleWhere(id, claim),
       data: { status: 'FAILED', error: error.slice(0, MAX_ERROR_LENGTH), retryCount: { increment: 1 }, processedAt: new Date() },
     });
+    return updated.count === 1;
   }
 
   /**
    * A transient failure: one more attempt after a backoff, or FAILED once
-   * `EVENTS_OUTBOX_MAX_RETRIES` attempts are spent. Returns the outcome.
+   * `EVENTS_OUTBOX_MAX_RETRIES` attempts are spent. Returns the outcome;
+   * 'SKIPPED' when the row was no longer this claim's (nothing changed).
    */
-  async scheduleRetry(id: string, error: string): Promise<'RETRY' | 'FAILED'> {
-    const row = await this.prisma.outboxEvent.findUnique({ where: { id }, select: { retryCount: true } });
-    if (!row) return 'FAILED';
+  async scheduleRetry(id: string, error: string, claim?: OutboxClaim): Promise<'RETRY' | 'FAILED' | 'SKIPPED'> {
+    const row = await this.prisma.outboxEvent.findFirst({ where: this.settleWhere(id, claim), select: { retryCount: true } });
+    if (!row) return 'SKIPPED';
     const attempt = row.retryCount + 1;
+    const guard = this.settleWhere(id, { retryCount: row.retryCount });
     if (attempt >= this.eventsConfig.outboxMaxRetries) {
-      await this.markFailed(id, `retries exhausted: ${error}`);
-      return 'FAILED';
+      const failed = await this.prisma.outboxEvent.updateMany({
+        where: guard,
+        data: { status: 'FAILED', error: `retries exhausted: ${error}`.slice(0, MAX_ERROR_LENGTH), retryCount: { increment: 1 }, processedAt: new Date() },
+      });
+      return failed.count === 1 ? 'FAILED' : 'SKIPPED';
     }
     const nextAttemptAt = new Date(Date.now() + this.backoffMs(attempt));
-    await this.prisma.outboxEvent.updateMany({
-      where: { id },
+    const retried = await this.prisma.outboxEvent.updateMany({
+      where: guard,
       data: { status: 'PENDING', claimedAt: null, retryCount: attempt, error: error.slice(0, MAX_ERROR_LENGTH), nextAttemptAt },
     });
+    if (retried.count === 0) return 'SKIPPED';
     this.logger.warn(`OutboxEvent ${id} scheduled for attempt ${attempt + 1} at ${nextAttemptAt.toISOString()}: ${error}`);
     return 'RETRY';
   }

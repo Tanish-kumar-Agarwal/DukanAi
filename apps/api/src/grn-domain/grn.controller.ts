@@ -58,4 +58,18 @@ export class GrnController {
   async approveGrn(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Body() body: ApprovalDecisionDto, @Req() req: Request) {
     return this.repository.approveGrn(shopId, id, actorId, req.ip, body.comments, body.signature);
   }
+
+  /** Refuses the delivery before its goods are accepted (a manager other than the receiver). */
+  @Roles(...MANAGEMENT_ROLES)
+  @Post(':id/reject')
+  async rejectGrn(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Body() body: ApprovalDecisionDto) {
+    return this.repository.rejectGrn(shopId, id, actorId, body.comments);
+  }
+
+  /** Withdraws a receipt before its goods are accepted. */
+  @Roles(...MANAGEMENT_ROLES)
+  @Post(':id/cancel')
+  async cancelGrn(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Body() body: ApprovalDecisionDto) {
+    return this.repository.cancelGrn(shopId, id, actorId, body.comments);
+  }
 }

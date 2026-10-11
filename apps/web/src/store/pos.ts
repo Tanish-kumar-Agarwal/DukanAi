@@ -64,6 +64,29 @@ export interface HeldCart {
   customer: PosCustomer | null;
   discount: CartDiscount;
   notes: string;
+  /**
+   * The request key of a checkout attempt that got no answer (audit P1-4):
+   * it travels with the cart, so the cart is billed under it when resumed and
+   * a lost sale replays instead of being billed twice.
+   */
+  idempotencyKey?: string | null;
+}
+
+/** A catalogue line's current price, as re-read after the server refused stale ones (audit W7). */
+export interface LinePriceUpdate {
+  productId: string;
+  unitPrice: number;
+  mrp: number;
+  gstRate: string;
+  cessRate: number;
+}
+
+/** A line whose price changed under the cart. */
+export interface LinePriceChange {
+  productId: string;
+  name: string;
+  from: number;
+  to: number;
 }
 
 export type QuantityResult = { ok: true; value: number } | { ok: false; reason: string };
@@ -75,6 +98,12 @@ export interface PosState {
   notes: string;
   heldCarts: HeldCart[];
   idempotencyKey: string | null;
+  /**
+   * True from the moment a checkout is sent with `idempotencyKey` until its
+   * answer settles it (a saved bill consumes the key, a refusal settles it).
+   * A key with an unanswered attempt is never given to another cart.
+   */
+  keyAttempted: boolean;
 
   addProduct: (product: SearchResult, quantity?: number) => QuantityResult;
   /** Adds a custom line; each call creates a new line (custom lines are never merged). */
@@ -97,6 +126,12 @@ export interface PosState {
   ensureIdempotencyKey: () => string;
   /** Clears the key after a successful submit; the hook generates a fresh one. */
   consumeIdempotencyKey: () => void;
+  /** A checkout is about to be sent with the current key. */
+  markKeyAttempted: () => void;
+  /** The server answered and saved nothing under the key (a refusal): the key is free again. */
+  settleKeyAttempt: () => void;
+  /** Puts the current prices on the cart's catalogue lines; returns the lines whose price changed. */
+  refreshLinePrices: (updates: LinePriceUpdate[]) => LinePriceChange[];
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +293,7 @@ export const usePosStore = create<PosState>()(
       notes: '',
       heldCarts: [],
       idempotencyKey: null,
+      keyAttempted: false,
 
       addProduct: (product, quantity = 1) => {
         const existing = get().lines.find((l) => l.productId === product.id);
@@ -324,6 +360,9 @@ export const usePosStore = create<PosState>()(
       holdCart: (label) => {
         const state = get();
         if (state.lines.length === 0) return null;
+        // A key with an unanswered attempt stays with its cart (audit P1-4);
+        // the counter then bills the next customer under a fresh one.
+        const travels = state.keyAttempted && state.idempotencyKey !== null;
         const held: HeldCart = {
           id: generateUuid(),
           label: label.trim() || `Cart ${state.heldCarts.length + 1}`,
@@ -332,6 +371,7 @@ export const usePosStore = create<PosState>()(
           customer: state.customer,
           discount: state.discount,
           notes: state.notes,
+          idempotencyKey: travels ? state.idempotencyKey : null,
         };
         set({
           heldCarts: [held, ...state.heldCarts],
@@ -339,6 +379,7 @@ export const usePosStore = create<PosState>()(
           customer: null,
           discount: EMPTY_DISCOUNT,
           notes: '',
+          ...(travels ? { idempotencyKey: generateUuid(), keyAttempted: false } : {}),
         });
         return held;
       },
@@ -347,8 +388,10 @@ export const usePosStore = create<PosState>()(
         const state = get();
         const held = state.heldCarts.find((h) => h.id === id);
         if (!held) return false;
-        // Anything currently in the cart is preserved by holding it first.
+        // Anything currently in the cart is preserved by holding it first,
+        // with its key when an attempt with it is unanswered.
         const remaining = state.heldCarts.filter((h) => h.id !== id);
+        const parkKey = state.keyAttempted && state.idempotencyKey !== null;
         const parked: HeldCart[] =
           state.lines.length > 0
             ? [
@@ -360,15 +403,21 @@ export const usePosStore = create<PosState>()(
                   customer: state.customer,
                   discount: state.discount,
                   notes: state.notes,
+                  idempotencyKey: parkKey ? state.idempotencyKey : null,
                 },
               ]
             : [];
+        // The resumed cart is billed under its own unanswered key, else under
+        // the counter's key when that one is free, else a fresh one.
+        const key = held.idempotencyKey ?? (parkKey || state.keyAttempted ? generateUuid() : state.idempotencyKey ?? generateUuid());
         set({
           heldCarts: [...parked, ...remaining],
           lines: held.lines,
           customer: held.customer,
           discount: held.discount,
           notes: held.notes,
+          idempotencyKey: key,
+          keyAttempted: Boolean(held.idempotencyKey),
         });
         return true;
       },
@@ -393,7 +442,24 @@ export const usePosStore = create<PosState>()(
         return get().newIdempotencyKey();
       },
 
-      consumeIdempotencyKey: () => set({ idempotencyKey: null }),
+      consumeIdempotencyKey: () => set({ idempotencyKey: null, keyAttempted: false }),
+
+      markKeyAttempted: () => set({ keyAttempted: true }),
+
+      settleKeyAttempt: () => set({ keyAttempted: false }),
+
+      refreshLinePrices: (updates) => {
+        const byId = new Map(updates.map((u) => [u.productId, u]));
+        const changes: LinePriceChange[] = [];
+        const lines = get().lines.map((line) => {
+          const update = line.isCustom ? undefined : byId.get(line.productId);
+          if (!update) return line;
+          if (update.unitPrice !== line.unitPrice) changes.push({ productId: line.productId, name: line.name, from: line.unitPrice, to: update.unitPrice });
+          return { ...line, unitPrice: update.unitPrice, mrp: update.mrp, gstRate: update.gstRate || line.gstRate, cessRate: update.cessRate };
+        });
+        set({ lines });
+        return changes;
+      },
     }),
     {
       name: `${STORAGE_PREFIX}:anon`,
@@ -408,6 +474,7 @@ export const usePosStore = create<PosState>()(
         notes: state.notes,
         heldCarts: state.heldCarts,
         idempotencyKey: state.idempotencyKey,
+        keyAttempted: state.keyAttempted,
       }),
       // Carts persisted before `lineId` / `isCustom` / `cessRate` existed are
       // upgraded on every rehydrate (held carts included).
@@ -437,11 +504,11 @@ export function hydratePosStore(): void {
   void usePosStore.persist.rehydrate();
 }
 
-type PersistedCart = Pick<PosState, 'lines' | 'customer' | 'discount' | 'notes' | 'heldCarts' | 'idempotencyKey'>;
+type PersistedCart = Pick<PosState, 'lines' | 'customer' | 'discount' | 'notes' | 'heldCarts' | 'idempotencyKey' | 'keyAttempted'>;
 
 function snapshotCart(): PersistedCart {
-  const { lines, customer, discount, notes, heldCarts, idempotencyKey } = usePosStore.getState();
-  return { lines, customer, discount, notes, heldCarts, idempotencyKey };
+  const { lines, customer, discount, notes, heldCarts, idempotencyKey, keyAttempted } = usePosStore.getState();
+  return { lines, customer, discount, notes, heldCarts, idempotencyKey, keyAttempted };
 }
 
 /**
@@ -467,7 +534,7 @@ export function scopePosStoreToShop(shopId: string): void {
     if (anon) {
       const shopHasCart = usePosStore.getState().lines.length > 0;
       if (!shopHasCart && (anon.lines.length > 0 || anon.customer || anon.notes || anon.discount.value > 0)) {
-        usePosStore.setState({ lines: anon.lines, customer: anon.customer, discount: anon.discount, notes: anon.notes, idempotencyKey: anon.idempotencyKey });
+        usePosStore.setState({ lines: anon.lines, customer: anon.customer, discount: anon.discount, notes: anon.notes, idempotencyKey: anon.idempotencyKey, keyAttempted: anon.keyAttempted });
       }
       if (anon.heldCarts.length > 0) {
         const known = new Set(usePosStore.getState().heldCarts.map((held) => held.id));

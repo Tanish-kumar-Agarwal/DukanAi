@@ -61,6 +61,33 @@ archive" and "Restore"). On a managed MySQL the provider's point-in-time
 recovery replaces the archive; its settings and the drill against it are in
 the same document and wait for the account.
 
+What the backup files themselves guarantee since the release-readiness
+audit (2026-10-12; details in `docs/BACKUP_RESTORE.md`, "Hardening of the
+backup scripts"):
+
+- Only their owner reads them: every script runs under `umask 077` and its
+  output directories are mode 700 (dumps hold every customer's data).
+- A dump of a TLS database verified its server: `sslaccept=strict` in
+  `DATABASE_URL` is `--ssl-mode=VERIFY_IDENTITY` (`VERIFY_CA` for an IP
+  address) with the URL's `sslcert` as the CA; nothing falls back to an
+  unverified connection.
+- The archive never loses what a kept dump needs: `binlog-archive.sh`
+  prunes only binary logs older than the `binlog_file` of the oldest dump
+  it can see (`--dumps`), never by age alone, and prunes nothing when it
+  sees no dump.
+- A point-in-time restore says when the archive is short: `restore.sh --to`
+  refuses a target later than the last archived event unless
+  `--allow-short`, instead of stopping early in silence.
+- `--keep` counts only complete dumps (with their `.sha256` and `.meta`);
+  an interrupted run's `.partial` is removed on a later run.
+- The documents manifest is computed from the archive as written, so a file
+  that changed between the copy and the manifest cannot verify.
+- An off-site push checks exactly the files it copied (one snapshot of the
+  list for `rclone copy` and `cryptcheck`), and the crypt key never appears
+  in a process listing.
+- The restore drills stamp their own status directory, never the
+  production `BACKUP_STATUS_DIR` that the backup alerts read.
+
 ## 3. What keeps the application itself from losing data
 
 Backups answer disasters. These rules, all enforced in code and tests,

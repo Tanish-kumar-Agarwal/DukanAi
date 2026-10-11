@@ -13,6 +13,7 @@ import {
 } from './storage-security.constants';
 import { sanitizeStorageFileName } from './storage-path.util';
 import { contentMatchesDeclaredType, sniffMimeType } from '../common/upload/file-signature';
+import { fileNameTooLong } from '../common/upload/upload-options';
 
 type FileFilterCallback = (error: Error | null, acceptFile: boolean) => void;
 
@@ -54,6 +55,10 @@ export function validateUploadedFile(
   if (!file) {
     throw new BadRequestException('Required file is missing');
   }
+
+  // The same name limit as every other upload route (audit P3), before anything is written.
+  const tooLong = fileNameTooLong(file.originalname);
+  if (tooLong) throw tooLong;
 
   const sanitizedName = sanitizeStorageFileName(file.originalname);
   const ext = path.extname(sanitizedName).toLowerCase();

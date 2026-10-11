@@ -36,8 +36,9 @@ export function qty(value: { toFixed(dp: number): string } | number | string): P
 }
 
 export const INVOICE_INCLUDE = {
-  items: { where: { isDeleted: false }, orderBy: { createdAt: 'asc' as const } },
-  payments: { orderBy: { createdAt: 'asc' as const } },
+  // `id` breaks ties: the lines and tenders of one document share their createdAt.
+  items: { where: { isDeleted: false }, orderBy: [{ createdAt: 'asc' as const }, { id: 'asc' as const }] },
+  payments: { orderBy: [{ createdAt: 'asc' as const }, { id: 'asc' as const }] },
   customer: { select: { id: true, name: true, phone: true, state: true, outstandingBalance: true, creditLimit: true } },
   cashier: { select: { id: true, name: true } },
 } satisfies Prisma.InvoiceInclude;

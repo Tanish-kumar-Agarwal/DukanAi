@@ -67,7 +67,7 @@ async function createProduct(request: APIRequestContext, overrides: Record<strin
         gstRate: 'EIGHTEEN',
         costPrice: 60,
         sellingPrice: 118,
-        mrp: 118,
+        mrp: 139.24, // tax-inclusive: 118 + 18% GST (audit P1-2)
         wholesalePrice: 100,
         ...overrides,
       },
@@ -327,7 +327,7 @@ test.describe('80 mm thermal receipt', () => {
     const product = await createProduct(request, {
       name: unique('Fortune Sunlite Refined Sunflower Oil Pouch 1 Litre (Pack of 12) Family Saver'),
       sellingPrice: 98765.43,
-      mrp: 98765.43,
+      mrp: null, // the API stores the selling price plus GST
       costPrice: 50000,
       wholesalePrice: 90000,
     });

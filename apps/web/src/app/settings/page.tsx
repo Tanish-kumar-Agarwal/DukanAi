@@ -15,9 +15,10 @@ import { dateTime } from '@/components/pos/format';
 
 /**
  * Settings (roadmap 6.3). "Shop Profile" writes every field `PATCH /shops/me`
- * accepts; the shop's state is what decides IGST versus CGST+SGST on a sale
- * (the API compares it with the customer's state), so it is a picker from
- * the same list the customers page uses. The side menu opens real panels:
+ * accepts; a blank email clears it (audit W3). The shop's state is the place
+ * of supply of a counter sale (CGST + SGST); IGST applies only when a sale
+ * names a place of supply in another state (audit P1-3), so it is a picker
+ * from the same list the customers page uses. The side menu opens real panels:
  * Account & Security lists and ends the caller's own sessions, the two
  * team / notification entries lead to their pages. There is no plan or
  * subscription model, so the former "Billing & Plans" entry is gone.
@@ -76,9 +77,14 @@ function SettingsContent() {
   const [revoking, setRevoking] = useState<string | null>(null);
 
   useEffect(() => {
+    // Stale-response guard (roadmap 6.5): a load that answers after this one was
+    // abandoned (React's development double mount) must not overwrite what the
+    // user is already typing into the form.
+    let cancelled = false;
     shopApi
       .me()
       .then((data) => {
+        if (cancelled) return;
         setShopName(data.name ?? '');
         setGstin(data.settings?.gstin ?? '');
         setAddress(data.address ?? '');
@@ -88,8 +94,15 @@ function SettingsContent() {
         setPhone(data.phone ?? '');
         setEmail(data.email ?? '');
       })
-      .catch((err) => setLoadError(describeApiError(err, 'Loading shop profile (GET /shops/me)')))
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        if (!cancelled) setLoadError(describeApiError(err, 'Loading shop profile (GET /shops/me)'));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const loadSessions = useCallback(() => {
@@ -130,12 +143,19 @@ function SettingsContent() {
         state,
         pincode: trimmedPincode,
         phone: trimmedPhone,
+        // '' clears the stored address: a new shop has none (audit W3).
         email: email.trim(),
         gstin: trimmedGstin,
       });
       setShopName(saved.name);
       setState(saved.state ?? '');
-      toast(saved.state ? `Shop profile saved. Sales to customers outside ${saved.state} will carry IGST.` : 'Shop profile saved. Set the state so inter-state sales carry IGST.', saved.state ? 'success' : 'warning');
+      setEmail(saved.email ?? '');
+      toast(
+        saved.state
+          ? `Shop profile saved. Counter sales are billed in ${saved.state} (CGST + SGST); IGST applies only when a sale names a place of supply in another state.`
+          : 'Shop profile saved. Set the state: it is the place of supply of every counter sale, and invoices need it.',
+        saved.state ? 'success' : 'warning',
+      );
     } catch (err) {
       toast(describeApiError(err, 'Saving shop profile (PATCH /shops/me)'), 'error');
     } finally {
@@ -226,7 +246,7 @@ function SettingsContent() {
                           <option value="">Not set</option>
                           {INDIAN_STATES.map((name) => <option key={name} value={name}>{name}</option>)}
                         </select>
-                        <p className="text-xs text-gray-500 mt-1">Decides the tax split: a customer in another state is charged IGST instead of CGST + SGST.</p>
+                        <p className="text-xs text-gray-500 mt-1">The place of supply of counter sales (CGST + SGST); IGST only when a sale names another state.</p>
                       </div>
                     </div>
 
@@ -276,7 +296,7 @@ function SettingsContent() {
                 <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
                   <p className="text-xs text-gray-500 mb-1">Role</p>
                   <p className="font-bold text-gray-800">{session?.user?.role ?? (AUTH_DISABLED ? 'OWNER' : '—')}</p>
-                  <p className="text-xs text-gray-500 mt-0.5">Passwords are set at registration or from an invitation; there is no in-app password change yet.</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Passwords are set at registration or from an invitation. To change yours, sign out and use “Forgot?” on the sign-in page; the link is emailed to you.</p>
                 </div>
               </div>
 

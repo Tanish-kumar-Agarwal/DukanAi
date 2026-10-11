@@ -98,7 +98,7 @@ monitoring" below).
 ## Binary-log archive (point in time, roadmap 9.2)
 
 ```
-scripts/db/binlog-archive.sh [--out DIR] [--flush] [--keep-days N]
+scripts/db/binlog-archive.sh [--out DIR] [--flush] [--keep-days N] [--dumps DIR]...
 ```
 
 The dump is the state at one moment; the binary log is every change since.
@@ -122,9 +122,13 @@ covers. Run it every few minutes: the recovery point is the interval.
   days away: the cron line always passes `--flush`. A continuous alternative
   is `mysqlbinlog --read-from-remote-server --raw --stop-never` as a
   supervised daemon; the cron is simpler and its lag is bounded.
-- `--keep-days N` (default 7) removes logs archived more than N days ago.
-  Keep it above the dump interval, or a dump has no logs to roll forward
-  with; the point-in-time window is the shorter of the two retentions.
+- `--keep-days N` (default 7) removes logs archived more than N days ago,
+  but never a log a kept dump still needs: nothing from the `binlog_file`
+  in the `.meta` of the oldest dump in the dump directories on is removed,
+  and nothing at all when no dump with a position is found there (the
+  dumps are looked for in `BACKUP_DIR`; `--dumps DIR`, repeatable, names
+  them, e.g. an hourly set in its own directory). Pruning by age alone
+  removed the logs the oldest of 14 nightly dumps needed after 7 days.
 - `.last-success` in the archive holds the UTC time of the last run and the
   newest archived log; the stale-backup alert of roadmap 9.4 reads it.
 - A MariaDB `mysqlbinlog` cannot read MySQL 8 logs: point `MYSQLBINLOG_BIN`
@@ -147,8 +151,12 @@ writes one `documents-<UTC stamp>[-label].tar.gz` with the two trees as
 of symlinks, sorted members), next to three sidecars: `.sha256` of the
 archive, `.manifest` with the SHA-256 of every file (`sha256sum` format), and
 `.meta` (roots, time, file count). It is written as `.partial` and renamed,
-the oldest archives are pruned (`--keep`, default 14), and the success is
-recorded for monitoring. Evidence files are written once and never replaced
+the manifest is computed from the finished archive itself (each member is
+streamed through `sha256sum` with `tar --to-command`; a manifest taken from
+the live tree in a separate pass listed files written in between that the
+archive did not hold, and the archive then failed its own restore check),
+the oldest complete archives are pruned (`--keep`, default 14), and the
+success is recorded for monitoring. Evidence files are written once and never replaced
 (roadmap 7.5), so an archive taken while the API runs is consistent; a file
 that changes while tar reads it fails the run and the next run succeeds.
 
@@ -602,3 +610,49 @@ backup as the step before `migrate deploy`.
   dumps; the register and the rotation procedures are `docs/SECRETS.md`.
 - Redis needs no backup: queues rebuild from the outbox, caches from the
   database, rate-limit counters and cron locks expire.
+
+## Hardening of the backup scripts (release-readiness audit, 2026-10-12)
+
+- **Owner-only files.** `scripts/db/lib.sh`, which every backup script
+  loads, sets `umask 077`, and the output directories are made `700`: dumps,
+  archives, manifests, binary logs and status stamps are readable by their
+  owner only. The API reads the status stamps as the same uid (1000 in the
+  images and the compose `user:`), so the backup metric is unaffected.
+- **TLS to a managed database.** The scripts read the TLS parameters of
+  `DATABASE_URL` as the API does: `sslaccept=strict` (or `sslcert` alone)
+  verifies the server certificate (`--ssl-mode=VERIFY_IDENTITY` on a MySQL
+  client, `VERIFY_CA` when the host is an IP address; `--ssl
+  --ssl-verify-server-cert` on a MariaDB client) and `sslcert=<file>` is the
+  CA (`--ssl-ca`). A URL that asks for verification never gets an
+  unverified connection; `sslaccept=accept_invalid_certs` encrypts without
+  verifying, only when the URL says so. Without a URL, `MYSQL_SSL_MODE`
+  (`verify` / `require`) and `MYSQL_SSL_CA` do the same. The CA file must
+  be mounted at the path the URL names (the production compose file and the
+  Kubernetes backup sidecar mount `/etc/dukaanai/db-ca.pem`). A MySQL 8
+  client refuses to verify without a CA file, so a provider whose
+  certificate chains to a public CA still names one: `sslcert=/etc/ssl/certs/
+  ca-certificates.crt` (the system bundle in the db-ops image). `bash
+  scripts/db/lib.test.sh` checks the mapping without a database (CI lint
+  job).
+- **Credentials stay off command lines.** Passwords travel in `MYSQL_PWD`,
+  the off-site key reaches `rclone obscure` on stdin, and the restore drill
+  hands the Prisma CLI its URLs through `DATABASE_URL` (`migrate diff
+  --from-schema-datasource`), never as arguments `ps` would show.
+- **URL decoding.** Credentials in `DATABASE_URL` are percent-decoded and
+  nothing else: a `+` stays a `+` and a backslash stays a backslash.
+- **Point in time reaches its target.** `restore.sh --to TIME` reads the
+  newest event of the last archived log and refuses a TIME after it (the
+  events in between were never archived); archive first (`binlog-archive.sh
+  --flush`), or pass `--allow-short` to restore to the end of the archive.
+- **Drills stamp their own status.** `restore-drill.sh` (database and
+  documents) export `BACKUP_STATUS_DIR` into their work directory: a drill
+  no longer makes a stale production backup look fresh.
+- **Complete backups only.** `backup.sh` counts toward `--keep` only dumps
+  with their `.sha256` and `.meta` (an incomplete dump older than the oldest
+  kept backup is removed), and removes `.partial` files left by a run killed
+  more than a day ago; the documents archives are counted the same way.
+- **Off-site push from one snapshot.** `offsite.sh push` lists the backup
+  directory once and hands the same list to `rclone copy` and to `rclone
+  cryptcheck` (`--files-from-raw`), so a log the archiver writes during the
+  push no longer fails the check; the status stamps, rewritten by every job
+  at any time, are shipped but not part of the check.

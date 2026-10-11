@@ -7,10 +7,12 @@
 #
 # Steps (each one is recorded PASS / FAIL / SKIPPED with its log; a failure
 # never stops the run, so the bundle always holds every report, and the exit
-# code is 1 when any step failed):
+# code is 1 when any step failed). A SKIPPED step (--skip, CERTIFY_DRILLS=0)
+# is never counted as PASS: SUMMARY.md lists it with its reason, apart from
+# the result (audit 2026-10-11, R26: skipped drills used to read PASS):
 #   images        the digests and metadata of the three images
 #   boot-matrix   every refusal case of the boot matrix on the API image (boot-matrix.sh)
-#   migrate-diff  the image's migrations on MySQL 8 and MariaDB, zero drift (migrate-diff.sh)
+#   migrate-diff  the image's migrations on MySQL 8.0, MySQL 8.4 and MariaDB, zero drift (migrate-diff.sh)
 #   smoke         the compose stack from the images: migrations, business flow through the
 #                 web and the API, a CLEAN reconciliation, point-in-time restore, documents
 #                 backup, off-site copy, backup metric, monitoring stack, graceful stop
@@ -83,9 +85,12 @@ WORK="$(mktemp -d)"
 ENV_FILE="$WORK/compose.env"
 JWT_SECRET="$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")"
 NEXTAUTH_SECRET="$(node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))")"
+# A production API serves GET /api/metrics only with a token (audit R13); the smoke scrapes with it.
+METRICS_TOKEN="$(node -e "process.stdout.write(require('crypto').randomBytes(24).toString('hex'))")"
 cat > "$ENV_FILE" <<ENV
 JWT_SECRET=$JWT_SECRET
 NEXTAUTH_SECRET=$NEXTAUTH_SECRET
+METRICS_TOKEN=$METRICS_TOKEN
 MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD
 MYSQL_DATABASE=$DB_NAME
 API_PORT=$API_PORT
@@ -104,13 +109,19 @@ COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 printf 'Certification of %s\n  api     %s\n  web     %s\n  db-ops  %s\n  bundle  %s\n' "$LABEL" "$API_IMAGE" "$WEB_IMAGE" "$DB_OPS_IMAGE" "$OUT"
 
 STEPS=(); RESULTS=(); SECONDS_TAKEN=(); NOTES=()
+# CERTIFY_DRILLS=0 is a skip like --skip drills, recorded as such.
+if [ "${CERTIFY_DRILLS:-1}" != "1" ]; then SKIP="${SKIP:+$SKIP,}drills"; fi
 skipped() { case ",$SKIP," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+skip_reason() { if [ "$1" = drills ] && [ "${CERTIFY_DRILLS:-1}" != "1" ]; then echo "CERTIFY_DRILLS=${CERTIFY_DRILLS}"; else echo "--skip $1"; fi; }
 record() { STEPS+=("$1"); RESULTS+=("$2"); SECONDS_TAKEN+=("$3"); NOTES+=("$4"); }
 # run_step NAME "description" command...: the command's output goes to OUT/NAME.log.
 run_step() {
   local name="$1" desc="$2"; shift 2
   local log="$OUT/$name.log"
-  if skipped "$name"; then printf '\n==> %s: SKIPPED (--skip)\n' "$name"; record "$name" SKIPPED 0 "$desc"; return 0; fi
+  if skipped "$name"; then
+    local why; why="$(skip_reason "$name")"
+    printf '\n==> %s: SKIPPED (%s)\n' "$name" "$why"; record "$name" SKIPPED 0 "$desc (skipped: $why)"; return 0
+  fi
   printf '\n==> %s: %s\n' "$name" "$desc"
   local start rc; start="$(date +%s)"
   if "$@" >"$log" 2>&1; then rc=0; else rc=$?; fi
@@ -285,7 +296,6 @@ step_teardown() {
 # duplicated sale, a user path that never recovers, an expected alert that
 # never fires or a reconciliation that is not CLEAN.
 step_drills() {
-  [ "${CERTIFY_DRILLS:-1}" = "1" ] || { echo "CERTIFY_DRILLS=0"; return 0; }
   docker tag "$API_IMAGE" dukaanai-api && docker tag "$WEB_IMAGE" dukaanai-web && docker tag "$DB_OPS_IMAGE" dukaanai-db-ops || return 1
   local dir="$OUT/drills-work" rc=0
   mkdir -p "$dir"
@@ -302,7 +312,7 @@ step_drills() {
 run_step prepare "the checkout can boot the fixture module (prisma client generated, invoice-math built, workspace installed)" step_prepare
 run_step images "digests and metadata of the three images" step_images
 run_step boot-matrix "every refusal case of the boot matrix on the API image" step_boot_matrix
-run_step migrate-diff "the image's migrations on MySQL 8 and MariaDB: deploy, diff --exit-code, status, redeploy" step_migrate_diff
+run_step migrate-diff "the image's migrations on MySQL 8.0, MySQL 8.4 and MariaDB: deploy, diff --exit-code, status, redeploy" step_migrate_diff
 run_step smoke "compose stack from the images: migrations, business flow, reconciliation, point-in-time restore, documents and off-site backups, monitoring, graceful stop" step_smoke
 run_step release "the release the images carry (OCI labels) and the running API and web report on /api/health${RELEASE:+, all $RELEASE}" step_release
 run_step route-walk "every registered route over HTTP against the API image, four identities" step_route_walk
@@ -320,11 +330,19 @@ run_step drills "failure drills (roadmap 9.18) on a drill stack of the images: A
 
 # ---- summary -----------------------------------------------------------------
 FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# The result is PASS when no step failed; SKIPPED steps are listed apart and
+# never count as passed.
 overall=PASS
-for r in "${RESULTS[@]}"; do [ "$r" = FAIL ] && overall=FAIL; done
+skipped_steps=""
+for i in "${!RESULTS[@]}"; do
+  [ "${RESULTS[$i]}" = FAIL ] && overall=FAIL
+  [ "${RESULTS[$i]}" = SKIPPED ] && skipped_steps="${skipped_steps:+$skipped_steps, }${STEPS[$i]} ($(skip_reason "${STEPS[$i]}"))"
+done
 {
   printf '# Certification of %s\n\n' "$LABEL"
-  printf -- '- Result: **%s**\n- Commit: `%s`\n- Started: %s, finished: %s\n- Bundle: every log named below sits next to this file\n\n' "$overall" "$COMMIT" "$STARTED_AT" "$FINISHED_AT"
+  printf -- '- Result: **%s**\n- Commit: `%s`\n- Started: %s, finished: %s\n- Bundle: every log named below sits next to this file\n' "$overall" "$COMMIT" "$STARTED_AT" "$FINISHED_AT"
+  if [ -n "$skipped_steps" ]; then printf -- '- Not run, so not certified by this bundle: %s\n' "$skipped_steps"; fi
+  printf '\n'
   printf '## Images\n\n| Image | Reference | Digest |\n|---|---|---|\n'
   if [ -f "$OUT/images.json" ]; then
     node -e '
@@ -359,7 +377,8 @@ node -e '
   const fs = require("fs");
   const [out, stepsFile, label, commit, overall, started, finished] = process.argv.slice(1);
   const steps = fs.readFileSync(stepsFile, "utf8").trim().split("\n").filter(Boolean).map((l) => { const [step, result, seconds, note] = l.split("\t"); return { step, result, seconds: Number(seconds), note, log: `${step}.log` }; });
-  fs.writeFileSync(out + "/summary.json", JSON.stringify({ label, commit, result: overall, startedAt: started, finishedAt: finished, steps }, null, 2) + "\n");
+  const skipped = steps.filter((s) => s.result === "SKIPPED").map((s) => s.step);
+  fs.writeFileSync(out + "/summary.json", JSON.stringify({ label, commit, result: overall, skipped, startedAt: started, finishedAt: finished, steps }, null, 2) + "\n");
 ' "$OUT" "$WORK/steps.tsv" "$LABEL" "$COMMIT" "$overall" "$STARTED_AT" "$FINISHED_AT"
 printf '\n==> %s\n' "$(sed -n '3p' "$OUT/SUMMARY.md")"
 printf '    bundle: %s\n' "$OUT"

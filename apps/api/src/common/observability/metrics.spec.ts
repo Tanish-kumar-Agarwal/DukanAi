@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import type { NextFunction, Request, Response } from 'express';
 import { httpMetricsMiddleware } from './http-metrics.middleware';
-import { httpRequestDurationSeconds, httpRequestsTotal, metricsRegistry, routeLabel, statusLabel } from './metrics';
+import { httpRequestDurationSeconds, httpRequestsAbortedTotal, httpRequestsTotal, metricsRegistry, routeLabel, statusLabel } from './metrics';
 
 describe('metrics (roadmap 7.6)', () => {
   it('labels a matched route by its Express pattern and an unmatched request as such', () => {
@@ -43,6 +43,23 @@ describe('metrics (roadmap 7.6)', () => {
     }
     const counter = await httpRequestsTotal.get();
     expect(counter.values).toContainEqual(expect.objectContaining({ labels: expect.objectContaining({ route: 'unmatched', status: '404' }), value: 3 }));
+  });
+
+  it('counts a request whose connection closed before the answer as aborted, not as answered (audit R13)', async () => {
+    const before = (await httpRequestsTotal.get()).values.reduce((n, v) => n + v.value, 0);
+    const res = Object.assign(new EventEmitter(), { statusCode: 200, writableFinished: false });
+    httpMetricsMiddleware({ method: 'POST', baseUrl: '', route: { path: '/api/billing/invoice' } } as unknown as Request, res as unknown as Response, jest.fn());
+    res.emit('close');
+    const aborted = await httpRequestsAbortedTotal.get();
+    expect(aborted.values).toContainEqual(expect.objectContaining({ labels: expect.objectContaining({ method: 'POST', route: '/api/billing/invoice' }), value: 1 }));
+    expect((await httpRequestsTotal.get()).values.reduce((n, v) => n + v.value, 0)).toBe(before);
+    // A finished answer's close is not an abort.
+    const done = Object.assign(new EventEmitter(), { statusCode: 200, writableFinished: false });
+    httpMetricsMiddleware({ method: 'POST', baseUrl: '', route: { path: '/api/billing/invoice' } } as unknown as Request, done as unknown as Response, jest.fn());
+    done.emit('finish');
+    done.writableFinished = true;
+    done.emit('close');
+    expect((await httpRequestsAbortedTotal.get()).values.find((v) => v.labels.route === '/api/billing/invoice')?.value).toBe(1);
   });
 
   it('renders the registry in the Prometheus text format with the service label and the process metrics', async () => {

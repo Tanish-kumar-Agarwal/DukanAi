@@ -45,7 +45,10 @@ RUN npm ci --ignore-scripts
 FROM deps AS build
 COPY packages/invoice-math packages/invoice-math
 COPY apps/api apps/api
-RUN npm run build -w @dukaanai/invoice-math \
+# No env file in the build (audit 2026-10-11, R5; .dockerignore keeps them out
+# of the context): the container runs on its environment and the class defaults.
+RUN find apps/api packages -maxdepth 2 -name '.env*' ! -name '.env.example' -type f -print -delete \
+  && npm run build -w @dukaanai/invoice-math \
   && cd apps/api \
   && npx prisma generate \
   && npx @nestjs/cli build

@@ -8,6 +8,7 @@ import { InvoiceTotals, RevenueEngine } from '../engines/revenue-engine';
 import { ProfitMarginEngine, TopProduct } from '../engines/profit-margin-engine';
 import { ForecastEngine, NetRevenueForecast } from '../engines/forecast-engine';
 import { toDecimal, toInt, toMoney } from '../engines/invoice-sql';
+import { customerBalances } from '../engines/customer-balances';
 import { AnalyticsCacheService } from './analytics-cache.service';
 import { ShopTimezoneService } from './shop-timezone.service';
 
@@ -97,7 +98,7 @@ export interface DashboardSummary {
   todayReturns: number | null;
   /** Net: gross sales minus returns. */
   todaySales: number | null;
-  /** Gross profit: taxable value minus cost of goods, sales minus returns. */
+  /** Gross profit: taxable value minus the cost of goods the ledger booked (stocked lines only), sales minus returns. */
   todayProfit: number | null;
   todayOrders: number | null;
   todayReturnCount: number | null;
@@ -106,7 +107,10 @@ export interface DashboardSummary {
   totalOrders: number | null;
   totalCustomers: number | null;
   totalProducts: number | null;
+  /** Credit customers owe: the sum of the positive balances (an advance never offsets another customer's due). */
   outstandingUdhar: number | null;
+  /** Money customers paid ahead: the sum of the negative balances, as a positive figure. */
+  customerAdvances: number | null;
   /** Active, stock-tracked products (not SERVICE/DIGITAL) with 0 < stock <= reorder point. */
   lowStockCount: number | null;
   /** Active, stock-tracked products with stock <= 0. */
@@ -200,9 +204,7 @@ export class DashboardService {
       section('todayProfit', () => this.revenueEngine.profit(shopId, start, end)),
       section('customers', () => this.prisma.customer.count({ where: { shopId, isDeleted: false } })),
       section('products', () => this.prisma.product.count({ where: { shopId, isDeleted: false } })),
-      section('udhar', () =>
-        this.prisma.customer.aggregate({ where: { shopId, isDeleted: false }, _sum: { outstandingBalance: true } }),
-      ),
+      section('udhar', () => customerBalances(this.prisma, shopId)),
       section('recentInvoices', () =>
         this.prisma.invoice.findMany({
           where: { shopId, isDeleted: false, status: { in: [InvoiceStatus.COMPLETED, InvoiceStatus.CANCELLED] } },
@@ -256,7 +258,8 @@ export class DashboardService {
       totalOrders: allTime ? allTime.orders : null,
       totalCustomers: customerCount,
       totalProducts: productCount,
-      outstandingUdhar: udharAgg ? toMoney(udharAgg._sum.outstandingBalance ?? new Prisma.Decimal(0)) : null,
+      outstandingUdhar: udharAgg ? toMoney(udharAgg.outstanding) : null,
+      customerAdvances: udharAgg ? toMoney(udharAgg.advances) : null,
       lowStockCount: stock ? stock.lowStockCount : null,
       outOfStockCount: stock ? stock.outOfStockCount : null,
       lowStockItems: stock ? stock.items : [],

@@ -3,7 +3,7 @@ import { ListQueryDto, PagedList } from '../common/pagination';
 import { BatchService } from './services/batch.service';
 import { ExpiryService } from './services/expiry.service';
 import { RecallService } from './services/recall.service';
-import { CreateBatchDto, AddBatchStockDto } from './dto/batch.dto';
+import { CreateBatchDto, AddBatchStockDto, RecallBatchDto } from './dto/batch.dto';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
@@ -53,9 +53,9 @@ export class BatchController {
   @Post(':batchId/recall')
   async recallBatch(
     @Param('batchId') batchId: string,
-    @Body('reason') reason: string,
+    @Body() dto: RecallBatchDto,
     @CurrentUser() user: SafeUserDto,
   ) {
-    return this.recallService.initiateRecall(this.tenantContext.getShopId(), batchId, reason, user.id);
+    return this.recallService.initiateRecall(this.tenantContext.getShopId(), batchId, dto.reason, user.id);
   }
 }

@@ -2,6 +2,7 @@ import { ArrayMaxSize, ArrayMinSize, IsArray, IsEnum, IsNotEmpty, IsNumber, IsOp
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { InvoiceItemDto, PaymentTenderDto } from './create-invoice.dto';
+import { IsIndianState } from '../../common/india/is-indian-state';
 
 export class CalculateInvoiceDto {
   @IsArray()
@@ -13,6 +14,9 @@ export class CalculateInvoiceDto {
   items: InvoiceItemDto[];
 
   @IsString() @IsOptional() @ApiPropertyOptional() customerId?: string;
+
+  /** Same rule as `CreateInvoiceDto.placeOfSupply`: omitted means intra-state. */
+  @IsOptional() @IsIndianState() @ApiPropertyOptional({ example: 'Kerala' }) placeOfSupply?: string;
 
   @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0) @IsOptional() @ApiPropertyOptional() discountAmount?: number;
   @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0) @Max(100) @IsOptional() @ApiPropertyOptional() discountPercentage?: number;

@@ -370,14 +370,16 @@ scripts/drills/drill-stack.sh down               # remove the stack and its volu
 
 `DRILL_DIR` (default `/tmp/dukaanai-drill`) holds the generated secrets, the
 drill CA and its three certificates (valid, expiring in 3 days, expired
-yesterday), the rendered Prometheus configuration, the off-site directory
-and the evidence. Nothing is written into the checkout. The overlay
+yesterday), the public probe targets for Prometheus (two lines of
+`drill.env`, rendered by `deploy/prometheus/render.sh`), the off-site
+directory and the evidence. Nothing is written into the checkout. The overlay
 `scripts/drills/compose.drill.yml` lists what differs from the reference
 stack, and why: size-limited volumes for documents and uploads, the edge
 serving the drill certificates under `app.dukaanai.test` /
 `api.dukaanai.test` (added to `/etc/hosts`), the blackbox exporter trusting
-the drill CA, and Prometheus with the public targets of `prometheus.yml`
-enabled. The images must exist first (`docker compose build`, or release
+the drill CA, and Prometheus probing the public targets
+(`PROMETHEUS_PUBLIC_API_URL` / `PROMETHEUS_PUBLIC_WEB_URL`, the setting an
+operator gives staging; the repository's `prometheus.yml` is not edited). The images must exist first (`docker compose build`, or release
 images retagged `dukaanai-api`, `dukaanai-web`, `dukaanai-db-ops`). Do not
 edit `drill-stack.sh` while a run is in progress: bash reads a script as
 it executes it, and the running copy fails on the shifted lines.

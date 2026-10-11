@@ -18,6 +18,7 @@ import { CustomItemBadge, InvoiceStatusBadge, InvoiceTypeBadge, PaymentModeBadge
 import { ReturnDialog, returnableQuantity } from '@/components/invoices/ReturnDialog';
 import { CancelDialog } from '@/components/invoices/CancelDialog';
 import { PrintPageStyle } from '@/components/print/PrintPageStyle';
+import { canReturnInvoices } from '@/components/customers/permissions';
 
 const MANAGER_ROLES = ['MANAGER', 'ADMIN', 'OWNER', 'SUPER_ADMIN'];
 
@@ -52,10 +53,12 @@ export default function InvoiceDetailPage() {
   }, [load]);
 
   const isManager = AUTH_DISABLED || MANAGER_ROLES.includes(String(session?.user?.role ?? '').toUpperCase());
+  // `POST /billing/returns` is POS_ROLES: a VIEWER would only collect a 403 (audit W12).
+  const allowReturn = canReturnInvoices(session?.user?.role);
   const returnable = useMemo(() => (invoice ? invoice.items.some((item) => returnableQuantity(item) > 0) : false), [invoice]);
   // Cess is per line (roadmap 6.7): the document row is the sum over the items.
   const cessTotal = useMemo(() => (invoice ? invoice.items.reduce((sum, item) => sum + item.cessAmount, 0) : 0), [invoice]);
-  const canReturn = Boolean(invoice && invoice.type === 'SALE' && invoice.status === 'COMPLETED' && returnable);
+  const canReturn = Boolean(invoice && invoice.type === 'SALE' && invoice.status === 'COMPLETED' && returnable && allowReturn);
   const canCancel = Boolean(invoice && invoice.type === 'SALE' && invoice.status === 'COMPLETED' && invoice.returns.length === 0 && isManager);
 
   if (loading) {
@@ -354,8 +357,16 @@ export default function InvoiceDetailPage() {
         onClose={() => setCancelOpen(false)}
         onCancelled={(updated) => {
           setCancelOpen(false);
-          setInvoice(updated);
+          // The cancel answer is the bare invoice row, without its shift, returns, original or
+          // lines: keep the document on screen with the new status, then read it back (audit W15).
+          setInvoice((current) =>
+            current ? { ...current, status: updated.status, cancelReason: updated.cancelReason, cancelledAt: updated.cancelledAt } : updated,
+          );
           toast(`Invoice ${updated.invoiceNumber} cancelled`, 'success');
+          void billingApi
+            .getInvoice(updated.id)
+            .then(setInvoice)
+            .catch((err) => extractApiError(err, 'Reloading the cancelled invoice (GET /billing/invoices/:id)'));
         }}
       />
     </div>

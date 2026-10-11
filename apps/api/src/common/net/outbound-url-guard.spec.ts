@@ -22,6 +22,56 @@ describe('OutboundUrlGuard (roadmap 4.8)', () => {
       expect(isPrivateIpv6('::ffff:8.8.8.8')).toBe(false);
       expect(isPrivateAddress('not-an-ip')).toBe(true);
     });
+  
+  });
+
+  describe('the IPv6 forms that embed or reach an internal address (audit R11)', () => {
+    it.each([
+      ['::7f00:1', 'IPv4-compatible 127.0.0.1 (::/96)'],
+      ['::a9fe:a9fe', 'IPv4-compatible 169.254.169.254 (::/96)'],
+      ['::127.0.0.1', 'IPv4-compatible, dotted'],
+      ['::8.8.8.8', 'IPv4-compatible is deprecated even for a public address'],
+      ['::ffff:0:7f00:1', 'SIIT ::ffff:0:0:0/96'],
+      ['::ffff:0:a9fe:a9fe', 'SIIT to the metadata address'],
+      ['0:0:0:0:0:ffff:a9fe:a9fe', 'IPv4-mapped, long form'],
+      ['fec0::1', 'site-local fec0::/10'],
+      ['feff::1', 'the rest of fe80::/9'],
+      ['100::1', 'discard-only 100::/64'],
+      ['2001::1', 'Teredo 2001::/32'],
+      ['2001:0:4136:e378:8000:63bf:3fff:fdd2', 'a Teredo address'],
+      ['2001:10::1', 'ORCHID 2001:10::/28'],
+      ['64:ff9b:1::a9fe:a9fe', 'local-use NAT64 64:ff9b:1::/48'],
+      ['3fff::1', 'documentation 3fff::/20'],
+      ['::ffff:192.88.99.1', '6to4 relay anycast, mapped'],
+      ['fe80::1%eth0', 'link-local with a zone'],
+      ['1::2::3', 'malformed'],
+      ['12345::1', 'malformed group'],
+    ])('blocks %s (%s)', (ip) => {
+      expect(isPrivateIpv6(ip)).toBe(true);
+    });
+
+    it('still allows global unicast and public mapped addresses', () => {
+      for (const ip of ['2606:4700:4700::1111', '2a00:1450:4001:80b::200e', '2400:cb00::1', '::ffff:8.8.8.8', '2001:4860:4860::8888']) {
+        expect({ ip, blocked: isPrivateIpv6(ip) }).toEqual({ ip, blocked: false });
+      }
+    });
+
+    it('blocks 192.88.99.0/24 (6to4 relay anycast)', () => {
+      expect(isPrivateIpv4('192.88.99.1')).toBe(true);
+      expect(isPrivateIpv4('192.88.98.1')).toBe(false);
+    });
+
+    it('a bracketed literal in a webhook URL is refused at registration', () => {
+      const guard = new OutboundUrlGuard(async () => []);
+      for (const url of ['https://[::7f00:1]/hook', 'https://[::a9fe:a9fe]/hook', 'https://[::ffff:0:7f00:1]/hook', 'https://[fec0::1]/hook', 'https://[2001::1]/hook']) {
+        expect(() => guard.parse(url, false)).toThrow(OutboundUrlBlockedError);
+      }
+    });
+
+    it('a host name that resolves to such a form is refused at send time', async () => {
+      const guard = new OutboundUrlGuard(async () => [{ address: '::a9fe:a9fe', family: 6 }]);
+      await expect(guard.resolve('https://hooks.example.com/x', false)).rejects.toMatchObject({ code: 'WEBHOOK_URL_PRIVATE' });
+    });
   });
 
   describe('parse', () => {

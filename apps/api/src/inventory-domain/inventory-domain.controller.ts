@@ -1,10 +1,12 @@
-import { Controller, Get, Post, Param, Body, Query, Req } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, Query } from '@nestjs/common';
 import { ListQueryDto, PagedList } from '../common/pagination';
 import { InventoryDomainService } from './services/inventory-domain.service';
 import { InventoryValidationService } from './services/inventory-validation.service';
-import { AdjustStockDto, CreateInventoryItemDto } from './dto/inventory.dto';
+import { AdjustStockDto, CreateInventoryItemDto, TransferStockDto } from './dto/inventory.dto';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
+import { CurrentUser } from '../iam/decorators/current-user.decorator';
+import { SafeUserDto } from '../users/dto/safe-user.dto';
 
 @Controller('inventory-domain')
 export class InventoryDomainController {
@@ -47,19 +49,26 @@ export class InventoryDomainController {
     return this.inventoryDomain.ensureInventoryItem(dto.productId, dto.variantId, dto.locationId);
   }
 
+  /** Moves stock between two locations (a back warehouse to the sale location, say); ledger-neutral. */
+  @Roles(...MANAGEMENT_ROLES)
+  @Post('transfer')
+  async transfer(@Body() dto: TransferStockDto, @CurrentUser() user: SafeUserDto) {
+    return this.inventoryDomain.transferStock(dto, user.id);
+  }
+
   @Roles(...MANAGEMENT_ROLES)
   @Post(':id/adjust')
   async adjustStock(
     @Param('id') id: string,
     @Body() dto: AdjustStockDto,
-    @Req() req: any
+    @CurrentUser() user: SafeUserDto,
   ) {
     return this.inventoryDomain.adjustStock(
       id,
       dto.reason,
       dto.quantityChange,
-      req.user?.id || 'system',
-      { notes: dto.notes, correlationId: dto.correlationId }
+      { id: user.id, role: user.role },
+      { notes: dto.notes, correlationId: dto.correlationId, idempotencyKey: dto.idempotencyKey }
     );
   }
 }

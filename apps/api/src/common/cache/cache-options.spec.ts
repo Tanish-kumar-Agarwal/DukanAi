@@ -11,7 +11,7 @@ describe('buildCacheOptions', () => {
   const logger = { warn: jest.fn() } as unknown as Logger;
 
   it('backs the cache with a Keyv Redis store under the cache namespace when REDIS_URL is set', () => {
-    const options = buildCacheOptions(Object.assign(new RedisConfig(), { redisUrl: 'redis://127.0.0.1:6379/3' }), cacheConfig, logger) as {
+    const options = buildCacheOptions(Object.assign(new RedisConfig(), { redisUrl: 'redis://127.0.0.1:6379/3' }), cacheConfig, logger, { eagerConnect: false }) as {
       stores: Keyv[];
       ttl: number;
     };
@@ -41,13 +41,19 @@ describe('buildCacheOptions', () => {
  * connect and read; then it disappears.
  */
 describe('buildCacheOptions while Redis is away', () => {
-  function fakeRedis(): Promise<{ port: number; kill(): Promise<void> }> {
+  // A destroyed client may still be in its reconnect back-off sleep (at most 2 s): let it end.
+  afterAll(() => new Promise((r) => setTimeout(r, 2_100)));
+
+  function fakeRedis(): Promise<{ port: number; kill(): Promise<void>; mute(): void }> {
     const sockets = new Set<net.Socket>();
+    let muted = false;
     const server = net.createServer((socket) => {
       sockets.add(socket);
       socket.on('close', () => sockets.delete(socket));
       let buffer = '';
       socket.on('data', (chunk) => {
+        // Muted: the connection stays open and every command is swallowed (a blackholed Redis).
+        if (muted) return;
         buffer += chunk.toString('latin1');
         // Answer every complete RESP array: GET is a miss, everything else OK.
         for (;;) {
@@ -73,6 +79,9 @@ describe('buildCacheOptions while Redis is away', () => {
         resolve({
           port,
           kill: () => new Promise((done) => { for (const s of sockets) s.destroy(); server.close(() => done()); }),
+          mute: () => {
+            muted = true;
+          },
         });
       });
     });
@@ -81,7 +90,7 @@ describe('buildCacheOptions while Redis is away', () => {
   it('answers a miss at once, for reads and deletes, once Redis has gone away', async () => {
     const redis = await fakeRedis();
     const logger = { warn: jest.fn() } as unknown as Logger;
-    const options = buildCacheOptions(Object.assign(new RedisConfig(), { redisUrl: `redis://127.0.0.1:${redis.port}/0`, connectTimeoutMs: 500 }), new CacheConfig(), logger) as { stores: Keyv[] };
+    const options = buildCacheOptions(Object.assign(new RedisConfig(), { redisUrl: `redis://127.0.0.1:${redis.port}/0`, connectTimeoutMs: 500 }), new CacheConfig(), logger, { eagerConnect: false }) as { stores: Keyv[] };
     const keyv = options.stores[0];
     expect(await keyv.get('k')).toBeUndefined(); // connected, a real miss
     await redis.kill();
@@ -94,6 +103,50 @@ describe('buildCacheOptions while Redis is away', () => {
     expect(outcome).toBe('answered');
     expect(Date.now() - started).toBeLessThan(1000);
     // Stop the client's background reconnects so the test leaves nothing running.
+    await (keyv.opts.store as KeyvRedis<unknown>).client.destroy();
+  });
+
+  it('bounds every command when Redis accepts it and never replies (audit R3)', async () => {
+    const redis = await fakeRedis();
+    const logger = { warn: jest.fn() } as unknown as Logger;
+    const options = buildCacheOptions(
+      Object.assign(new RedisConfig(), { redisUrl: `redis://127.0.0.1:${redis.port}/0`, connectTimeoutMs: 500, commandTimeoutMs: 300 }),
+      new CacheConfig(),
+      logger,
+    ) as { stores: Keyv[] };
+    const keyv = options.stores[0];
+    expect(await keyv.get('k')).toBeUndefined();
+    redis.mute();
+    const started = Date.now();
+    const outcome = await Promise.race([
+      Promise.all([keyv.get('k'), keyv.delete('k'), keyv.set('k', 1)]).then(() => 'answered'),
+      new Promise((r) => setTimeout(() => r('hung'), 3000)),
+    ]);
+    expect(outcome).toBe('answered');
+    expect(Date.now() - started).toBeLessThan(1500);
+    await (keyv.opts.store as KeyvRedis<unknown>).client.destroy();
+    await redis.kill();
+  });
+
+  it('a client that never connected answers at once, not after the connect timeout on every call (audit R4)', async () => {
+    // A port nothing listens on.
+    const closed = await new Promise<number>((resolve) => {
+      const probe = net.createServer().listen(0, '127.0.0.1', () => {
+        const port = (probe.address() as net.AddressInfo).port;
+        probe.close(() => resolve(port));
+      });
+    });
+    const logger = { warn: jest.fn() } as unknown as Logger;
+    const options = buildCacheOptions(Object.assign(new RedisConfig(), { redisUrl: `redis://127.0.0.1:${closed}/0`, connectTimeoutMs: 3000 }), new CacheConfig(), logger) as {
+      stores: Keyv[];
+    };
+    const keyv = options.stores[0];
+    await new Promise((r) => setTimeout(r, 50));
+    for (let i = 0; i < 3; i++) {
+      const started = Date.now();
+      await Promise.all([keyv.get('k'), keyv.delete('k')]);
+      expect(Date.now() - started).toBeLessThan(500);
+    }
     await (keyv.opts.store as KeyvRedis<unknown>).client.destroy();
   });
 });

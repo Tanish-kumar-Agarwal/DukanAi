@@ -4,7 +4,7 @@ import { OutboxClaimService } from './outbox-claim.service';
 describe('OutboxClaimService (roadmap 4.7)', () => {
   let config: EventsFeatureConfig;
   let updateMany: jest.Mock;
-  let findUnique: jest.Mock;
+  let findFirst: jest.Mock;
   let service: OutboxClaimService;
 
   beforeEach(() => {
@@ -13,8 +13,8 @@ describe('OutboxClaimService (roadmap 4.7)', () => {
     config.outboxRetryBackoffMaxMs = 10_000;
     config.outboxMaxRetries = 3;
     updateMany = jest.fn().mockResolvedValue({ count: 1 });
-    findUnique = jest.fn();
-    service = new OutboxClaimService({ outboxEvent: { updateMany, findUnique } } as never, config);
+    findFirst = jest.fn();
+    service = new OutboxClaimService({ outboxEvent: { updateMany, findFirst } } as never, config);
   });
 
   it('job ids carry the attempt so a retried row never collides with a retained job', () => {
@@ -32,7 +32,7 @@ describe('OutboxClaimService (roadmap 4.7)', () => {
   });
 
   it('scheduleRetry moves the row back to PENDING with the next attempt time, then FAILED once the retries are spent', async () => {
-    findUnique.mockResolvedValueOnce({ retryCount: 0 });
+    findFirst.mockResolvedValueOnce({ retryCount: 0 });
     const before = Date.now();
     expect(await service.scheduleRetry('evt', 'boom')).toBe('RETRY');
     const data = updateMany.mock.calls[0][0].data;
@@ -40,7 +40,7 @@ describe('OutboxClaimService (roadmap 4.7)', () => {
     expect(data.nextAttemptAt.getTime() - before).toBeGreaterThanOrEqual(1000);
     expect(data.nextAttemptAt.getTime() - before).toBeLessThan(2500);
 
-    findUnique.mockResolvedValueOnce({ retryCount: 2 });
+    findFirst.mockResolvedValueOnce({ retryCount: 2 });
     expect(await service.scheduleRetry('evt', 'boom again')).toBe('FAILED');
     expect(updateMany.mock.calls[1][0].data).toMatchObject({ status: 'FAILED', error: expect.stringContaining('retries exhausted') });
   });
@@ -50,5 +50,19 @@ describe('OutboxClaimService (roadmap 4.7)', () => {
     expect(await service.retryFailed('shop-1', 'evt')).toBe(false);
     expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'evt', shopId: 'shop-1', status: 'FAILED' });
     expect(updateMany.mock.calls[0][0].data).toMatchObject({ status: 'PENDING', nextAttemptAt: null, retryCount: { increment: 1 } });
+  });
+
+  it('every settle is guarded: only a row still claimed, and only by the claim the job was enqueued for (audit R10)', async () => {
+    updateMany.mockResolvedValueOnce({ count: 0 });
+    expect(await service.markDone('evt', { retryCount: 2 })).toBe(false);
+    expect(updateMany.mock.calls[0][0].where).toEqual({ id: 'evt', status: { in: ['CLAIMED', 'PROCESSING'] }, retryCount: 2 });
+    await service.markFailed('evt', 'bad');
+    expect(updateMany.mock.calls[1][0].where).toEqual({ id: 'evt', status: { in: ['CLAIMED', 'PROCESSING'] } });
+
+    // A row the reaper already handed back (or another worker ended) is not touched by a late retry.
+    findFirst.mockResolvedValueOnce(null);
+    expect(await service.scheduleRetry('evt', 'late', { retryCount: 0 })).toBe('SKIPPED');
+    expect(updateMany).toHaveBeenCalledTimes(2);
+    expect(findFirst.mock.calls[0][0].where).toEqual({ id: 'evt', status: { in: ['CLAIMED', 'PROCESSING'] }, retryCount: 0 });
   });
 });

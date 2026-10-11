@@ -16,6 +16,12 @@ export class NotificationsController {
     return this.notificationsService.findAll(query);
   }
 
+  /** `{ count }` of unread notifications: the list is a capped page, so the navbar cannot count them itself. */
+  @Get('unread-count')
+  unreadCount() {
+    return this.notificationsService.unreadCount();
+  }
+
   @Roles(...MANAGEMENT_ROLES)
   @Post()
   create(@Body() dto: CreateNotificationDto) {

@@ -71,6 +71,75 @@ function resolveGstRate(item: { gstRate?: NumericInput; gstRateStr?: string }): 
   return new Decimal(mapped);
 }
 
+/** Cess percent on the taxable amount: 0..100 (the `Product.cessRate` column), anything else is refused, never taxed. */
+function resolveCessRate(value: NumericInput | undefined, lineRef: string): Decimal {
+  const rate = toDecimal(value);
+  if (rate.isNegative() || rate.greaterThan(100)) {
+    throw new InvoiceMathError(`Cess for ${lineRef} must be between 0 and 100 percent (got ${rate.toString()}).`, 'ERR_INVALID_CESS');
+  }
+  return rate;
+}
+
+/**
+ * The tax-inclusive price of ONE unit sold at the pre-GST selling `price`:
+ * exactly what `calculate` bills for one undiscounted unit, each tax
+ * component rounded half-up to the paisa, taking the higher of the
+ * intra-state (CGST + SGST) and the inter-state (IGST) split, since the same
+ * product can be billed either way. A product's MRP is tax-inclusive (Legal
+ * Metrology), so a unit never sells above its MRP while this is <= MRP: the
+ * products API refuses a smaller MRP, defaults a blank one to this value,
+ * and the checkout refuses a line whose product breaks the rule
+ * (PRICE_ABOVE_MRP). `gstRate` is a slab name (`EIGHTEEN`) or a percent.
+ */
+export function inclusiveUnitPrice(price: NumericInput, gstRate: NumericInput | string, cessPercent: NumericInput = 0): Decimal {
+  const unitPrice = money(toDecimal(price));
+  if (unitPrice.isNegative() || unitPrice.greaterThan(MONEY_MAX)) {
+    throw new InvoiceMathError(`Unit price ${unitPrice.toString()} must be between 0 and ${MONEY_MAX}.`, 'ERR_INVALID_PRICE');
+  }
+  const rate =
+    typeof gstRate === 'string' && !/^\s*\d+(\.\d+)?\s*$/.test(gstRate) ? resolveGstRate({ gstRateStr: gstRate.trim() }) : resolveGstRate({ gstRate });
+  const cess = resolveCessRate(cessPercent, 'the unit price');
+  const totals = [false, true].map((isInterState) =>
+    TaxCalculator.calculateTax({ taxableAmount: unitPrice, gstRate: rate.toNumber(), cessRate: cess.toNumber(), isInterState, mode: 'EXCLUSIVE' }).totalAmount,
+  );
+  return Decimal.max(totals[0], totals[1]);
+}
+
+/**
+ * The discount a percentage limit yields on a calculated invoice, under the
+ * engine's own rounding (half-up to the paisa), for a discount-authority
+ * check that compares amounts rather than re-derived percentages (audit B4:
+ * 10% of ₹10.05 rounds to ₹1.01, which is 10.05% of the line, and a
+ * percentage comparison refused the cashier's own 10%).
+ *
+ *  - `invoice`: what an invoice-level PERCENTAGE discount of `limitPercent`
+ *    yields on the post-line-discount subtotal;
+ *  - `effective`: the largest total discount (line + invoice) the limit can
+ *    yield, applied either once at invoice level or on every line.
+ */
+export function discountLimitAmounts(result: Pick<InvoiceCalculationResultV1, 'subtotal' | 'totalItemDiscount' | 'lines'>, limitPercent: NumericInput): { invoice: Decimal; effective: Decimal } {
+  const limit = toDecimal(limitPercent);
+  const share = (amount: Decimal) => money(amount.mul(limit).div(100));
+  const invoice = share(result.subtotal.minus(result.totalItemDiscount));
+  const perLine = result.lines.reduce((acc, l) => acc.plus(share(l.lineSubtotal)), new Decimal(0));
+  return { invoice, effective: Decimal.max(share(result.subtotal), perLine) };
+}
+
+/**
+ * Cost of goods for `quantity` units of one line at `unitCost`, after
+ * `before` units of the same line already moved (audit B16): the cumulative
+ * slice `round2(cost × (before + quantity)) − round2(cost × before)`. A sale
+ * books `before = 0`; each return books its slice after the line's earlier
+ * returns, so however a line is returned, its returns add up to exactly the
+ * cost the sale booked, to the paisa (rounding the product of each return
+ * on its own drifted by a paisa on weighed goods).
+ */
+export function costOfGoodsSlice(unitCost: NumericInput, before: NumericInput, quantity: NumericInput): Decimal {
+  const cost = toDecimal(unitCost);
+  const done = toDecimal(before);
+  return money(cost.mul(done.plus(toDecimal(quantity)))).minus(money(cost.mul(done)));
+}
+
 /**
  * Maps the legacy `{ paymentMode, amountPaid, udharAmount }` shape onto the
  * tender-based payment input. Returns undefined when neither is present
@@ -242,7 +311,7 @@ export class InvoiceMathEngine {
         throw new InvoiceMathError(`Line discount for ${item.productId} must be between 0 and 100.`, 'ERR_INVALID_LINE_DISCOUNT');
       }
       const gstRate = resolveGstRate(item);
-      const cessRate = toDecimal(item.cessRate);
+      const cessRate = resolveCessRate(item.cessRate, item.productId);
 
       const lineSubtotal = money(unitPrice.mul(qty));
       if (lineSubtotal.greaterThan(MONEY_MAX)) {
@@ -438,9 +507,12 @@ export class InvoiceMathEngine {
       const slice = (v: NumericInput | undefined) => cumulative(v, after).minus(cumulative(v, before));
 
       const unitPrice = money(toDecimal(l.unitPrice));
-      const lineSubtotal = money(unitPrice.mul(qty));
       const discountAmount = slice(l.discountAmount);
       const taxableAmount = slice(l.taxableAmount);
+      // The gross of the slice, not unitPrice × qty: discount and taxable are
+      // cumulative slices, so only their sum keeps subtotal − discount =
+      // taxable on the return document's own rows (audit B10).
+      const lineSubtotal = taxableAmount.plus(discountAmount);
       const cgstAmount = slice(l.cgstAmount);
       const sgstAmount = slice(l.sgstAmount);
       const igstAmount = slice(l.igstAmount);

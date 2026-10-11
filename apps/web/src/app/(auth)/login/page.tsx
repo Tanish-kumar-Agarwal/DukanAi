@@ -136,6 +136,7 @@ function LoginPageContent() {
           {/* --- Error banner --- */}
           {error && (
             <motion.div
+              role="alert"
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               className="flex items-center gap-2.5 p-3 mb-6 bg-red-50 border border-red-200 rounded-xl text-sm font-medium text-red-700"
@@ -185,7 +186,7 @@ function LoginPageContent() {
           {/* --- Email / password form --- */}
           <form onSubmit={handleCredentialsLogin} className="space-y-5">
             <div>
-              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
+              <label htmlFor="login-email" className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
                 Email Address
               </label>
               <div className="relative">
@@ -194,6 +195,7 @@ function LoginPageContent() {
                   className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
                 />
                 <input
+                  id="login-email"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -207,7 +209,7 @@ function LoginPageContent() {
 
             <div>
               <div className="flex justify-between items-center mb-2">
-                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide">
+                <label htmlFor="login-password" className="block text-xs font-bold text-gray-700 uppercase tracking-wide">
                   Password
                 </label>
                 <Link
@@ -223,6 +225,7 @@ function LoginPageContent() {
                   className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
                 />
                 <input
+                  id="login-password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}

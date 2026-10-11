@@ -40,4 +40,19 @@ describe('MetricsController (roadmap 7.6)', () => {
     const { controller: c } = controller({ metricsToken: TOKEN });
     await expect(c.scrape(`Bearer ${TOKEN}`)).resolves.toContain('http_requests_total');
   });
+
+  it('answers 404 in production unless METRICS_TOKEN is set (audit R13)', async () => {
+    const saved = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const open = controller();
+      await expect(open.controller.scrape(undefined)).rejects.toBeInstanceOf(NotFoundException);
+      expect(open.collectors.refresh).not.toHaveBeenCalled();
+      const guarded = controller({ metricsToken: TOKEN });
+      await expect(guarded.controller.scrape(undefined)).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(guarded.controller.scrape(`Bearer ${TOKEN}`)).resolves.toContain('http_requests_total');
+    } finally {
+      process.env.NODE_ENV = saved;
+    }
+  });
 });

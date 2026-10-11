@@ -37,7 +37,7 @@ describe('tenant isolation: foreign IDs on every write route', () => {
     category: string;
   };
   // shop A rows the requests are made against
-  let a: { product: string; supplier: string; warehouse: string; po: string; grn: string; batch: string; item: string };
+  let a: { product: string; supplier: string; warehouse: string; po: string; grn: string; batch: string; item: string; category: string };
 
   const rejected = (status: number) => expect([400, 404]).toContain(status);
 
@@ -69,7 +69,7 @@ describe('tenant isolation: foreign IDs on every write route', () => {
     const seededB = await seed(B, 'b');
     b = { ...seededB, user: (await createUser(app, B, Role.MANAGER)).id };
     const seededA = await seed(A, 'a');
-    a = { product: seededA.product, supplier: seededA.supplier, warehouse: seededA.warehouse, po: seededA.po, grn: seededA.grn, batch: seededA.batch, item: seededA.item };
+    a = { product: seededA.product, supplier: seededA.supplier, warehouse: seededA.warehouse, po: seededA.po, grn: seededA.grn, batch: seededA.batch, item: seededA.item, category: seededA.category };
   });
 
   afterAll(async () => {
@@ -126,6 +126,29 @@ describe('tenant isolation: foreign IDs on every write route', () => {
       rejected((await http.post('/api/procurement-workflows/delegations').send({ delegateUserId: b.user, startDate: '2030-01-01', endDate: '2030-02-01' })).status);
       rejected((await http.post('/api/procurement-workflows/definitions').send({ name: 'x', documentType: 'PURCHASE_ORDER', steps: [{ name: 's', approverId: b.user }] })).status);
       expect(await run.system(() => prisma.workflowDelegation.count({ where: { shopId: A.shopId, delegateUserId: b.user } }))).toBe(0);
+    });
+  });
+
+  describe('catalogue', () => {
+    it("P1-1: a product is never linked to another shop's category, supplier or brand, on create or edit", async () => {
+      const brandB = await run.system(() => prisma.brand.create({ data: { shopId: B.shopId, name: `b brand ${B.suffix}` } }));
+      const name = `Linked ${A.suffix}`;
+      const body = (extra: Record<string, unknown>) => ({ name, costPrice: 10, sellingPrice: 20, wholesalePrice: 20, gstRate: 'ZERO', unit: 'PCS', ...extra });
+      for (const [field, id] of [['categoryId', b.category], ['supplierId', b.supplier], ['brandId', brandB.id]] as const) {
+        const created = await http.post('/api/products').send(body({ [field]: id }));
+        expect([field, created.status]).toEqual([field, 404]);
+        const patched = await http.patch(`/api/products/${a.product}`).send({ [field]: id });
+        expect([field, patched.status]).toEqual([field, 404]);
+      }
+      expect(await run.system(() => prisma.product.count({ where: { shopId: A.shopId, OR: [{ categoryId: b.category }, { supplierId: b.supplier }, { brandId: brandB.id }, { name }] } }))).toBe(0);
+      // B's category name never reaches A.
+      expect(JSON.stringify((await http.get(`/api/products/${a.product}`)).body)).not.toContain(`b cat ${B.suffix}`);
+
+      // A's own live rows link; a deleted category of A does not.
+      const own = await http.post('/api/products').send(body({ categoryId: a.category, supplierId: a.supplier }));
+      expect([own.status, own.body.categoryId, own.body.supplierId]).toEqual([201, a.category, a.supplier]);
+      const gone = await run.system(() => prisma.category.create({ data: { shopId: A.shopId, name: `a gone ${A.suffix}`, isDeleted: true, deletedAt: new Date() } }));
+      expect((await http.patch(`/api/products/${own.body.id}`).send({ categoryId: gone.id })).status).toBe(404);
     });
   });
 

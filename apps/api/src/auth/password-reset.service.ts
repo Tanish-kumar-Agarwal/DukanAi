@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, Logger, ServiceUnavailableException } 
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
-import { EmailService } from '../common/email/email.service';
+import { EmailService, emailSafeText } from '../common/email/email.service';
 import { AppConfig } from '../config/domains/app.config';
 import { SecurityConfig } from '../config/domains/security.config';
 import { isProductionEnv } from '../config/validation/env-rules';
@@ -73,7 +73,7 @@ export class PasswordResetService {
         to: user.email,
         subject: 'Reset your DukaanAI password',
         text: [
-          `Hi ${user.name},`,
+          `Hi ${emailSafeText(user.name) || 'there'},`,
           '',
           'Someone asked to reset the password of your DukaanAI account. If that was you, open this link within the next hour:',
           link,

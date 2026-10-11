@@ -17,8 +17,9 @@
  * printed with its figures and drifts. Exit 0 when the books agree, 1 when
  * a check found drift, 2 on a usage or connection error or a run that
  * failed (recorded FAILED with the error). `--json` prints the run (an
- * array of runs with `--all-shops`). The engine only reads; the one row it
- * writes per shop is the run record. Nothing is corrected.
+ * array of runs with `--all-shops`). The engine only reads, inside one
+ * REPEATABLE READ snapshot per shop (`inReadSnapshot`); the one row it
+ * writes per shop is the run record, after the snapshot. Nothing is corrected.
  *
  * `DATABASE_URL` comes from the environment: the container's own, or the
  * checkout's `.env.local` / `.env` through `scripts/reconcile.ts`.
@@ -27,7 +28,7 @@ import { parseArgs } from 'node:util';
 import { Prisma, PrismaClient, ReconciliationRun, ReconciliationRunStatus, ReconciliationTrigger } from '@prisma/client';
 import { SWEPT_SHOP_STATUSES } from '../common/sweeps/per-shop-sweep';
 import { businessDateString, parseBusinessDate, safeTimeZone } from '../common/time/business-day';
-import { previousBusinessDate, reconcileBusinessDay, ReconciliationReport } from '../reconciliation/reconciliation-engine';
+import { inReadSnapshot, previousBusinessDate, reconcileBusinessDay, ReconciliationReport } from '../reconciliation/reconciliation-engine';
 import { CliCommand, CliUsageError, runAsMain } from './run-cli';
 
 export const RECONCILE_USAGE = [
@@ -113,7 +114,8 @@ function printReport(out: (line: string) => void, report: ReconciliationReport, 
 async function reconcileShop(db: PrismaClient, deps: ReconcileDeps, shop: ShopRow, timeZone: string, businessDate: string, now: Date): Promise<Outcome> {
   let report: ReconciliationReport;
   try {
-    report = await deps.engine(db, { shopId: shop.id, timeZone, businessDate, now });
+    // One snapshot for every read of the run, like the cron and the route (release audit L5).
+    report = await inReadSnapshot(db, (tx) => deps.engine(tx, { shopId: shop.id, timeZone, businessDate, now }));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const run = await db.reconciliationRun.create({

@@ -39,7 +39,7 @@ Documents checked:
 | 46(j) | Taxable value, after any discount | **Met** | "Taxable" on the document and per rate in the GST summary. Discounts are shown and subtracted (`invoice-math`). |
 | 46(k) | Rate of tax (central, state, integrated, cess) | **Met** | Rate per line, and the rate-wise GST summary. |
 | 46(l) | Amount of tax charged (central, state, integrated, cess) | **Met** | CGST and SGST, or IGST, per document and per rate. Cess when charged. |
-| 46(m) | Place of supply, with the state's name, for an inter-state supply | **Gap G3** | IGST is decided correctly from the shop's and the customer's states (`BillingService.resolveInterState`), but the receipt does not print the place of supply. |
+| 46(m) | Place of supply, with the state's name, for an inter-state supply | **Fixed (audit P1-3)**, printing still **Gap G3** | Goods sold over the counter are supplied where the shop is (IGST Act s.10(1)(c)): a counter sale is now intra-state (CGST + SGST) whatever state the customer's profile names. Until the audit of 2026-10-11 the customer's saved state decided, which charged IGST on counter sales to out-of-state customers. IGST applies only when the request names an explicit `placeOfSupply` (a delivery, a registered buyer's state) that differs from the shop's state (`BillingService.resolveInterState`, both spellings canonicalised with `canonicalState`); the POS sends none. The receipt still does not print the place of supply. Advisor to confirm the rule. |
 | 46(n) | Delivery address, when different from the place of supply | **N/A** for counter sales; Gap G4 for deliveries | |
 | 46(o) | Whether tax is payable on reverse charge | **Gap G8** (minor) | Never printed. Counter sales are never under reverse charge, so the usual practice is "Reverse charge: No". |
 | 46(q) | Signature or digital signature of the supplier or an authorised representative | **Gap G5** | No signatory line. Rule 46 exempts electronic invoices with an IRN, and printed POS receipts are not those. |
@@ -55,8 +55,9 @@ Documents checked:
 | Date of issue | **Met** | |
 | Recipient's details | as for the invoice (G1, G4) | |
 | Serial number and date of the original invoice | **Met** (number) | The receipt prints "Against `<invoice number>`". The original's date is on the invoice page. |
-| Taxable value, rate, tax credited | **Met** | Cumulative return math (`CALCULATION_SPEC.md`), rate-wise summary. |
+| Taxable value, rate, tax credited | **Met** | Cumulative return math (`CALCULATION_SPEC.md`), rate-wise summary. Each return row adds up (`subtotal − discount = taxable`, audit B10), and a return reverses CGST + SGST or IGST as the sale charged them. |
 | Signature | Gap G5 | |
+| Time limit, CGST Act s.34(2): no credit note after 30 November following the end of the financial year of the supply | **Fixed (audit B8)** | `POST /billing/returns` refuses a return after that day, in the shop's time zone on the application clock (`409 RETURN_PAST_GST_DEADLINE`, `billing/gst-deadline.ts`): the shop refunds outside the app, and the output tax is not reduced. |
 
 ## 3. Other rules
 
@@ -78,7 +79,7 @@ needs the owner's decision.
 |---|---|---|---|---|
 | G1 | No recipient GSTIN | Every B2B sale to a registered buyer | `Customer.gstin` (validated 15 characters, state code matching `Customer.state`), a field in the customer form, carried onto the invoice (snapshot column) and printed with the customer's address | 2 days |
 | G2 | No HSN on invoice lines | B2B sales (4 digits); every sale above ₹5 crore turnover (6 digits) | Snapshot `Product.hsnCode` into `InvoiceItem.hsnCode` at checkout. Print it on each line. Require it on products when the shop has B2B customers. | 1.5 days |
-| G3 | Place of supply not printed | Inter-state sales | Print "Place of supply: `<state>` (`<code>`)" from the customer's state when the sale is inter-state | 0.5 day |
+| G3 | Place of supply not printed | Inter-state sales | Store the request's `placeOfSupply` on the invoice and print "Place of supply: `<state>` (`<code>`)" when the sale is inter-state (needs a column) | 0.5 day |
 | G4 | B2C ₹50,000 or more without name and address | Large walk-in sales | API: refuse a sale of ₹50,000 or more without a customer that has an address (`CUSTOMER_DETAILS_REQUIRED`). POS: ask for the customer. Print the address. | 1 day |
 | G5 | No signatory line | Every printed document | "For `<shop name>` · Authorised signatory" at the foot | 0.25 day |
 | G6 | Return titled "SALES RETURN" | Every return | Title it "CREDIT NOTE" | 0.1 day |

@@ -11,6 +11,8 @@ import { useToast } from '@/components/ui/Toast';
 import { AnimatePresence, motion } from 'framer-motion';
 import { expensesApi, type ExpenseSummary, type ExpenseView } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
+import { useSession } from 'next-auth/react';
+import { isManagement } from '@/components/customers/permissions';
 
 const CATEGORY_COLORS: Record<string, string> = {
   'Rent': 'bg-blue-100 text-blue-600',
@@ -29,6 +31,9 @@ const CATEGORY_ICONS: Record<string, React.ComponentType<{ size?: number | strin
 
 export default function ExpensesPage() {
   const { toast } = useToast();
+  const { data: session } = useSession();
+  /** Recording, editing, paying and deleting an expense are MANAGEMENT_ROLES in the API (`expenses.controller.ts`). */
+  const canManage = isManagement(session?.user?.role);
   const [expenses, setExpenses] = useState<ExpenseView[]>([]);
   const [loading, setLoading] = useState(true);
   // Roadmap 6.7: the tiles are this month's figures over every expense (GET /expenses/summary), not over the loaded page.
@@ -98,6 +103,11 @@ export default function ExpensesPage() {
   const [newCategory, setNewCategory] = useState('Supplies');
   const [newMode, setNewMode] = useState('Cash');
   const [newStatus, setNewStatus] = useState('Paid');
+  // One request at a time: a double click used to record the expense twice (release audit).
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  // Rows with a Mark as Paid / Delete request in flight.
+  const busyRows = useRef(new Set<string>());
 
   const figure = (value: number | undefined) => (summary && value !== undefined ? `₹${value.toLocaleString('en-IN')}` : '—');
 
@@ -126,14 +136,16 @@ export default function ExpensesPage() {
     setNewDesc(expense.description);
     setNewAmount(String(expense.amount));
     setNewCategory(expense.category);
-    setNewMode(expense.status === 'Paid' ? expense.mode : 'Cash');
+    setNewMode(expense.status === 'Paid' ? expense.mode : (expense.paymentMode ?? 'Cash'));
     setNewStatus(expense.status);
     setIsAddModalOpen(true);
   };
 
   const handleSaveExpense = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newDesc.trim() || !newAmount) return;
+    if (!newDesc.trim() || !newAmount || savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
 
     const body = {
       description: newDesc.trim(),
@@ -157,18 +169,34 @@ export default function ExpensesPage() {
       refreshSummary();
     } catch (err) {
       toast(describeApiError(err, editing ? 'Updating expense (PATCH /expenses/:id)' : 'Recording expense (POST /expenses)'), 'error');
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
   const handleAction = async (action: string, expense: ExpenseView, e: React.MouseEvent) => {
     e.stopPropagation();
     setOpenActionMenuId(null);
+    if (action !== 'Edit') {
+      if (busyRows.current.has(expense.id)) return;
+      busyRows.current.add(expense.id);
+    }
 
+    try {
+      await runAction(action, expense);
+    } finally {
+      busyRows.current.delete(expense.id);
+    }
+  };
+
+  const runAction = async (action: string, expense: ExpenseView) => {
     switch (action) {
       case 'Mark as Paid':
         try {
-          const updated = await expensesApi.update(expense.id, { isPaid: true, paymentMode: 'Cash' });
-          setExpenses(expenses.map(ex => (ex.id === expense.id ? updated : ex)));
+          // The mode chosen for the expense when it has one; Cash otherwise.
+          const updated = await expensesApi.update(expense.id, { isPaid: true, paymentMode: expense.paymentMode ?? 'Cash' });
+          setExpenses((current) => current.map(ex => (ex.id === expense.id ? updated : ex)));
           toast(`"${expense.description}" marked as Paid`, 'success');
           refreshSummary();
         } catch (err) {
@@ -181,7 +209,7 @@ export default function ExpensesPage() {
       case 'Delete':
         try {
           await expensesApi.delete(expense.id);
-          setExpenses(expenses.filter(ex => ex.id !== expense.id));
+          setExpenses((current) => current.filter(ex => ex.id !== expense.id));
           toast(`Expense "${expense.description}" deleted`, 'success');
           refreshSummary();
         } catch (err) {
@@ -200,6 +228,7 @@ export default function ExpensesPage() {
           <h1 className="text-2xl font-bold text-gray-800">Expenses & Overheads</h1>
           <p className="text-sm text-gray-500 mt-1">Track day-to-day shop expenses, utilities, and pending bills.</p>
         </div>
+        {canManage && (
         <button 
           onClick={() => setIsAddModalOpen(true)}
           className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg shadow-purple-500/30 transition-all"
@@ -207,6 +236,7 @@ export default function ExpensesPage() {
           <Plus size={18} />
           Record Expense
         </button>
+        )}
       </div>
 
       {/* Stats Row */}
@@ -362,6 +392,7 @@ export default function ExpensesPage() {
                       )}
                     </td>
                     <td className="px-6 py-4 text-right relative">
+                      {canManage && (
                       <button 
                         aria-label={`Actions for ${expense.description}`}
                           onClick={(e) => { e.stopPropagation(); setOpenActionMenuId(openActionMenuId === expense.id ? null : expense.id); }}
@@ -369,9 +400,10 @@ export default function ExpensesPage() {
                       >
                         <MoreVertical size={18} />
                       </button>
+                      )}
 
                       <AnimatePresence>
-                        {openActionMenuId === expense.id && (
+                        {canManage && openActionMenuId === expense.id && (
                           <motion.div 
                             initial={{ opacity: 0, scale: 0.95 }}
                             animate={{ opacity: 1, scale: 1 }}
@@ -433,7 +465,7 @@ export default function ExpensesPage() {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="text-sm font-medium">Amount (₹) *</label>
-              <input value={newAmount} onChange={e=>setNewAmount(e.target.value)} type="number" required className="w-full mt-1 border rounded-lg p-2" placeholder="0" />
+              <input value={newAmount} onChange={e=>setNewAmount(e.target.value)} type="number" step="0.01" min="0.01" required className="w-full mt-1 border rounded-lg p-2" placeholder="0" />
             </div>
             <div>
               <label className="text-sm font-medium">Category</label>
@@ -479,7 +511,7 @@ export default function ExpensesPage() {
 
           <div className="flex justify-end gap-2 pt-4 border-t mt-6">
             <button type="button" onClick={() => setIsAddModalOpen(false)} className="px-4 py-2 border rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
-            <button type="submit" className="px-4 py-2 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-lg text-sm font-bold shadow-lg shadow-purple-500/30">Save Expense</button>
+            <button type="submit" disabled={saving} aria-busy={saving} className="px-4 py-2 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-lg text-sm font-bold shadow-lg shadow-purple-500/30">{saving ? 'Saving…' : 'Save Expense'}</button>
           </div>
         </form>
       </Modal>

@@ -9,11 +9,13 @@ const D = (v: string | number) => new Prisma.Decimal(v);
 
 describe('AdjustmentPostingService', () => {
   let service: AdjustmentPostingService;
-  let engine: { mutateStock: jest.Mock };
+  let engine: { mutateStock: jest.Mock; lockProducts: jest.Mock };
   let ledger: { post: jest.Mock };
   let tx: {
     product: { findUnique: jest.Mock };
-    adjustmentRequest: { updateMany: jest.Mock; findFirstOrThrow: jest.Mock };
+    adjustmentRequest: { updateMany: jest.Mock; findFirstOrThrow: jest.Mock; update: jest.Mock };
+    stockCountItem: { findFirst: jest.Mock };
+    stockLedgerEntry: { aggregate: jest.Mock };
   };
   let prisma: { $transaction: jest.Mock };
 
@@ -33,11 +35,13 @@ describe('AdjustmentPostingService', () => {
   });
 
   beforeEach(() => {
-    engine = { mutateStock: jest.fn().mockResolvedValue(mutationResult(false)) };
+    engine = { mutateStock: jest.fn().mockResolvedValue(mutationResult(false)), lockProducts: jest.fn().mockResolvedValue(undefined) };
     ledger = { post: jest.fn().mockResolvedValue({ posted: true, postingId: 'lp-1' }) };
     tx = {
       product: { findUnique: jest.fn().mockResolvedValue({ costPrice: D('12.50') }) },
-      adjustmentRequest: { updateMany: jest.fn().mockResolvedValue({ count: 1 }), findFirstOrThrow: jest.fn() },
+      adjustmentRequest: { updateMany: jest.fn().mockResolvedValue({ count: 1 }), findFirstOrThrow: jest.fn(), update: jest.fn().mockResolvedValue({}) },
+      stockCountItem: { findFirst: jest.fn() },
+      stockLedgerEntry: { aggregate: jest.fn() },
     };
     prisma = {
       $transaction: jest.fn((fn: (t: unknown) => Promise<unknown>) => fn(tx)),
@@ -58,7 +62,7 @@ describe('AdjustmentPostingService', () => {
   it('positive delta: mutates stock in, posts DEBIT INVENTORY / CREDIT INVENTORY_ADJUSTMENT at cost, marks POSTED', async () => {
     tx.adjustmentRequest.findFirstOrThrow.mockResolvedValue(adjustment('4'));
 
-    await expect(service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1')).resolves.toEqual({ success: true });
+    await expect(service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1')).resolves.toMatchObject({ success: true });
 
     expect(engine.mutateStock).toHaveBeenCalledWith(
       tx,
@@ -139,9 +143,52 @@ describe('AdjustmentPostingService', () => {
     tx.adjustmentRequest.findFirstOrThrow.mockResolvedValue(adjustment('3'));
     ledger.post.mockResolvedValue({ posted: false, postingId: 'lp-existing' });
 
-    await expect(service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1')).resolves.toEqual({ success: true });
+    await expect(service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1')).resolves.toMatchObject({ success: true });
 
     expect(ledger.post).toHaveBeenCalledTimes(1);
     expect(ledger.post.mock.calls[0][1].source).toEqual({ type: 'ADJUSTMENT_REQUEST', id: 'adj-1' });
+  });
+
+  describe('an adjustment raised from a stock count (release audit S1)', () => {
+    const startedAt = new Date('2026-10-11T10:00:00Z');
+    const countedAt = new Date('2026-10-11T11:00:00Z');
+    const countItem = (counted: string) => ({
+      id: 'ci-1',
+      shopId: 'shop-1',
+      inventoryItemId: 'ii-1',
+      expectedQuantity: D('100'),
+      countedQuantity: D(counted),
+      countedAt,
+      session: { startedAt, createdAt: startedAt },
+    });
+    const fromCount = (requested: string) => ({ ...adjustment(requested), countItemId: 'ci-1' });
+
+    it('snapshot 100, 10 sold during the count, 90 counted: posts nothing (the stale variance was -10)', async () => {
+      tx.adjustmentRequest.findFirstOrThrow.mockResolvedValue(fromCount('-10'));
+      tx.stockCountItem.findFirst.mockResolvedValue(countItem('90'));
+      tx.stockLedgerEntry.aggregate.mockResolvedValue({ _sum: { quantity: D('-10') } });
+
+      await expect(service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1')).resolves.toMatchObject({ success: true, delta: '0' });
+
+      // Only the movements between the snapshot and the count belong to the expectation.
+      expect(tx.stockLedgerEntry.aggregate).toHaveBeenCalledWith({
+        where: { shopId: 'shop-1', inventoryItemId: 'ii-1', createdAt: { gt: startedAt, lte: countedAt } },
+        _sum: { quantity: true },
+      });
+      expect(engine.lockProducts).toHaveBeenCalledWith(tx, 'shop-1', ['p-1']);
+      expect(engine.mutateStock).not.toHaveBeenCalled();
+      expect(ledger.post).not.toHaveBeenCalled();
+    });
+
+    it('snapshot 100, 10 sold, 88 counted: posts -2 and corrects the stored delta', async () => {
+      tx.adjustmentRequest.findFirstOrThrow.mockResolvedValue(fromCount('-12'));
+      tx.stockCountItem.findFirst.mockResolvedValue(countItem('88'));
+      tx.stockLedgerEntry.aggregate.mockResolvedValue({ _sum: { quantity: D('-10') } });
+
+      await expect(service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1')).resolves.toMatchObject({ success: true, delta: '-2' });
+
+      expect(tx.adjustmentRequest.update).toHaveBeenCalledWith({ where: { id: 'adj-1' }, data: { requestedQuantityDelta: D('-2') } });
+      expect(engine.mutateStock).toHaveBeenCalledWith(tx, expect.objectContaining({ quantity: 2, metadata: { direction: -1 } }));
+    });
   });
 });

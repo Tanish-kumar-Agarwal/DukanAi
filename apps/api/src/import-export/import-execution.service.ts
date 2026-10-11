@@ -4,7 +4,7 @@ import type { Cache } from 'cache-manager';
 import { ImportJob, ImportKind, ImportMode, JobStatus, Prisma } from '@prisma/client';
 import { invalidateAnalyticsCache } from '../common/cache/analytics-cache-keys';
 import { PrismaService } from '../prisma/prisma.service';
-import { ParsingEngineService } from './parsing-engine.service';
+import { IMPORT_FILE_TOO_LARGE, IMPORT_TOO_MANY_ROWS, ParsingEngineService } from './parsing-engine.service';
 import { RowIssue, shapeRows } from './import-rows';
 import { failureMessage, ImportActor, Importer, PlannedRow, RowAction } from './importers/import-plan';
 import { ProductImporter } from './importers/product-importer';
@@ -86,7 +86,10 @@ export class ImportExecutionService {
     try {
       records = await this.parsingEngine.parseFile(job.fileUrl, job.format);
     } catch (error) {
-      await this.finishWithFileError(job, [{ message: `The file could not be read: ${failureMessage(error).message}`, severity: 'error' }], 0);
+      // A file over the row or size limits says so as it is; anything else could not be read.
+      const failure = failureMessage(error);
+      const bounded = failure.code === IMPORT_TOO_MANY_ROWS || failure.code === IMPORT_FILE_TOO_LARGE;
+      await this.finishWithFileError(job, [{ message: bounded ? failure.message : `The file could not be read: ${failure.message}`, severity: 'error' }], 0);
       return;
     }
     // A spreadsheet's first data line is line 2 (the header is line 1); a JSON array counts from 1.
