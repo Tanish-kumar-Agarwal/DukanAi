@@ -8,6 +8,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { canonicalEmail } from '../common/email-address';
 import { PrismaService } from '../prisma/prisma.service';
 import { Role } from '@prisma/client';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
@@ -61,7 +62,7 @@ export class InvitationsService {
       throw new ServiceUnavailableException('Invitation email delivery is not configured (SMTP_URL)');
     }
 
-    const email = data.email.trim().toLowerCase();
+    const email = canonicalEmail(data.email);
     const now = new Date();
     const activeInvitationsCount = await this.prisma.invitation.count({
       where: { shopId, isUsed: false, expiresAt: { gt: now } },
@@ -70,9 +71,13 @@ export class InvitationsService {
       throw new BadRequestException('Maximum active invitations limit reached for this shop');
     }
 
-    const existingUser = await this.prisma.user.findUnique({ where: { email }, select: { id: true } });
+    // Only the inviter's own shop is answered for: an address that already has
+    // an account in another shop is invited like any other (acceptance then
+    // fails for its owner), so an invitation cannot be used to learn which
+    // addresses have DukaanAI accounts anywhere (audit T6c).
+    const existingUser = await this.prisma.user.findFirst({ where: { email, shopId, isDeleted: false }, select: { id: true } });
     if (existingUser) {
-      throw new ConflictException('User with this email already exists.');
+      throw new ConflictException({ message: 'This person is already a member of your shop.', code: 'ALREADY_A_MEMBER' });
     }
 
     const existingInvite = await this.prisma.invitation.findFirst({

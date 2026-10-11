@@ -1,4 +1,4 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, Optional, UnauthorizedException } from '@nestjs/common';
 import { UsersService } from '../users/users.service';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
@@ -7,6 +7,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import * as crypto from 'crypto';
 import { SocketSessionService } from '../iam/websockets/socket-session.service';
 import { JwtConfig } from '../config/domains/jwt.config';
+import { SecurityConfig } from '../config/domains/security.config';
 import { durationToMs } from '../common/time/duration';
 import { ListQueryDto, pageArgs } from '../common/pagination';
 
@@ -58,7 +59,20 @@ export class AuthService {
     private prisma: PrismaService,
     private socketSessionService: SocketSessionService,
     private jwtConfig: JwtConfig,
+    @Optional() private readonly securityConfig?: SecurityConfig,
   ) {}
+
+  /**
+   * A hash at the configured work factor, compared against when the account
+   * does not exist or has no password, so an unknown address costs the same
+   * time as a wrong password and the answer time does not say which
+   * addresses have accounts (audit A3).
+   */
+  private dummyHash?: Promise<string>;
+  private equaliseTiming(pass: string): Promise<boolean> {
+    this.dummyHash ??= bcrypt.hash('dukaanai-timing-equaliser', this.securityConfig?.bcryptRounds ?? 10);
+    return this.dummyHash.then((hash) => bcrypt.compare(pass, hash));
+  }
 
   /**
    * The credential check behind `POST /auth/login`. Every decision is logged
@@ -76,6 +90,7 @@ export class AuthService {
     const user = await this.usersService.findByEmailWithPassword(email);
     // Google OAuth users have no password — they cannot use credentials login.
     if (!user || !user.password) {
+      await this.equaliseTiming(pass);
       return refuse(`${email}: ${user ? 'no password set (Google sign-in account)' : 'unknown account'}`);
     }
 
@@ -156,6 +171,7 @@ export class AuthService {
   /** Ends the session family the access token belongs to; its refresh token and access tokens stop working at once. */
   async logout(userId: string, familyId: string): Promise<{ message: string }> {
     await this.prisma.refreshToken.updateMany({ where: { userId, familyId, isRevoked: false }, data: { isRevoked: true } });
+    this.socketSessionService.disconnectSession(userId, familyId, 'Signed out');
     return { message: 'Logged out' };
   }
 
@@ -191,9 +207,9 @@ export class AuthService {
     const token = await this.prisma.refreshToken.findFirst({ where: { id: sessionId, userId }, select: { familyId: true } });
     if (token) {
       await this.prisma.refreshToken.updateMany({ where: { userId, familyId: token.familyId, isRevoked: false }, data: { isRevoked: true } });
+      // Only the revoked session's sockets close; the user's other devices stay connected (audit A6).
+      this.socketSessionService.disconnectSession(userId, token.familyId, 'Session revoked');
     }
-    // Disconnect sockets when a session is explicitly revoked
-    this.socketSessionService.disconnectUser(userId, 'Session revoked');
     return { message: 'Session revoked' };
   }
 

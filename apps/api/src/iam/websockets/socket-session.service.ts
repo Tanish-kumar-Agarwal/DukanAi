@@ -44,6 +44,22 @@ export class SocketSessionService {
     }
   }
 
+  /** Disconnects only the sockets opened with one session family (`socket.data.sessionId`). */
+  disconnectSession(userId: string, sessionId: string, reason: string = 'Session revoked') {
+    const userSockets = this.activeSockets.get(userId);
+    if (!userSockets) return;
+    let count = 0;
+    for (const socket of [...userSockets]) {
+      if (socket.data?.sessionId !== sessionId) continue;
+      socket.emit('error', { message: reason, code: 'SESSION_REVOKED' });
+      socket.disconnect(true);
+      userSockets.delete(socket);
+      count++;
+    }
+    if (userSockets.size === 0) this.activeSockets.delete(userId);
+    if (count > 0) this.logger.log(`Disconnected ${count} sockets of one session of user ${userId}. Reason: ${reason}`);
+  }
+
   disconnectShop(shopId: string, reason: string = 'Shop suspended/deleted') {
     // Iterate over all sockets to find those belonging to the shop
     let disconnectedCount = 0;

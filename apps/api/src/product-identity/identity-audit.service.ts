@@ -61,7 +61,8 @@ export class IdentityAuditService {
       this.prisma.barcodeHistory.findMany({
         where,
         orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
-        include: { changedBy: { select: { id: true, name: true, email: true } } },
+        // The name says who changed it; staff email addresses are not shown to every role (audit T6a).
+        include: { changedBy: { select: { id: true, name: true } } },
         skip,
         take,
       }),

@@ -16,7 +16,7 @@ describe('InvitationsService', () => {
     };
     const prisma = {
       invitation: { count: jest.fn().mockResolvedValue(0), findFirst: jest.fn().mockResolvedValue(null), findUnique: jest.fn(), delete: jest.fn().mockResolvedValue({}) },
-      user: { findUnique: jest.fn().mockResolvedValue(null) },
+      user: { findFirst: jest.fn().mockResolvedValue(null) },
       $transaction: jest.fn().mockImplementation((fn: (t: unknown) => unknown) => fn(tx)),
     };
     const email = { isConfigured: configured, send: jest.fn().mockResolvedValue(undefined) };
@@ -94,10 +94,12 @@ describe('InvitationsService', () => {
     expect(email.send).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses a duplicate invitation or an existing user', async () => {
+  it('refuses a duplicate invitation or a member of the same shop', async () => {
     const { service, prisma } = build();
-    prisma.user.findUnique.mockResolvedValueOnce({ id: 'u' });
+    prisma.user.findFirst.mockResolvedValueOnce({ id: 'u' });
     await expect(service.generate('shop-1', owner, { email: 'x@example.com', role: Role.CASHIER })).rejects.toBeInstanceOf(ConflictException);
+    // Only the inviter's own shop is looked at (audit T6c): an account elsewhere is not revealed.
+    expect(prisma.user.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { email: 'x@example.com', shopId: 'shop-1', isDeleted: false } }));
     prisma.invitation.findFirst.mockResolvedValueOnce({ id: 'inv-0' });
     await expect(service.generate('shop-1', owner, { email: 'x@example.com', role: Role.CASHIER })).rejects.toBeInstanceOf(ConflictException);
   });

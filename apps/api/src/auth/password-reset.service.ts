@@ -7,6 +7,7 @@ import { AppConfig } from '../config/domains/app.config';
 import { SecurityConfig } from '../config/domains/security.config';
 import { isProductionEnv } from '../config/validation/env-rules';
 import { SocketSessionService } from '../iam/websockets/socket-session.service';
+import { canonicalEmail, sameEmailAddress } from '../common/email-address';
 
 export const PASSWORD_RESET_TTL_MINUTES = 60;
 
@@ -41,12 +42,16 @@ export class PasswordResetService {
       // The same rule as invitations: a production server must be able to deliver the link.
       throw new ServiceUnavailableException('Password reset email delivery is not configured (SMTP_URL)');
     }
-    const email = rawEmail.trim().toLowerCase();
-    // User is a global model (read before any tenant is known).
-    const user = await this.prisma.user.findFirst({
+    const email = canonicalEmail(rawEmail);
+    // User is a global model (read before any tenant is known). The column's
+    // collation also matches accented lookalikes (`tést.local` = `test.local`),
+    // so the row is accepted only when it is the same mailbox, and the link
+    // goes to the stored address, never to the one typed (audit P0-1).
+    const found = await this.prisma.user.findFirst({
       where: { email, isDeleted: false, isActive: true },
-      select: { id: true, name: true, password: true },
+      select: { id: true, name: true, email: true, password: true },
     });
+    const user = found && sameEmailAddress(found.email, email) ? found : null;
     // No password: a Google-only account signs in with Google; a reset would turn it into a password account (roadmap 2.9 forbids the link).
     if (!user || !user.password) {
       this.logger.log(`Password reset requested for an address without a resettable account`);
@@ -65,7 +70,7 @@ export class PasswordResetService {
     try {
       await this.email.send({
         purpose: 'password_reset',
-        to: email,
+        to: user.email,
         subject: 'Reset your DukaanAI password',
         text: [
           `Hi ${user.name},`,

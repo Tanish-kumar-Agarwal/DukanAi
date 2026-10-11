@@ -84,6 +84,7 @@ export class AuthenticatedIoAdapter extends IoAdapter {
             isActive: true,
             tokenVersion: true,
             role: true,
+            shopId: true,
             // The session family behind the token must still be live (logout, revoke, reuse, absolute lifetime).
             refreshTokens: { where: { familyId: payload.sid, isRevoked: false, expiresAt: { gt: now }, absoluteExpiresAt: { gt: now } }, select: { id: true }, take: 1 },
           },
@@ -98,6 +99,10 @@ export class AuthenticatedIoAdapter extends IoAdapter {
         }
         if (user.tokenVersion !== tokenVersion) {
           return next(new Error('Authentication Error: Session revoked'));
+        }
+        // The room is the user's shop as stored, never only the token's claim (audit T6f).
+        if (user.shopId !== shopId) {
+          return next(new Error('Authentication Error: Invalid token'));
         }
 
         const shop = await this.prisma.shop.findUnique({
@@ -117,6 +122,7 @@ export class AuthenticatedIoAdapter extends IoAdapter {
         socket.data.userId = userId;
         socket.data.shopId = shopId;
         socket.data.role = user.role;
+        socket.data.sessionId = payload.sid;
         socket.data.correlationId = sanitizeIdentifier(socket.handshake.headers[CORRELATION_HEADER]);
         
         // Register connection for session revocation

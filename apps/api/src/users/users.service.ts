@@ -13,6 +13,7 @@ import {
   userWithPasswordSelect,
 } from './user.mapper';
 import { SecurityConfig } from '../config/domains/security.config';
+import { canonicalEmail, sameEmailAddress } from '../common/email-address';
 
 @Injectable()
 export class UsersService {
@@ -23,13 +24,19 @@ export class UsersService {
     private securityConfig: SecurityConfig
   ) {}
 
+  /**
+   * The account whose stored address is `email` in canonical form. The column
+   * collation would also return an accented lookalike's row (audit P0-1), so
+   * the row is re-checked before it is used.
+   */
   async findByEmailWithPassword(
     email: string,
   ): Promise<UserWithPasswordRecord | null> {
-    return this.prisma.user.findUnique({
-      where: { email },
+    const user = await this.prisma.user.findUnique({
+      where: { email: canonicalEmail(email) },
       select: userWithPasswordSelect,
     });
+    return user && sameEmailAddress(user.email, email) ? user : null;
   }
 
   async findSafeById(id: string): Promise<SafeUserDto | null> {
@@ -66,7 +73,7 @@ export class UsersService {
         const createdUser = await tx.user.create({
           data: {
             id: userId,
-            email: data.email,
+            email: canonicalEmail(data.email),
             name: data.name,
             role: Role.OWNER,
             password: hashedPassword,
@@ -128,7 +135,8 @@ export class UsersService {
     //    whoever later signs in with the real Google identity (P2-19). The
     //    owner signs in with their password; linking needs an explicit,
     //    authenticated step.
-    const byEmail = await this.prisma.user.findUnique({ where: { email }, select: { id: true } });
+    const address = canonicalEmail(email);
+    const byEmail = await this.prisma.user.findUnique({ where: { email: address }, select: { id: true } });
     if (byEmail) {
       this.logger.warn(`Google sign-in refused for ${email}: an account with this email exists and is not linked to Google`);
       throw new ConflictException('An account with this email already exists. Sign in with your password.');
@@ -150,7 +158,7 @@ export class UsersService {
         const createdUser = await tx.user.create({
           data: {
             id: userId,
-            email,
+            email: address,
             name,
             googleId,
             role: Role.OWNER,
@@ -174,12 +182,16 @@ export class UsersService {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
-        // Race: another request created the user between our lookups
-        const retry = await this.prisma.user.findUnique({
-          where: { email },
+        // Race: a concurrent sign-in with the same Google identity created the
+        // user between our lookups. Only that account is returned; a password
+        // account registered under the address in the meantime is never handed
+        // to the Google identity (roadmap 2.9).
+        const retry = await this.prisma.user.findFirst({
+          where: { googleId },
           select: safeUserSelect,
         });
         if (retry) return UserMapper.toSafeUserDto(retry);
+        throw new ConflictException('An account with this email already exists. Sign in with your password.');
       }
       this.logger.error('Failed to create Google OAuth user', error);
       throw error;

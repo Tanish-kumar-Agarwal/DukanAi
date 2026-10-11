@@ -22,7 +22,9 @@ export class NotificationsController {
     return this.notificationsService.create(dto);
   }
 
-  @AnyAuthenticated()
+  // Notifications are shop-wide: clearing all of them hides every alert from
+  // everyone, so it is a management action (audit T6b). Marking one read stays open.
+  @Roles(...MANAGEMENT_ROLES)
   @Patch('read-all')
   markAllRead() {
     return this.notificationsService.markAllRead();
