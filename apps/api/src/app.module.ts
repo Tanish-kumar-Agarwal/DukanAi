@@ -34,6 +34,7 @@ import { buildThrottlerOptions } from './common/throttling/throttler-options';
 import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RolesGuard } from './auth/roles.guard';
+import { FeatureGateGuard } from './common/features/feature-gate';
 import { RouteAuthorizationAssertion } from './auth/route-authorization.assertion';
 import { QueueWiringAssertion } from './common/queues/queue-wiring.assertion';
 import { TenantGuard } from './iam/guards/tenant.guard';
@@ -194,6 +195,8 @@ import { ReconciliationModule } from './reconciliation/reconciliation.module';
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: TenantGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    // 5. FeatureGateGuard (roadmap 9.23: a paused feature answers 503 FEATURE_PAUSED, after auth)
+    { provide: APP_GUARD, useClass: FeatureGateGuard },
     // Refuses to boot while any write handler lacks @Roles / @AnyAuthenticated / @Public.
     RouteAuthorizationAssertion,
     // Refuses to boot while a registered queue has no worker or a worker no queue (roadmap 4.6).

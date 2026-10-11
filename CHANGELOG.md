@@ -13,6 +13,26 @@ release notes of the tag.
 
 ## [Unreleased]
 
+### Added
+
+- Support and training (9.23): a cashier guide, an owner guide and an FAQ (`docs/guides/`), the support channel with
+  response targets (`docs/SUPPORT.md`), and feature pause switches: `FEATURE_<NAME>_ENABLED=false` plus an API restart
+  pauses one feature (credit sales, returns, cancellations, OCR, imports, documents, media, procurement, dashboard
+  insights) with 503 `FEATURE_PAUSED`, while replays, reads and every other feature keep working; `feature_enabled`
+  metric and a Grafana panel.
+- Compliance and privacy (9.24): personal-data inventory (in code and in `docs/privacy/DATA_INVENTORY.md`), retention
+  policy, draft privacy notice and terms for shops, the data-request procedure, and the operator command
+  `node dist/cli/shop-data` (export, suspend, erase, erase-customer with a GST legal hold).
+
+### Changed
+
+- POS document numbers are GST serial numbers of at most 16 characters (CGST Rule 46(b)): `INV-2627-000001` and
+  `RET-2627-000001` instead of `INV-2026-27-000001` (18). Numbers already issued keep their series; new documents start
+  the compact one.
+- Customer repayments and opening balances no longer write the customer's name into the immutable ledger; migration
+  `20261011090000` removes the names already written (amounts unchanged).
+- The pilot readiness check fails a shop without a GSTIN (every receipt is a tax invoice).
+
 ### Fixed
 
 - The release Trivy gate (9.14) failed on the first images built from main: every image now takes Debian's security

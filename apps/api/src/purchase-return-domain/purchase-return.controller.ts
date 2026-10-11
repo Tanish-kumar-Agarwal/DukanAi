@@ -8,7 +8,9 @@ import { Roles } from '../auth/roles.decorator';
 import { LimitOffsetQueryDto, limitOffsetArgs } from '../common/pagination';
 import { ApprovalDecisionDto } from '../common/dto/approval-decision.dto';
 import { CreatePurchaseReturnDto, DispatchShipmentDto } from './dto/purchase-return.dto';
+import { FeatureGate } from '../common/features/feature-gate';
 
+@FeatureGate('procurement')
 @Controller('purchase-returns')
 export class PurchaseReturnController {
   constructor(private readonly repository: PurchaseReturnRepository) {}

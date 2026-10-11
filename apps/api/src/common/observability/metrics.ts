@@ -170,6 +170,14 @@ export const emailMessagesTotal = new Counter({
  * so a graph or an incident can say which build answered. One series per
  * running release.
  */
+/** 1 while a feature is on, 0 while the operator has paused it (roadmap 9.23, `FEATURE_*_ENABLED`). */
+export const featureEnabled = new Gauge({
+  name: 'feature_enabled',
+  help: 'Feature pause switches: 1 = on, 0 = paused by FEATURE_<NAME>_ENABLED=false.',
+  labelNames: ['feature'] as const,
+  registers: [metricsRegistry],
+});
+
 export const buildInfo = new Gauge({
   name: 'build_info',
   help: 'Always 1, labelled with the release the API runs (APP_RELEASE, "unknown" when unset).',

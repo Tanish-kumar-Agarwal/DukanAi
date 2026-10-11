@@ -358,6 +358,12 @@ Order of operations for a real restore:
    where the source already carried a known drift, the same drift. A
    point-in-time restore is reconciled for the day of `--to`. The drill
    below does this comparison automatically.
+7. Re-apply erasures (roadmap 9.24). A backup taken before a shop's or a
+   customer's erasure still holds the erased data. Run again every
+   erasure in the register (`docs/privacy/DATA_REQUESTS.md` §5) executed
+   after the restored backup's snapshot time, with the same
+   `shop-data erase` / `erase-customer` command. Erasure is idempotent.
+   Do this before the API takes traffic again.
 
 Point in time (`--to`): the dump is the state at the moment its snapshot
 started. `--to "YYYY-MM-DD HH:MM:SS"` (UTC; `YYYY-MM-DDTHH:MM:SSZ` also)

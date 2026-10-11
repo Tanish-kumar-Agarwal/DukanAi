@@ -7,6 +7,7 @@ import { CurrentShop, CurrentUser } from '../iam/decorators';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
 import { ReorderMediaDto, TagMediaDto, UploadMediaDto } from './dto/tag-media.dto';
+import { FeatureGate } from '../common/features/feature-gate';
 
 /**
  * Product media (roadmap 4.1). The shop and the user come from the verified
@@ -14,6 +15,7 @@ import { ReorderMediaDto, TagMediaDto, UploadMediaDto } from './dto/tag-media.dt
  * former `bulk` and `search` stubs, which answered success without doing
  * anything, are gone; `tag` and `order` now do what they claim.
  */
+@FeatureGate('media')
 @Controller('media')
 export class ProductMediaController {
   constructor(private readonly productMediaService: ProductMediaService) {}

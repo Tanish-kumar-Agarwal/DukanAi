@@ -8,7 +8,9 @@ import { Roles } from '../auth/roles.decorator';
 import { LimitOffsetQueryDto, limitOffsetArgs } from '../common/pagination';
 import { ApprovalDecisionDto } from '../common/dto/approval-decision.dto';
 import { AllocateSupplierCreditDto, CreateSupplierCreditDto } from './dto/supplier-credit.dto';
+import { FeatureGate } from '../common/features/feature-gate';
 
+@FeatureGate('procurement')
 @Controller('supplier-credit-notes')
 export class SupplierCreditController {
   constructor(private readonly repository: SupplierCreditRepository) {}

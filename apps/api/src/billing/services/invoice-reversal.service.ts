@@ -16,6 +16,8 @@ import { BillingCheckpoints, BillingFlow } from '../billing-checkpoints';
 import { withSerializationRetry } from '../../common/db/serialization-retry';
 import { financialYearLabel, isSameBusinessDay } from '../../common/time/business-day';
 import { Clock } from '../../common/time/clock';
+import { FeatureFlagsConfig } from '../../config/domains/feature-flags.config';
+import { assertFeatureEnabled } from '../../common/features/feature-catalogue';
 
 type Tx = Prisma.TransactionClient;
 
@@ -60,6 +62,7 @@ export class InvoiceReversalService {
     private readonly billingConfig: BillingFeatureConfig,
     private readonly checkpoints: BillingCheckpoints,
     private readonly clock: Clock,
+    private readonly features: FeatureFlagsConfig,
   ) {}
 
   private transaction<T>(flow: BillingFlow, fn: (tx: Tx) => Promise<T>): Promise<T> {
@@ -97,6 +100,8 @@ export class InvoiceReversalService {
       }
       return { invoice: existing, stock: [], replayed: true };
     }
+    // A paused feature refuses new returns only: the replay above still answers (roadmap 9.23).
+    assertFeatureEnabled(this.features, 'returns');
 
     const timeZone = await this.helpers.shopTimeZone(actor.shopId);
     const locationId = await this.locationService.resolveSaleLocation(this.prisma, actor.shopId);
@@ -140,7 +145,7 @@ export class InvoiceReversalService {
           throw new ConflictException({ message: 'Open a shift before refunding cash.', code: 'SHIFT_REQUIRED' });
         }
 
-        const { number: invoiceNumber } = await this.invoiceNumbers.next(tx, actor.shopId, 'POS_RETURN', `RET-${financialYear}-`);
+        const { number: invoiceNumber } = await this.invoiceNumbers.next(tx, actor.shopId, 'POS_RETURN', financialYear);
         // Product locks before the return lines are inserted (see BillingService).
         await this.engine.lockProducts(tx, actor.shopId, lines.map((l) => l.item.productId).filter((id): id is string => !!id));
         const tenders = physicalRefund.greaterThan(0) ? [{ type: tender as 'CASH' | 'UPI' | 'CARD' | 'BANK_TRANSFER', amount: new Decimal(physicalRefund.toString()) }] : [];
@@ -317,6 +322,8 @@ export class InvoiceReversalService {
         if (original.status === 'CANCELLED') {
           return { invoice: original, stock: [] as StockOutcome[], alreadyCancelled: true };
         }
+        // Paused (roadmap 9.23): an invoice already cancelled is still answered above.
+        assertFeatureEnabled(this.features, 'cancellations');
         if (original.status !== 'COMPLETED') {
           throw new ConflictException({ message: 'Invoice is not in a cancellable state.', code: 'INVOICE_NOT_CANCELLABLE' });
         }

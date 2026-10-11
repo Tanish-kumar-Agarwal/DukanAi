@@ -57,6 +57,24 @@ spec:
               valueFrom: { configMapKeyRef: { name: dukaanai-config, key: HTTP_KEEP_ALIVE_TIMEOUT_MS } }
             - name: LOG_LEVEL
               valueFrom: { configMapKeyRef: { name: dukaanai-config, key: LOG_LEVEL } }
+            - name: FEATURE_CREDIT_SALES_ENABLED
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: FEATURE_CREDIT_SALES_ENABLED } }
+            - name: FEATURE_RETURNS_ENABLED
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: FEATURE_RETURNS_ENABLED } }
+            - name: FEATURE_CANCELLATIONS_ENABLED
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: FEATURE_CANCELLATIONS_ENABLED } }
+            - name: FEATURE_OCR_ENABLED
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: FEATURE_OCR_ENABLED } }
+            - name: FEATURE_IMPORTS_ENABLED
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: FEATURE_IMPORTS_ENABLED } }
+            - name: FEATURE_DOCUMENTS_ENABLED
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: FEATURE_DOCUMENTS_ENABLED } }
+            - name: FEATURE_MEDIA_ENABLED
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: FEATURE_MEDIA_ENABLED } }
+            - name: FEATURE_PROCUREMENT_ENABLED
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: FEATURE_PROCUREMENT_ENABLED } }
+            - name: FEATURE_DASHBOARD_INSIGHTS_ENABLED
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: FEATURE_DASHBOARD_INSIGHTS_ENABLED } }
             - name: BACKUP_STATUS_DIR
               valueFrom: { configMapKeyRef: { name: dukaanai-config, key: BACKUP_STATUS_DIR } }
             - name: EMAIL_FROM

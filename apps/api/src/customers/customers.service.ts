@@ -281,7 +281,9 @@ export class CustomersService {
       await this.ledger.post(tx, {
         shopId: actor.shopId,
         source: { type: 'CUSTOMER_PAYMENT', id: transaction.id },
-        description: `Customer payment ${rows[0].name} (${dto.tender})`,
+        // No customer name: LedgerTransaction is immutable, so personal data written
+        // there could never be erased (roadmap 9.24); the source id names the payment.
+        description: `Customer payment (${dto.tender})`,
         entries: [
           { account: dto.tender === 'CASH' ? LedgerAccount.CASH : LedgerAccount.BANK, type: LedgerEntryType.DEBIT, amount },
           { account: LedgerAccount.ACCOUNTS_RECEIVABLE, type: LedgerEntryType.CREDIT, amount },
@@ -443,7 +445,7 @@ export class CustomersService {
       await this.ledger.post(tx, {
         shopId: actor.shopId,
         source: { type: 'OPENING_BALANCE', id: transaction.id },
-        description: `Opening balance ${name}`,
+        description: 'Opening balance', // no name: the ledger is immutable (roadmap 9.24)
         entries: [
           { account: owed ? LedgerAccount.ACCOUNTS_RECEIVABLE : LedgerAccount.OPENING_BALANCE_EQUITY, type: LedgerEntryType.DEBIT, amount: value.abs() },
           { account: owed ? LedgerAccount.OPENING_BALANCE_EQUITY : LedgerAccount.ACCOUNTS_RECEIVABLE, type: LedgerEntryType.CREDIT, amount: value.abs() },

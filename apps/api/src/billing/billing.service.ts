@@ -28,6 +28,8 @@ import { checkoutDurationSeconds } from '../common/observability/metrics';
 import { isSerializationFailure } from '../common/db/serialization-retry';
 import { financialYearLabel, safeTimeZone } from '../common/time/business-day';
 import { Clock } from '../common/time/clock';
+import { FeatureFlagsConfig } from '../config/domains/feature-flags.config';
+import { assertFeatureEnabled } from '../common/features/feature-catalogue';
 
 type Tx = Prisma.TransactionClient;
 
@@ -122,6 +124,7 @@ export class BillingService {
     private readonly ledger: LedgerPostingService,
     private readonly checkpoints: BillingCheckpoints,
     private readonly clock: Clock,
+    private readonly features: FeatureFlagsConfig,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -190,6 +193,8 @@ export class BillingService {
     //    deterministically whatever the stock position.
     const products = await this.loadProducts(actor.shopId, productIds(lines));
     const { isInterState } = await this.resolveInterState(actor.shopId, dto.customerId);
+    // A paused feature refuses new work only: the replay above still answers (roadmap 9.23).
+    if (paymentInput.udharAmount.greaterThan(0)) assertFeatureEnabled(this.features, 'credit_sales');
     if (paymentInput.udharAmount.greaterThan(0) && !dto.customerId) {
       throw new BadRequestException({ message: 'A customer must be selected for credit (udhar) billing.', code: 'CUSTOMER_REQUIRED' });
     }
@@ -284,7 +289,7 @@ export class BillingService {
               }
 
               // c. Gapless number.
-              const { number: invoiceNumber } = await this.invoiceNumbers.next(tx, actor.shopId, 'POS_INVOICE', `INV-${financialYear}-`);
+              const { number: invoiceNumber } = await this.invoiceNumbers.next(tx, actor.shopId, 'POS_INVOICE', financialYear);
 
               // d. Product rows (ascending id) BEFORE the invoice lines are inserted:
               //    inserting a line takes a shared lock on its product, and upgrading

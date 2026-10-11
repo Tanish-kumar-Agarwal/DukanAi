@@ -129,7 +129,10 @@ if (!ownerEmail || !ownerPassword) {
     const zone = profile.timezone ?? profile.settings?.timezone;
     if (shop.status !== 200) record('shop-profile', 'FAIL', `GET /api/shops/me -> ${answer(shop)}`);
     else if (missing.length) record('shop-profile', 'FAIL', `the receipt and the GST split need ${missing.join(', ')} in Settings > Shop Profile (state decides IGST)`);
-    else record('shop-profile', 'PASS', `${profile.name}, ${profile.state}${gstin ? `, GSTIN ${gstin}` : ', no GSTIN (receipts print without one)'}${zone ? `, ${zone}` : ''}`);
+    // Roadmap 9.24 (docs/compliance/GST_INVOICE_CHECK.md, G7): every sale is printed as a TAX INVOICE and charges GST,
+    // which only a registered person may do; the registration number must be on it (CGST Rule 46(a)).
+    else if (!gstin) record('shop-profile', 'FAIL', 'no GSTIN in Settings > Shop Profile: every receipt is a TAX INVOICE that charges GST, which needs the shop\'s registration number (CGST Rule 46(a))');
+    else record('shop-profile', 'PASS', `${profile.name}, ${profile.state}, GSTIN ${gstin}${zone ? `, ${zone}` : ''}`);
 
     // A tiny non-image upload: an unconfigured server answers 503 before reading it, a configured one 400 after sniffing it. The model is never called.
     const form = new FormData();

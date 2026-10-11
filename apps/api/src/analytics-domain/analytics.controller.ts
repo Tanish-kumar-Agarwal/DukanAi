@@ -9,6 +9,7 @@ import { AnalyticsPageService } from './services/analytics-page.service';
 import { DashboardService, MAX_LOW_STOCK_ITEMS } from './services/dashboard.service';
 import { DashboardInsightsService } from './services/dashboard-insights.service';
 import { CsvSink, ReportExportService } from './services/report-export.service';
+import { FeatureGate } from '../common/features/feature-gate';
 
 const READ_ROLES: Role[] = [Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER, Role.CASHIER, Role.VIEWER];
 const EXPORT_ROLES: Role[] = [Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER];
@@ -90,6 +91,7 @@ export class AnalyticsController {
   /** AI insights card: today's sales vs. forecast, restock suggestions, top product. */
   @Get('insights')
   @Roles(...READ_ROLES)
+  @FeatureGate('dashboard_insights', { reads: true })
   getInsights(@CurrentShop() shopId: string) {
     return this.insights.getInsights(shopId);
   }

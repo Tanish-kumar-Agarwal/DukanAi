@@ -8,7 +8,9 @@ import { Roles } from '../auth/roles.decorator';
 import { LimitOffsetQueryDto, limitOffsetArgs } from '../common/pagination';
 import { ApprovalDecisionDto } from '../common/dto/approval-decision.dto';
 import { CreateGoodsReceiptDto, InspectGoodsDto, ReceiveGoodsDto } from './dto/goods-receipt.dto';
+import { FeatureGate } from '../common/features/feature-gate';
 
+@FeatureGate('procurement')
 @Controller('grn')
 export class GrnController {
   constructor(private readonly repository: GrnRepository) {}

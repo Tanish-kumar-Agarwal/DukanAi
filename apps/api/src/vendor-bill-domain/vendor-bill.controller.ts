@@ -8,7 +8,9 @@ import { Roles } from '../auth/roles.decorator';
 import { LimitOffsetQueryDto, limitOffsetArgs } from '../common/pagination';
 import { ApprovalDecisionDto } from '../common/dto/approval-decision.dto';
 import { CreateVendorBillDto, PayVendorBillDto } from './dto/vendor-bill.dto';
+import { FeatureGate } from '../common/features/feature-gate';
 
+@FeatureGate('procurement')
 @Controller('vendor-bills')
 export class VendorBillController {
   constructor(private readonly repository: VendorBillRepository) {}

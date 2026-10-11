@@ -1261,7 +1261,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   bills across 31 March / 1 April: numbers, sequences, the cancellation
   window, the dashboard day and the invoice list agree with the FY tags and
   both days reconcile. `NumberSequence` rows are per prefix
-  (`INV-<FY>-`), which is why a new year starts at 000001 on its own.
+  (`INV-<yyYY>-`, e.g. `INV-2627-`; 15 characters, CGST Rule 46(b), 9.24),
+  which is why a new year starts at 000001 on its own.
 
 - 9.7 topology (`docs/DEPLOYMENT.md` "Production topology", decided and
   built): managed MySQL 8 over TLS (`DATABASE_URL` with `?sslaccept=strict`,
@@ -1712,6 +1713,56 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   are Loki's). `runbooks.spec.ts` also requires a dated **Walked** line
   and a §7 row per alert: a new alert is walked on the drill stack before
   it ships.
+
+- 9.23 support (`docs/SUPPORT.md`: channel, response targets per severity,
+  taking a report, pausing a feature; guides `docs/guides/{CASHIER_GUIDE,
+  OWNER_GUIDE,FAQ}.md`, written from the screens' own labels; the FAQ's
+  pilot section is filled by the pilot). Feature pause: `FeatureFlagsConfig`
+  (`FEATURE_<NAME>_ENABLED`, default true, `BooleanFromEnv`), the catalogue
+  `src/common/features/feature-catalogue.ts` and `FeatureGateGuard` (the
+  fifth `APP_GUARD`, after RolesGuard, so 401/403 come first): a gated
+  controller or handler (`@FeatureGate('ocr')`; writes only unless
+  `{ reads: true }`) answers 503 `FEATURE_PAUSED` with the feature named.
+  Credit sales, returns and cancellations are checked inside the services
+  AFTER replay detection (`assertFeatureEnabled`), so a retried document
+  committed before the pause is still answered. `feature_enabled{feature}`
+  is set at boot (Grafana "Paused features"); an unknown `FEATURE_*`
+  variable is warned about, never fatal. Compose (`${FEATURE_X:-true}`) and
+  the Kubernetes ConfigMap forward every switch; `feature-gate.spec.ts`
+  keeps the catalogue, the config class, `.env.example`, `.env.production`,
+  both compose files, the k8s files and SUPPORT.md in step. A new switch
+  touches all of them. `test/integration/feature-flags.integration-spec.ts`.
+- 9.24 compliance and privacy (`docs/privacy/{DATA_INVENTORY,
+  RETENTION_POLICY,PRIVACY_NOTICE,TERMS_FOR_SHOPS,DATA_REQUESTS}.md`,
+  `docs/compliance/GST_INVOICE_CHECK.md`; notice and terms are drafts for
+  the owner's advisor). The inventory is code: `src/privacy/personal-data.ts`
+  classifies every text/JSON column (identity, freeText, payload, network,
+  file, secret, keep with a reason) and `personal-data.spec.ts` fails on an
+  unclassified candidate column, a stale NOT_PERSONAL entry, or a retention
+  policy that disagrees with `RetentionConfig`: a new personal column gets
+  a class in the same change. `node dist/cli/shop-data export|suspend|
+  erase|erase-customer` (`src/privacy/shop-data.ts`, raw SQL on a plain
+  PrismaClient, every statement names the shop): export = every tenant
+  model's rows (credentials dropped) as JSONL + CSV books + documents,
+  media, imports, manifest, SHA256SUMS, tar.gz + .sha256; erase refuses an
+  ACTIVE shop and needs that shop's export archive, rewrites every
+  classified column by class (`[erased]` / `erased-<id>` / NULL / `{}`),
+  closes and anonymises the users, deletes sessions and the like, removes
+  files (media only when no other shop references the path), never touches
+  LedgerTransaction; erase-customer refuses a non-zero balance and keeps
+  name/address/`Invoices/` under the GST legal hold (a sale >= 50,000 still
+  inside `gstRetentionEnds`: 31 Dec of start year + 7). Ledger descriptions
+  carry no names (`Customer payment (CASH)`, `Opening balance`; migration
+  `20261011090000` redacted old rows by dropping and recreating the update
+  trigger): never write personal text into an immutable table. POS numbers
+  are GST serial numbers: `INV-<yyYY>-NNNNNN` / `RET-...`, 15 characters
+  (Rule 46(b) allows 16; the old `INV-2026-27-...` was 18),
+  `InvoiceNumberService` owns the format and refuses a longer one. The
+  pilot readiness check fails a shop without a GSTIN.
+  `test/integration/shop-data.integration-spec.ts` plants a marker in every
+  personal field and proves no text column of any table holds it after an
+  erasure, with the ledger unchanged. A restore re-applies the erasure
+  register (`docs/BACKUP_RESTORE.md` step 7).
 
 ## Toolchain
 

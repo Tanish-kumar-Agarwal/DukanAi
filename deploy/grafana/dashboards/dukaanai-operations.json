@@ -1249,6 +1249,67 @@
           "sort": "desc"
         }
       }
+    },
+    {
+      "id": 29,
+      "type": "stat",
+      "title": "Paused features (1 = paused)",
+      "description": "feature_enabled from the API: a feature the operator paused with FEATURE_<NAME>_ENABLED=false (roadmap 9.23, docs/SUPPORT.md). Anything red here is off for every shop until it is switched back on.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 49,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (feature) (1 - feature_enabled{job=\"dukaanai-api\"})",
+          "legendFormat": "{{feature}}"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
     }
   ],
   "templating": {

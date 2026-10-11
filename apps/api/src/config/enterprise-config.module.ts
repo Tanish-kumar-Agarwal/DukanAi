@@ -30,6 +30,7 @@ import { EventsFeatureConfig } from './domains/features/events-feature.config';
 import { InventoryFeatureConfig } from './domains/features/inventory-feature.config';
 import { ImportExportFeatureConfig } from './domains/features/import-export-feature.config';
 import { OcrFeatureConfig } from './domains/features/ocr-feature.config';
+import { FeatureFlagsConfig } from './domains/feature-flags.config';
 import { UploadConfig } from './domains/upload.config';
 import { BillingFeatureConfig } from './domains/features/billing-feature.config';
 
@@ -168,6 +169,7 @@ function validateConfig<T extends object>(configClass: T): T {
     { provide: OcrFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(OcrFeatureConfig)) },
     { provide: UploadConfig, useFactory: () => validateConfig(hydrateFromEnv(UploadConfig)) },
     { provide: BillingFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(BillingFeatureConfig)) },
+    { provide: FeatureFlagsConfig, useFactory: () => validateConfig(hydrateFromEnv(FeatureFlagsConfig)) },
   ],
   exports: [
     AppConfig,
@@ -197,6 +199,7 @@ function validateConfig<T extends object>(configClass: T): T {
     OcrFeatureConfig,
     UploadConfig,
     BillingFeatureConfig,
+    FeatureFlagsConfig,
   ],
 })
 export class EnterpriseConfigModule {}

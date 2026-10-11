@@ -26,6 +26,17 @@ data:
   SHUTDOWN_TIMEOUT_MS: "30000"
   HTTP_KEEP_ALIVE_TIMEOUT_MS: "65000"
   LOG_LEVEL: log
+  # Feature pause switches (roadmap 9.23, docs/SUPPORT.md): edit one to "false",
+  # then `kubectl rollout restart deployment/dukaanai-api`.
+  FEATURE_CREDIT_SALES_ENABLED: "true"
+  FEATURE_RETURNS_ENABLED: "true"
+  FEATURE_CANCELLATIONS_ENABLED: "true"
+  FEATURE_OCR_ENABLED: "true"
+  FEATURE_IMPORTS_ENABLED: "true"
+  FEATURE_DOCUMENTS_ENABLED: "true"
+  FEATURE_MEDIA_ENABLED: "true"
+  FEATURE_PROCUREMENT_ENABLED: "true"
+  FEATURE_DASHBOARD_INSIGHTS_ENABLED: "true"
   BACKUP_STATUS_DIR: /var/lib/dukaanai/backups/status
   # Backup sidecar (scripts/db/db-ops.sh backup-loop): once a day, the first
   # run a minute after the pod starts.

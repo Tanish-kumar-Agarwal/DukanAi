@@ -62,7 +62,7 @@ describe('production boot regressions', () => {
   const outputOf = (result: ReturnType<typeof boot>) => `${result.stdout ?? ''}${result.stderr ?? ''}`;
 
   /** The operator commands a runbook or docs/SECRETS.md tells an operator to run in the API container (roadmap 9.22). */
-  const commands = ['reconcile', 'revoke-all-sessions'].map((name) => ({ name, file: path.join(apiRoot, 'dist', 'cli', `${name}.js`) }));
+  const commands = ['reconcile', 'revoke-all-sessions', 'shop-data'].map((name) => ({ name, file: path.join(apiRoot, 'dist', 'cli', `${name}.js`) }));
 
   beforeAll(() => {
     if (!existsSync(entrypoint) || commands.some((c) => !existsSync(c.file))) {
@@ -81,7 +81,7 @@ describe('production boot regressions', () => {
       const help = run('--help');
       expect({ name, status: help.status, usage: help.stdout.startsWith(`usage: ${name}`) }).toEqual({ name, status: 0, usage: true });
       // Without a database it refuses with the reason, exit 2, no stack trace.
-      const bare = run(...(name === 'reconcile' ? ['--all-shops'] : []));
+      const bare = run(...({ reconcile: ['--all-shops'], 'shop-data': ['suspend', '--shop', 'x'] }[name] ?? []));
       expect({ name, status: bare.status, stderr: bare.stderr.trim() }).toEqual({ name, status: 2, stderr: 'error: DATABASE_URL is not set' });
     }
   }, 90_000);

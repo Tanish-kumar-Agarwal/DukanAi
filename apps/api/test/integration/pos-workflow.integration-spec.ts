@@ -208,7 +208,7 @@ describe('EXEC-006C POS workflow (integration)', () => {
     cashInvoiceId = result.invoice.id;
 
     expect(result.replayed).toBe(false);
-    expect(result.invoice.invoiceNumber).toMatch(/^INV-\d{4}-\d{2}-\d{6}$/);
+    expect(result.invoice.invoiceNumber).toMatch(/^INV-\d{4}-\d{6}$/);
     expect(result.invoice.status).toBe('COMPLETED');
     expect(num(result.invoice.totalAmount)).toBe(total);
     expect(num(result.invoice.subtotal)).toBe(320);

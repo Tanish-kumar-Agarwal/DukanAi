@@ -6,9 +6,11 @@ import { Roles } from '../auth/roles.decorator';
 import { MANAGEMENT_ROLES } from '../auth/role-sets';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { ScanBillDto } from './dto/scan-bill.dto';
+import { FeatureGate } from '../common/features/feature-gate';
 
 @ApiTags('ocr')
 @ApiBearerAuth()
+@FeatureGate('ocr')
 @Controller('ocr')
 export class OcrController {
   constructor(private readonly ocrService: OcrService) {}

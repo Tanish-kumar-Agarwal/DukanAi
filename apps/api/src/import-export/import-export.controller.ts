@@ -12,6 +12,7 @@ import { ImportRowsQueryDto, UploadImportDto } from './dto/upload-import.dto';
 import { assertImportFileContent } from './import-upload';
 import { importKindFromSlug, IMPORT_KIND_SLUGS, templateCsv } from './import-columns';
 import { ImportExportService } from './import-export.service';
+import { FeatureGate } from '../common/features/feature-gate';
 
 /**
  * Onboarding imports (roadmap 4.1, 9.20): products, customers with their
@@ -20,6 +21,7 @@ import { ImportExportService } from './import-export.service';
  * `dryRun=true` validates and plans every row and writes only the report;
  * `POST /imports/jobs/:id/apply` then runs that file for real.
  */
+@FeatureGate('imports')
 @Controller('imports')
 export class ImportExportController {
   constructor(

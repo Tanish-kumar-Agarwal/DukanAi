@@ -515,6 +515,15 @@ costing layer.
   Sales of one shop queue on the gapless number lock, so the transaction
   budget (`BILLING_GATEWAY_TIMEOUT_MS`, default 30 s) covers bursts of
   several hundred checkouts.
+- Document numbers are GST serial numbers (CGST Rule 46(b), Rule 53(1A)):
+  `INV-<yyYY>-NNNNNN` for a sale and `RET-<yyYY>-NNNNNN` for a return
+  (credit note), where `<yyYY>` is the financial year in four digits
+  (`2026-27` → `2627`): 15 characters, consecutive, one series per shop,
+  kind and financial year (`InvoiceNumberService`, which refuses to issue
+  anything over 16 characters or outside letters, digits, `-` and `/`).
+  Numbers issued before roadmap 9.24 (`INV-2026-27-000001`, 18 characters)
+  keep their own series; `docs/compliance/GST_INVOICE_CHECK.md` records the
+  check.
 - Redis stock keys are advisory. The sale path may pre-decrement them, the
   database decides, and every rejected or failed request restores its
   decrement. Redis being down or wrong never blocks or corrupts a sale, and
@@ -614,8 +623,8 @@ Prisma's `@default(now())` is the query engine's clock) and its stock
 movements; shifts open and close on it; repayments stamp it; the dashboard's
 business day is read from it. Production reads the system clock. The
 financial-year rollover spec replaces the provider with a settable clock and
-bills on 31 March 23:59 and 1 April 00:01 (Asia/Kolkata): `INV-2026-27-000003`
-is followed by `INV-2027-28-000001`, the return sequence restarts the same
+bills on 31 March 23:59 and 1 April 00:01 (Asia/Kolkata): `INV-2627-000003`
+is followed by `INV-2728-000001`, the return sequence restarts the same
 way, the old year's sequence rows and numbers are untouched (the unique key
 is `(shopId, financialYear, invoiceNumber)`), the same-day cancellation
 window flips with the business day, and the dashboard's `businessDate` and
