@@ -100,7 +100,10 @@ step "ops (roadmap 9.2): archive the binary logs, restore the pre-sale dump alon
 out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops binlog-archive --flush 2>&1)" || { printf '%s\n' "$out"; fail "db-ops binlog-archive"; }
 grep -qE "archived [1-9][0-9]* file" <<<"$out" || { printf '%s\n' "$out"; fail "no binary log was archived"; }
 out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops restore "$dump" --database dukaanai_dump_only --create --yes 2>&1)" || { printf '%s\n' "$out"; fail "restore of the dump alone"; }
-out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops restore "$dump" --database dukaanai_pitr_check --create --yes --to "$(date -u -d '+1 minute' '+%Y-%m-%d %H:%M:%S')" 2>&1)" || { printf '%s\n' "$out"; fail "point-in-time restore"; }
+# "Now" is past the last archived event by design: the archive was flushed just
+# above and nothing has written since, so --allow-short (restore to the end of
+# the archive) is the honest request; restore.sh refuses a later --to without it.
+out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops restore "$dump" --database dukaanai_pitr_check --create --yes --allow-short --to "$(date -u -d '+1 minute' '+%Y-%m-%d %H:%M:%S')" 2>&1)" || { printf '%s\n' "$out"; fail "point-in-time restore"; }
 grep -q "then replay " <<<"$out" || { printf '%s\n' "$out"; fail "the restore plan had no replay step"; }
 grep -q "^==> Replayed to " <<<"$out" || { printf '%s\n' "$out"; fail "the replay did not run"; }
 # A statement as root inside the mysql container (the password stays in its environment).
