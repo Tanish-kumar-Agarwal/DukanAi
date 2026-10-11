@@ -70,7 +70,7 @@ cleanup() {
   if [ "$KEEP" = "1" ]; then printf '\nKEEP=1: stack left running (%s, %s); env in %s\n' "$WEB_ORIGIN" "$API" "$WORK"; return; fi
   step "docker compose down -v (project $PROJECT)"
   docker rm -f smoke-client-a >/dev/null 2>&1 || true
-  "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  "${COMPOSE[@]}" --profile '*' down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -167,8 +167,11 @@ grep -q '^http_requests_total' <<<"$metrics" || fail "the internal scrape carrie
 printf '  404 from the internet, 401 inside without the token, %s series with it\n' "$(grep -c '^[a-z]' <<<"$metrics")"
 
 step "monitoring (profile ops): Prometheus scrapes the API with METRICS_TOKEN, expects the production backup kinds, ports on 127.0.0.1 only"
-"${COMPOSE[@]}" --profile ops up -d prometheus >/dev/null 2>&1 || fail "Prometheus did not start"
-PROM="http://127.0.0.1:${PROMETHEUS_PORT:-9090}"
+# Its own host port, so a Prometheus left by another stack (the reference smoke
+# runs one on 9090 in the same CI job) can never block this one from starting.
+export PROMETHEUS_PORT="${SMOKE_PROMETHEUS_PORT:-19090}"
+out="$("${COMPOSE[@]}" --profile ops up -d prometheus 2>&1)" || { printf '%s\n' "$out" >&2; fail "Prometheus did not start"; }
+PROM="http://127.0.0.1:${PROMETHEUS_PORT}"
 promq() { curl -fsS --get "$PROM/api/v1/query" --data-urlencode "query=$1" 2>/dev/null | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>{const r=JSON.parse(b).data.result;process.stdout.write(r.map((x)=>(x.metric.kind||'')+'='+x.value[1]).sort().join(','))})" 2>/dev/null || true; }
 up=""; kinds=""
 for _ in $(seq 1 45); do

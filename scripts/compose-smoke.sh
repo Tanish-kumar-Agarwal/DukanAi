@@ -41,7 +41,9 @@ fail() { printf '\nSMOKE FAILED: %s\n' "$*" >&2; "${COMPOSE[@]}" logs --no-color
 cleanup() {
   if [ "$KEEP" = "1" ]; then printf '\nKEEP=1: stack left running (%s, %s)\n' "$WEB" "$API"; return; fi
   step "docker compose down -v"
-  "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  # Every profile: a plain `down` leaves the profile services it did not name
+  # (the ops monitoring stack) running, holding their ports for the next stack.
+  "${COMPOSE[@]}" --profile '*' down -v --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
