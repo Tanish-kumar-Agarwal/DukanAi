@@ -151,6 +151,51 @@ test.describe('products page (6.2)', () => {
     expect(Number(stored.mrp)).toBe(168); // 150 + 12% GST
   });
 
+  test('a shelf price typed with "includes GST" is stored before GST, never billed above it, and the choice is remembered', async ({ page, request }) => {
+    const name = unique('Shelf priced item');
+    await page.goto('/products');
+    await page.getByRole('button', { name: 'Add Product' }).click();
+    const dialog = modal(page, 'Add New Product');
+    const preview = dialog.getByTestId('price-preview');
+    const inputs = dialog.locator('input');
+    await inputs.nth(0).fill(name);
+    await inputs.nth(3).fill('8.47');
+    await inputs.nth(4).fill('5');
+    await dialog.getByLabel('GST Rate').selectOption('EIGHTEEN');
+    // Before GST (the default): the form says what the customer pays.
+    await expect(preview).toHaveText('Customer pays ₹9.99 incl. GST · stored as ₹8.47 before GST');
+
+    // Ticking the box converts the field to the inclusive price; the stored price does not move.
+    await dialog.getByLabel('The selling price I type includes GST').check();
+    await expect(dialog.getByText('Selling Price incl. GST (₹) *')).toBeVisible();
+    await expect(inputs.nth(3)).toHaveValue('9.99');
+    // The shelf price: ₹10 at 18 % is stored as ₹8.47 (₹10.00 would need ₹8.4746), billing ₹9.99, never above ₹10.
+    await inputs.nth(3).fill('10');
+    await expect(preview).toHaveText('Customer pays ₹9.99 incl. GST · stored as ₹8.47 before GST');
+    await dialog.locator('input').last().fill('10');
+
+    const post = page.waitForResponse((r) => r.request().method() === 'POST' && isProductList(r.url()));
+    await dialog.getByRole('button', { name: 'Save Product' }).click();
+    const response = await post;
+    expect(response.status(), await response.text()).toBe(201);
+    expect(response.request().postDataJSON()).toMatchObject({ name, sellingPrice: 8.47, mrp: 10, gstRate: 'EIGHTEEN' });
+    const created = (await response.json()) as ApiProduct;
+    const stored = (await (await request.get(`${API_URL}/products/${created.id}`)).json()) as ApiProduct;
+    expect(Number(stored.sellingPrice)).toBe(8.47);
+    expect(Number(stored.mrp)).toBe(10);
+
+    // Remembered in this browser: the edit form opens in the same basis, showing the inclusive price.
+    await page.reload();
+    await searchProducts(page, name);
+    await openProductActions(page, created);
+    await page.getByRole('button', { name: 'Edit Product', exact: true }).click();
+    const edit = modal(page, `Edit Product: ${name}`);
+    await expect(edit.getByLabel('The selling price I type includes GST')).toBeChecked();
+    await expect(edit.locator('input').nth(3)).toHaveValue('9.99');
+    await edit.getByLabel('The selling price I type includes GST').uncheck();
+    await expect(edit.locator('input').nth(3)).toHaveValue('8.47');
+  });
+
   test('editing a product persists through the API and a reload', async ({ page, request }) => {
     const product = await createProduct(request, unique('Editable item'));
     const newName = unique('Edited item');

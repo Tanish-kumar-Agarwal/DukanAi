@@ -1207,7 +1207,16 @@ export interface ExpenseView {
   /** The stored payment mode, also on a pending expense when one was chosen: what "Mark as Paid" records. */
   paymentMode: string | null;
   date: string;
+  /** A receipt photo or PDF is attached (`GET /expenses/:id/receipt`). */
+  hasReceipt: boolean;
+  /** Its type (image/jpeg, image/png, application/pdf), null without one. */
+  receiptType: string | null;
 }
+
+/** What the expense form accepts as a receipt (the API's `expenseReceiptUploadPolicy`). */
+export const EXPENSE_RECEIPT_TYPES = ['image/jpeg', 'image/png', 'application/pdf'] as const;
+/** The API's cap for a receipt (`MAX_BILLING_DOCUMENT_BYTES`). */
+export const EXPENSE_RECEIPT_MAX_BYTES = 10 * 1024 * 1024;
 
 /** `GET /expenses/summary` (roadmap 6.7): this month over every expense, not the loaded page. */
 export interface ExpenseSummary {
@@ -1245,6 +1254,27 @@ export const expensesApi = {
   ) => patch<ExpenseView>(`/expenses/${id}`, data),
 
   delete: (id: string) => del(`/expenses/${id}`),
+
+  /**
+   * `POST /expenses/:id/receipt` (multipart field `file`): attaches the photo
+   * or PDF, or replaces the attached one (the API keeps the earlier file).
+   */
+  attachReceipt: (id: string, file: Blob, fileName: string) => {
+    const form = new FormData();
+    form.append('file', file, fileName);
+    return apiClient.post<ExpenseView>(`/expenses/${id}/receipt`, form, { timeout: 60_000 }).then(({ data }) => data);
+  },
+
+  /** `GET /expenses/:id/receipt`: the attached file as a Blob of its stored type. */
+  receipt: async (id: string): Promise<Blob> => {
+    const response = await apiClient
+      .get<Blob>(`/expenses/${id}/receipt`, { responseType: 'blob', timeout: EXPORT_REQUEST_TIMEOUT_MS })
+      .catch(async (error: unknown) => {
+        throw await withReadableErrorBody(error);
+      });
+    const type = String(response.headers?.['content-type'] ?? 'application/octet-stream');
+    return response.data instanceof Blob ? response.data : new Blob([response.data as BlobPart], { type });
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -1433,6 +1463,16 @@ export const sessionsApi = {
 
   /** `DELETE /auth/sessions/:id` — ends that session everywhere it is used. */
   revoke: (id: string) => del(`/auth/sessions/${id}`),
+};
+
+export const accountApi = {
+  /**
+   * `POST /auth/change-password` — proves the current password and sets the
+   * new one (12-72 characters, no common password); the API then ends every
+   * session of the account, this one included, and emails the account.
+   */
+  changePassword: (currentPassword: string, newPassword: string) =>
+    post<{ message: string }>('/auth/change-password', { currentPassword, newPassword }),
 };
 
 // ---------------------------------------------------------------------------

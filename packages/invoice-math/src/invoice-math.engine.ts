@@ -106,6 +106,30 @@ export function inclusiveUnitPrice(price: NumericInput, gstRate: NumericInput | 
 }
 
 /**
+ * The before-GST unit price for a GST-inclusive one (the price on the shelf,
+ * what the owner types with "price includes GST"): the largest price in paise
+ * whose `inclusiveUnitPrice` does not exceed `inclusivePrice`. The customer
+ * never pays more than the typed price, and an MRP equal to it always holds;
+ * the paise rounding can leave one unit a paisa or two under it (₹10 at 18%
+ * stores ₹8.47, which bills ₹9.99).
+ */
+export function exclusiveUnitPrice(inclusivePrice: NumericInput, gstRate: NumericInput | string, cessPercent: NumericInput = 0): Decimal {
+  const target = money(toDecimal(inclusivePrice));
+  if (target.isNegative() || target.greaterThan(MONEY_MAX)) {
+    throw new InvoiceMathError(`Price ${target.toString()} must be between 0 and ${MONEY_MAX}.`, 'ERR_INVALID_PRICE');
+  }
+  const rate =
+    typeof gstRate === 'string' && !/^\s*\d+(\.\d+)?\s*$/.test(gstRate) ? resolveGstRate({ gstRateStr: gstRate.trim() }) : resolveGstRate({ gstRate });
+  const cess = resolveCessRate(cessPercent, 'the unit price');
+  const paisa = new Decimal('0.01');
+  // Start from the exact quotient rounded down, then settle on the paise grid.
+  let price = target.div(new Decimal(1).plus(rate.plus(cess).div(100))).toDecimalPlaces(2, Decimal.ROUND_DOWN);
+  while (inclusiveUnitPrice(price.plus(paisa), gstRate, cessPercent).lessThanOrEqualTo(target)) price = price.plus(paisa);
+  while (price.greaterThan(0) && inclusiveUnitPrice(price, gstRate, cessPercent).greaterThan(target)) price = price.minus(paisa);
+  return price;
+}
+
+/**
  * The discount a percentage limit yields on a calculated invoice, under the
  * engine's own rounding (half-up to the paisa), for a discount-authority
  * check that compares amounts rather than re-derived percentages (audit B4:

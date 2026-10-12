@@ -197,7 +197,8 @@ Roadmap 9.14, in `.github/workflows/release.yml` and `.github/workflows/ci.yml`:
   (audit 2026-10-11, P1-13: the allowlists matched by path alone).
 - **Dependencies.** `npm audit --omit=dev --audit-level=high` stays green in
   the lint job, and `.github/dependabot.yml` opens weekly grouped pull
-  requests for npm (the root and each workspace), the Dockerfiles' base
+  requests for npm (from the root, which covers every workspace and rewrites
+  the one root lockfile), the Dockerfiles' base
   images and the compose files' pinned images (MySQL, Redis, Caddy, the
   monitoring stack) next to the github-actions pin updates. The CI service
   containers and `scripts/certify/migrate-diff.sh` carry the same MySQL /

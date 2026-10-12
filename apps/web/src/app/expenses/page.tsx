@@ -4,12 +4,13 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Card } from '@/components/ui/Card';
 import { 
   Receipt, Plus, Search, Filter, MoreVertical, 
-  TrendingDown, Zap, Building, CreditCard, ChevronDown, CheckCircle2, AlertCircle, FileText
+  TrendingDown, Zap, Building, CreditCard, ChevronDown, CheckCircle2, AlertCircle, FileText, Paperclip, Download
 } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
 import { AnimatePresence, motion } from 'framer-motion';
-import { expensesApi, type ExpenseSummary, type ExpenseView } from '@/lib/api-client';
+import { EXPENSE_RECEIPT_MAX_BYTES, EXPENSE_RECEIPT_TYPES, expensesApi, type ExpenseSummary, type ExpenseView } from '@/lib/api-client';
+import { DOCUMENT_PHOTO_MAX_EDGE, photoForUpload } from '@/lib/photo';
 import { describeApiError } from '@/lib/api-error';
 import { useSession } from 'next-auth/react';
 import { isManagement } from '@/components/customers/permissions';
@@ -22,6 +23,19 @@ const CATEGORY_COLORS: Record<string, string> = {
   'Supplies': 'bg-purple-100 text-purple-600',
   'Other': 'bg-gray-100 text-gray-600'
 };
+
+const RECEIPT_EXTENSIONS: Record<string, string> = { 'image/jpeg': '.jpg', 'image/png': '.png', 'application/pdf': '.pdf' };
+
+/** The receipt as it is uploaded: a phone photo scaled to document size (roadmap 9.19), a PDF as it is. */
+async function receiptForUpload(file: File): Promise<{ blob: Blob; fileName: string }> {
+  const blob = file.type.startsWith('image/') ? await photoForUpload(file, DOCUMENT_PHOTO_MAX_EDGE) : file;
+  if (blob.size > EXPENSE_RECEIPT_MAX_BYTES) throw new Error('The receipt is larger than 10 MB. Choose a smaller photo or PDF.');
+  return { blob, fileName: `receipt${RECEIPT_EXTENSIONS[blob.type] ?? ''}` };
+}
+
+function formatBytes(bytes: number): string {
+  return bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
 
 const CATEGORY_ICONS: Record<string, React.ComponentType<{ size?: number | string }>> = {
   'Rent': Building,
@@ -108,6 +122,16 @@ export default function ExpensesPage() {
   const savingRef = useRef(false);
   // Rows with a Mark as Paid / Delete request in flight.
   const busyRows = useRef(new Set<string>());
+  // The receipt chosen in the form, uploaded after the expense is saved (POST /expenses/:id/receipt).
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
+  // The receipt being viewed: loaded as a Blob (the request carries the session), shown from an object URL.
+  const [receiptView, setReceiptView] = useState<{ expense: ExpenseView; url: string | null; type: string; error: string | null } | null>(null);
+  const receiptRequest = useRef(0);
+  const receiptUrl = receiptView?.url ?? null;
+  useEffect(() => () => {
+    if (receiptUrl) URL.revokeObjectURL(receiptUrl);
+  }, [receiptUrl]);
 
   const figure = (value: number | undefined) => (summary && value !== undefined ? `₹${value.toLocaleString('en-IN')}` : '—');
 
@@ -129,6 +153,44 @@ export default function ExpensesPage() {
   const resetForm = () => {
     setNewDesc(''); setNewAmount(''); setNewCategory('Supplies'); setNewMode('Cash'); setNewStatus('Paid');
     setEditing(null);
+    setReceiptFile(null);
+    setReceiptError(null);
+  };
+
+  const chooseReceipt = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    // The same file chosen again must fire `change` next time too.
+    event.target.value = '';
+    if (!file) return;
+    if (!(EXPENSE_RECEIPT_TYPES as readonly string[]).includes(file.type)) {
+      setReceiptError('Choose a JPEG or PNG photo, or a PDF.');
+      return;
+    }
+    // A photo is scaled down before it is sent; a PDF goes as it is, so it must fit the cap already.
+    if (file.type === 'application/pdf' && file.size > EXPENSE_RECEIPT_MAX_BYTES) {
+      setReceiptError('The PDF is larger than 10 MB.');
+      return;
+    }
+    setReceiptError(null);
+    setReceiptFile(file);
+  };
+
+  const openReceipt = async (expense: ExpenseView) => {
+    const request = ++receiptRequest.current;
+    setReceiptView({ expense, url: null, type: expense.receiptType ?? '', error: null });
+    try {
+      const blob = await expensesApi.receipt(expense.id);
+      if (request !== receiptRequest.current) return;
+      setReceiptView({ expense, url: URL.createObjectURL(blob), type: blob.type || expense.receiptType || '', error: null });
+    } catch (err) {
+      if (request !== receiptRequest.current) return;
+      setReceiptView({ expense, url: null, type: expense.receiptType ?? '', error: describeApiError(err, 'Loading the receipt (GET /expenses/:id/receipt)') });
+    }
+  };
+
+  const closeReceipt = () => {
+    receiptRequest.current++;
+    setReceiptView(null);
   };
 
   const openEdit = (expense: ExpenseView) => {
@@ -155,15 +217,27 @@ export default function ExpensesPage() {
       paymentMode: newStatus === 'Paid' ? newMode : undefined,
     };
     try {
+      let saved: ExpenseView;
       if (editing) {
-        const updated = await expensesApi.update(editing.id, body);
-        setExpenses((current) => current.map((ex) => (ex.id === updated.id ? updated : ex)));
-        toast(`"${updated.description}" updated`, 'success');
+        saved = await expensesApi.update(editing.id, body);
+        setExpenses((current) => current.map((ex) => (ex.id === saved.id ? saved : ex)));
       } else {
-        const created = await expensesApi.create(body);
-        setExpenses([created, ...expenses]);
-        toast(`₹${newAmount} recorded under ${newCategory}`, 'success');
+        saved = await expensesApi.create(body);
+        setExpenses((current) => [saved, ...current]);
       }
+      let receiptNote = '';
+      if (receiptFile) {
+        // The expense is saved first; a receipt that fails to upload never loses it.
+        try {
+          const { blob, fileName } = await receiptForUpload(receiptFile);
+          const withReceipt = await expensesApi.attachReceipt(saved.id, blob, fileName);
+          setExpenses((current) => current.map((ex) => (ex.id === withReceipt.id ? withReceipt : ex)));
+          receiptNote = ' with its receipt';
+        } catch (err) {
+          toast(`"${saved.description}" was saved, but the receipt was not attached: ${describeApiError(err, 'Attaching the receipt (POST /expenses/:id/receipt)')} Open Edit to attach it again.`, 'warning');
+        }
+      }
+      toast(editing ? `"${saved.description}" updated${receiptNote}` : `₹${newAmount} recorded under ${newCategory}${receiptNote}`, 'success');
       setIsAddModalOpen(false);
       resetForm();
       refreshSummary();
@@ -230,7 +304,7 @@ export default function ExpensesPage() {
         </div>
         {canManage && (
         <button 
-          onClick={() => setIsAddModalOpen(true)}
+          onClick={() => { resetForm(); setIsAddModalOpen(true); }}
           className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg shadow-purple-500/30 transition-all"
         >
           <Plus size={18} />
@@ -363,6 +437,16 @@ export default function ExpensesPage() {
                         <div>
                           <span className="font-bold text-gray-800 block">{expense.description}</span>
                           <span className="text-xs text-gray-400 font-mono mt-0.5 block">{expense.id}</span>
+                          {expense.hasReceipt && (
+                            <button
+                              type="button"
+                              onClick={() => void openReceipt(expense)}
+                              aria-label={`View receipt for ${expense.description}`}
+                              className="mt-1 inline-flex items-center gap-1 text-xs font-bold text-[#8B5CF6] hover:underline"
+                            >
+                              <Paperclip size={12} /> Receipt
+                            </button>
+                          )}
                         </div>
                       </div>
                     </td>
@@ -502,20 +586,71 @@ export default function ExpensesPage() {
           </div>
           
           <div>
-            <label className="text-sm font-medium">Attach Receipt (Optional)</label>
-            <div className="mt-1 w-full border-2 border-dashed border-gray-200 rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer hover:border-[#8B5CF6] hover:bg-purple-50/30 transition-colors">
-              <FileText size={20} className="text-gray-400 mb-2" />
-              <p className="text-xs text-gray-500">Click to upload photo or PDF</p>
+            <label htmlFor="expense-receipt" className="text-sm font-medium">Attach Receipt (Optional)</label>
+            <label
+              htmlFor="expense-receipt"
+              data-testid="expense-receipt-drop"
+              className="mt-1 w-full border-2 border-dashed border-gray-200 rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer hover:border-[#8B5CF6] hover:bg-purple-50/30 transition-colors"
+            >
+              {receiptFile ? <Paperclip size={20} className="text-[#8B5CF6] mb-2" /> : <FileText size={20} className="text-gray-400 mb-2" />}
+              <p className="text-xs text-gray-500 text-center break-all">
+                {receiptFile
+                  ? `${receiptFile.name} (${formatBytes(receiptFile.size)}) will be attached when you save`
+                  : editing?.hasReceipt
+                    ? 'A receipt is attached. Click to replace it with another photo or PDF'
+                    : 'Click to upload photo or PDF'}
+              </p>
+            </label>
+            <input
+              id="expense-receipt"
+              type="file"
+              accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf"
+              onChange={chooseReceipt}
+              className="sr-only"
+            />
+            <div className="flex items-center justify-between mt-1">
+              {receiptError ? <p role="alert" className="text-xs text-red-600">{receiptError}</p> : <span />}
+              {receiptFile && (
+                <button type="button" onClick={() => setReceiptFile(null)} className="text-xs font-medium text-gray-500 hover:text-red-600">
+                  Don&apos;t attach this file
+                </button>
+              )}
             </div>
           </div>
 
           <div className="flex justify-end gap-2 pt-4 border-t mt-6">
-            <button type="button" onClick={() => setIsAddModalOpen(false)} className="px-4 py-2 border rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
+            <button type="button" onClick={() => { setIsAddModalOpen(false); resetForm(); }} className="px-4 py-2 border rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
             <button type="submit" disabled={saving} aria-busy={saving} className="px-4 py-2 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-lg text-sm font-bold shadow-lg shadow-purple-500/30">{saving ? 'Saving…' : 'Save Expense'}</button>
           </div>
         </form>
       </Modal>
 
+      {/* The attached receipt: a photo shown in place, a PDF offered for download (the page's CSP embeds no frames). */}
+      <Modal isOpen={receiptView !== null} onClose={closeReceipt} title={receiptView ? `Receipt: ${receiptView.expense.description}` : 'Receipt'} size="lg">
+        {receiptView?.error ? (
+          <div role="alert" className="flex items-center gap-3 rounded-lg border border-red-100 bg-red-50 p-4 text-sm text-red-600">
+            <AlertCircle size={16} className="flex-shrink-0" />
+            <span>{receiptView.error}</span>
+          </div>
+        ) : !receiptView?.url ? (
+          <p className="text-sm text-gray-500 text-center py-8">Loading receipt…</p>
+        ) : receiptView.type.startsWith('image/') ? (
+          <img src={receiptView.url} alt={`Receipt for ${receiptView.expense.description}`} className="max-h-[65vh] w-auto mx-auto rounded-lg border border-gray-100" />
+        ) : (
+          <p className="text-sm text-gray-600 text-center py-6">This receipt is a PDF. Download it to open it.</p>
+        )}
+        {receiptView?.url && (
+          <div className="flex justify-end mt-4">
+            <a
+              href={receiptView.url}
+              download={`receipt-${receiptView.expense.id}${RECEIPT_EXTENSIONS[receiptView.type] ?? ''}`}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-lg text-sm font-bold"
+            >
+              <Download size={16} /> Download
+            </a>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

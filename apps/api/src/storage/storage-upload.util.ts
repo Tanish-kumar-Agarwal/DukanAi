@@ -29,6 +29,23 @@ export const billingDocumentUploadPolicy: UploadPolicy = {
   allowedExtensions: ALLOWED_FILE_EXTENSIONS,
 };
 
+/** An expense receipt: a phone photo (JPEG / PNG) or a PDF, up to the billing document cap. */
+export const expenseReceiptUploadPolicy: UploadPolicy = {
+  maxBytes: MAX_BILLING_DOCUMENT_BYTES,
+  allowedMimeTypes: new Set([...IMAGE_MIME_TYPES, ...PDF_MIME_TYPES]),
+  allowedExtensions: new Set(['.jpg', '.jpeg', '.png', '.pdf']),
+};
+
+/** Multer's filter for expense receipts: the declared type and extension, before a byte is stored. */
+export function expenseReceiptFileFilter(_request: unknown, file: Express.Multer.File, callback: FileFilterCallback): void {
+  try {
+    validateUploadedFile(file, expenseReceiptUploadPolicy);
+    callback(null, true);
+  } catch (error) {
+    callback(error instanceof Error ? error : new BadRequestException(), false);
+  }
+}
+
 export const cloudUploadPolicy: UploadPolicy = {
   maxBytes: MAX_CLOUD_UPLOAD_BYTES,
   allowedMimeTypes: ALLOWED_MIME_TYPES,

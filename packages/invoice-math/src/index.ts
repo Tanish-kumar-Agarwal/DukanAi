@@ -1,4 +1,4 @@
-export { InvoiceMathEngine, deriveInvoicePaymentMode, allocateProportionally, inclusiveUnitPrice, discountLimitAmounts, costOfGoodsSlice } from './invoice-math.engine';
+export { InvoiceMathEngine, deriveInvoicePaymentMode, allocateProportionally, inclusiveUnitPrice, exclusiveUnitPrice, discountLimitAmounts, costOfGoodsSlice } from './invoice-math.engine';
 export { InvoiceMathError } from './invoice-math.error';
 export type { InvoiceMathErrorCode } from './invoice-math.error';
 export {

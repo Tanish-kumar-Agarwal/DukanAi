@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { signIn, useSession } from 'next-auth/react';
 import { motion } from 'framer-motion';
-import { ShoppingBag, Lock, Mail, ArrowRight, AlertCircle } from 'lucide-react';
+import { ShoppingBag, Lock, Mail, ArrowRight, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useToast } from '@/components/ui/Toast';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
 import { sanitizeCallbackUrl } from '@/lib/safe-callback-url';
@@ -30,6 +30,8 @@ function LoginPageContent() {
   // parsed against this origin so the parameter cannot redirect off-site
   // (`//evil`, `/\evil` and absolute URLs all fall back, roadmap 6.4).
   const callbackUrl = sanitizeCallbackUrl(searchParams.get('callbackUrl'), typeof window === 'undefined' ? '' : window.location.origin);
+  // Settings › Change password signs every session out and lands here.
+  const passwordChanged = searchParams.get('notice') === 'password-changed';
 
   // If already authenticated (or auth is bypassed), redirect away from login
   useEffect(() => {
@@ -132,6 +134,13 @@ function LoginPageContent() {
               Log in to your DukaanAI terminal
             </p>
           </div>
+
+          {passwordChanged && !error && (
+            <div role="status" className="flex items-center gap-2.5 p-3 mb-6 bg-green-50 border border-green-200 rounded-xl text-sm font-medium text-green-700">
+              <CheckCircle2 size={16} className="shrink-0" />
+              <span>Your password was changed and every session was signed out. Sign in with the new password.</span>
+            </div>
+          )}
 
           {/* --- Error banner --- */}
           {error && (

@@ -41,7 +41,11 @@ getting help. Button names are exactly what the screen shows.
 
 - **Adding a product:** **Products / Stock › Add Product**. The cost price
   is required. **Initial Stock** becomes the opening balance. Leave SKU
-  blank and the app numbers it for you.
+  blank and the app numbers it for you. The selling price is before GST
+  unless you tick **The selling price I type includes GST**: then type the
+  shelf price and the app works out the price before GST. Either way the
+  form shows **Customer pays ₹… incl. GST**; check it against the price on
+  the pack. The MRP can never be below what the customer pays.
 - **Goods received, damage, a recount:** use the product's row menu ›
   **Update Stock**. A positive quantity adds stock and a negative one
   removes it. Pick the **Reason** (Correction, Manual count, Damage, Loss,
@@ -54,7 +58,8 @@ getting help. Button names are exactly what the screen shows.
 - **Low stock:** the dashboard's **Low stock** card, the products' **Low
   Stock** badge (at or below the reorder point, 10 unless set), and
   **Inventory › Low Stock**. **Inventory › Batches & Expiry** lists batches
-  that are expiring or expired.
+  that are expiring or expired; **Filters** shows only the expired, the
+  expiring within 30 days, the safe or the depleted ones.
 
 ## 3. Customers and credit (udhar)
 
@@ -139,5 +144,7 @@ getting help. Button names are exactly what the screen shows.
 - Everyone signs in with their own account. Never share passwords.
 - **Settings › Account & Security** lists your signed-in devices. **End
   session** signs one out; **Sign out** signs you out everywhere.
-- To change your password, use **Forgot?** on the sign-in page. A reset
-  signs you out of every device.
+- To change your password: **Settings › Account & Security › Change
+  password** (current password, then the new one twice). Every device is
+  signed out and you sign in again with the new one. Forgotten it? Use
+  **Forgot?** on the sign-in page; a reset also signs out every device.

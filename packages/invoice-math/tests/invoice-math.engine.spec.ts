@@ -1,4 +1,4 @@
-import { InvoiceMathEngine, allocateProportionally, costOfGoodsSlice, discountLimitAmounts, inclusiveUnitPrice } from '../src/invoice-math.engine';
+import { InvoiceMathEngine, allocateProportionally, costOfGoodsSlice, discountLimitAmounts, exclusiveUnitPrice, inclusiveUnitPrice } from '../src/invoice-math.engine';
 import { Decimal } from '../src/decimal';
 import { InvoiceMathError } from '../src/invoice-math.error';
 
@@ -363,6 +363,40 @@ describe('InvoiceMathEngine.calculate: allocation and tiny totals (roadmap 3.1)'
     expect(result.roundOff.toNumber()).toBe(-0.4);
     expect(result.payment?.paymentMode).toBe('CASH');
     expect(result.subtotal.minus(result.totalDiscount).plus(result.totalTax).plus(result.roundOff).toNumber()).toBe(0);
+  });
+});
+
+describe('exclusiveUnitPrice (a GST-inclusive shelf price typed into the product form)', () => {
+  it('is the before-GST price that bills the typed price, or the paise just under it', () => {
+    expect(exclusiveUnitPrice(118, 'EIGHTEEN').toFixed(2)).toBe('100.00');
+    expect(exclusiveUnitPrice(10, 'EIGHTEEN').toFixed(2)).toBe('8.47');
+    expect(exclusiveUnitPrice(42, 'TWELVE').toFixed(2)).toBe('37.50');
+    expect(exclusiveUnitPrice(100, 'ZERO').toFixed(2)).toBe('100.00');
+    expect(exclusiveUnitPrice(1400, 'TWENTYEIGHT', 12).toFixed(2)).toBe('1000.00');
+    expect(exclusiveUnitPrice(0, 'EIGHTEEN').toFixed(2)).toBe('0.00');
+  });
+
+  it('never bills above the typed price, and is the largest price in paise that does not', () => {
+    const slabs = ['ZERO', 'FIVE', 'TWELVE', 'EIGHTEEN', 'TWENTYEIGHT'];
+    for (let paise = 1; paise <= 20000; paise += 11) {
+      const typed = new Decimal(paise).div(100);
+      for (const slab of slabs) {
+        const cess = slab === 'TWENTYEIGHT' ? 12 : 0;
+        const price = exclusiveUnitPrice(typed, slab, cess);
+        expect(inclusiveUnitPrice(price, slab, cess).lessThanOrEqualTo(typed)).toBe(true);
+        expect(inclusiveUnitPrice(price.plus('0.01'), slab, cess).greaterThan(typed)).toBe(true);
+      }
+    }
+  });
+
+  it('round-trips a stored before-GST price through its inclusive price', () => {
+    for (const [price, slab] of [[8.47, 'EIGHTEEN'], [37.5, 'TWELVE'], [10.05, 'EIGHTEEN'], [0.5, 'FIVE']] as const) {
+      expect(exclusiveUnitPrice(inclusiveUnitPrice(price, slab), slab).toFixed(2)).toBe(new Decimal(price).toFixed(2));
+    }
+  });
+
+  it('refuses a negative or out-of-range price like inclusiveUnitPrice', () => {
+    expect(() => exclusiveUnitPrice(-1, 'EIGHTEEN')).toThrow(InvoiceMathError);
   });
 });
 

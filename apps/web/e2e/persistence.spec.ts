@@ -370,6 +370,25 @@ test.describe('employees', () => {
   });
 });
 
+/** A real JPEG rendered by the browser (the API sniffs the bytes, so a stub would be rejected). */
+async function renderJpeg(page: Page, text: string): Promise<Buffer> {
+  const dataUrl = await page.evaluate((label) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 320;
+    canvas.height = 200;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#111111';
+    ctx.font = '20px sans-serif';
+    ctx.fillText(label, 16, 60);
+    return canvas.toDataURL('image/jpeg', 0.9);
+  }, text);
+  return Buffer.from(dataUrl.split(',')[1], 'base64');
+}
+
+const MINIMAL_PDF = Buffer.from('%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n');
+
 test.describe('expenses', () => {
   test('recording, marking as paid and deleting an expense persist on the server', async ({ page, request }) => {
     const description = unique('Recorded expense');
@@ -409,6 +428,70 @@ test.describe('expenses', () => {
     await page.reload();
     await expect(page.getByRole('button', { name: `Actions for ${description}` })).toHaveCount(0);
     expect(await find()).toBeUndefined();
+  });
+
+  test('a receipt attached in the form is stored on the server, opens from the list and is replaced from Edit', async ({ page, request }) => {
+    const description = unique('Receipt expense');
+    type Row = { id: string; description: string; hasReceipt: boolean; receiptType: string | null };
+    const find = async () => (await json<Row[]>(await request.get(`${API_URL}/expenses?take=100`))).find((e) => e.description === description);
+    const receiptPost = () => page.waitForResponse((r) => r.request().method() === 'POST' && /\/expenses\/[^/]+\/receipt$/.test(new URL(r.url()).pathname));
+
+    await page.goto('/expenses');
+    const jpeg = await renderJpeg(page, `Receipt for ${description}`);
+    await page.getByRole('button', { name: 'Record Expense' }).click();
+    const dialog = modal(page, 'Record New Expense');
+    await dialog.locator('input').nth(0).fill(description);
+    await dialog.locator('input').nth(1).fill('450');
+    await dialog.locator('select').first().selectOption('Supplies');
+
+    // A type the API refuses is caught in the form.
+    await dialog.locator('#expense-receipt').setInputFiles({ name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('not a receipt') });
+    await expect(dialog.getByRole('alert')).toHaveText('Choose a JPEG or PNG photo, or a PDF.');
+
+    await dialog.locator('#expense-receipt').setInputFiles({ name: 'bill.jpg', mimeType: 'image/jpeg', buffer: jpeg });
+    await expect(dialog.getByTestId('expense-receipt-drop')).toContainText('bill.jpg');
+    const created = page.waitForResponse((r) => r.request().method() === 'POST' && isPath('/expenses')(r));
+    const attached = receiptPost();
+    await dialog.locator('button[type="submit"]').click();
+    expect((await created).status()).toBe(201);
+    expect((await attached).status(), await (await attached).text()).toBe(200);
+    await expect(page.getByText('₹450 recorded under Supplies with its receipt')).toBeVisible();
+
+    // Persisted: after a reload the list offers it, and the API serves the same bytes.
+    await page.reload();
+    const row = await find();
+    expect(row).toMatchObject({ hasReceipt: true, receiptType: 'image/jpeg' });
+    const served = await request.get(`${API_URL}/expenses/${row!.id}/receipt`);
+    expect(served.status()).toBe(200);
+    expect(Buffer.from(await served.body()).equals(jpeg)).toBe(true);
+
+    await page.getByRole('button', { name: `View receipt for ${description}` }).click();
+    const viewer = modal(page, `Receipt: ${description}`);
+    const image = viewer.getByRole('img', { name: `Receipt for ${description}` });
+    await expect(image).toBeVisible();
+    await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(320);
+    const download = page.waitForEvent('download');
+    await viewer.getByRole('link', { name: 'Download' }).click();
+    expect((await download).suggestedFilename()).toBe(`receipt-${row!.id}.jpg`);
+    await page.keyboard.press('Escape');
+
+    // Edit replaces it with a PDF.
+    await page.getByRole('button', { name: `Actions for ${description}` }).click();
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    const editDialog = modal(page, `Edit Expense: ${description}`);
+    await expect(editDialog.getByTestId('expense-receipt-drop')).toContainText('A receipt is attached');
+    await editDialog.locator('#expense-receipt').setInputFiles({ name: 'invoice.pdf', mimeType: 'application/pdf', buffer: MINIMAL_PDF });
+    const updated = page.waitForResponse((r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname.includes('/expenses/'));
+    const replaced = receiptPost();
+    await editDialog.locator('button[type="submit"]').click();
+    expect((await updated).status()).toBe(200);
+    expect((await replaced).status()).toBe(200);
+    await expect(page.getByText(`"${description}" updated with its receipt`)).toBeVisible();
+
+    await page.reload();
+    expect(await find()).toMatchObject({ hasReceipt: true, receiptType: 'application/pdf' });
+    await page.getByRole('button', { name: `View receipt for ${description}` }).click();
+    await expect(modal(page, `Receipt: ${description}`).getByText('This receipt is a PDF. Download it to open it.')).toBeVisible();
   });
 });
 

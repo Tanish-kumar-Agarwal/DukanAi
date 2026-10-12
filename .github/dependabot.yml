@@ -14,14 +14,13 @@ updates:
       actions:
         patterns: ["*"]
 
-  # One npm manifest per workspace (the root and each app/package); Dependabot
-  # needs the directory of every package.json it should maintain.
+  # npm workspaces from the root only: Dependabot then reads every workspace's
+  # package.json through the root's `workspaces` and rewrites the one root
+  # package-lock.json with them. Listing the workspace directories as well
+  # (as this file once did) makes pull requests that change a workspace's
+  # package.json without the root lockfile, and `npm ci` fails on every one.
   - package-ecosystem: npm
-    directories:
-      - /
-      - /apps/api
-      - /apps/web
-      - /packages/invoice-math
+    directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 10

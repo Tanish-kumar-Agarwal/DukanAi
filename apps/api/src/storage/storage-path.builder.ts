@@ -86,6 +86,27 @@ export class StoragePathBuilder {
   }
 
   /**
+   * Where an expense's receipts live.
+   * Format: data/storage/{shopId}/Expenses/{expenseId}
+   */
+  getExpenseDirectory(shopId: string, expenseId: string): string {
+    return this.secureJoin(this.getShopRoot(shopId), 'Expenses', this.sanitizeSegment(expenseId));
+  }
+
+  /**
+   * The absolute path of a shop-relative one (`relativeToShop`'s inverse),
+   * contained in the shop root or refused.
+   */
+  fromShopRelative(shopId: string, relativePath: string): string {
+    const shopRoot = this.getShopRoot(shopId);
+    const absolute = path.resolve(shopRoot, ...relativePath.split('/'));
+    if (!StoragePathBuilder.isContained(shopRoot, absolute) || absolute === shopRoot) {
+      throw new BadRequestException('Path is outside the shop storage');
+    }
+    return absolute;
+  }
+
+  /**
    * Path for tenant-specific system files.
    * Format: data/storage/{shopId}/System/{filename}
    */

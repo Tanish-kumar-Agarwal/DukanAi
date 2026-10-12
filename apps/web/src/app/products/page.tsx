@@ -16,7 +16,7 @@ import apiClient from '@/lib/api';
 import { describeApiError } from '@/lib/api-error';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
 import { gstLabel } from '@/components/pos/format';
-import { inclusiveUnitPrice } from '@dukaanai/invoice-math';
+import { exclusiveUnitPrice, inclusiveUnitPrice } from '@dukaanai/invoice-math';
 import type { Product, GstRate, ProductUnit } from '@/types';
 import { AnimatePresence, motion } from 'framer-motion';
 
@@ -82,6 +82,9 @@ interface ProductForm {
 
 const EMPTY_FORM: ProductForm = { name: '', sku: '', barcode: '', category: '', price: '', cost: '', mrp: '', gstRate: 'EIGHTEEN', unit: 'PCS', qty: '' };
 
+/** The owner's choice of how the selling price is typed, kept per browser. */
+const PRICE_BASIS_KEY = 'dukaanai:price-includes-gst';
+
 function parseMoney(value: string): number | null {
   if (value.trim() === '') return null;
   const n = Number(value);
@@ -123,6 +126,21 @@ function ProductsPageContent() {
   const [pendingDelete, setPendingDelete] = useState<Product | null>(null);
   const [activeTab, setActiveTab] = useState('Details');
   const [saving, setSaving] = useState(false);
+  /**
+   * "The selling price I type includes GST" (release audit, 2026-10-12): an
+   * owner who types the shelf price gets the before-GST price the API stores
+   * (`exclusiveUnitPrice`, never billing above what was typed); off, the field
+   * is the before-GST price as before. Either way the form shows what the
+   * customer pays.
+   */
+  const [priceIncludesGst, setPriceIncludesGst] = useState(false);
+  useEffect(() => {
+    try {
+      setPriceIncludesGst(localStorage.getItem(PRICE_BASIS_KEY) === '1');
+    } catch {
+      // Storage blocked: the default (before GST) applies.
+    }
+  }, []);
 
   // Dropdowns
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -270,12 +288,38 @@ function ProductsPageContent() {
    * a typed MRP must be at least the price with GST and cess (audit P1-2,
    * the API's rule through the same `inclusiveUnitPrice`).
    */
+  /** The before-GST price the API stores for what the price field holds (converted when it includes GST); null when it does not parse. */
+  const storedPrice = (source: ProductForm, cessRate: number): number | null => {
+    const typed = parseMoney(source.price);
+    if (typed === null) return null;
+    return priceIncludesGst ? Number(exclusiveUnitPrice(typed, source.gstRate, cessRate).toFixed(2)) : typed;
+  };
+
+  /** Switches how the price is typed and converts what both forms hold, so the stored price does not change. */
+  const setPriceBasis = (includesGst: boolean) => {
+    if (includesGst === priceIncludesGst) return;
+    const convert = (source: ProductForm, cessRate: number): ProductForm => {
+      const typed = parseMoney(source.price);
+      if (typed === null) return source;
+      const next = includesGst ? inclusiveUnitPrice(typed, source.gstRate, cessRate) : exclusiveUnitPrice(typed, source.gstRate, cessRate);
+      return { ...source, price: next.toFixed(2) };
+    };
+    setForm((current) => convert(current, 0));
+    setEditForm((current) => convert(current, selectedProduct?.cessRate ?? 0));
+    setPriceIncludesGst(includesGst);
+    try {
+      localStorage.setItem(PRICE_BASIS_KEY, includesGst ? '1' : '0');
+    } catch {
+      // Storage blocked: the choice lasts for this page only.
+    }
+  };
+
   const readForm = (source: ProductForm, cessRate = 0): { error: string; value?: undefined } | { error?: undefined; value: { name: string; price: number; cost: number; mrp: number | null } } => {
-    const price = parseMoney(source.price);
+    const price = storedPrice(source, cessRate);
     const cost = parseMoney(source.cost);
     const mrp = parseMoney(source.mrp);
     if (!source.name.trim()) return { error: 'Enter a product name.' };
-    if (price === null) return { error: 'Enter a selling price (before GST) of 0 or more.' };
+    if (price === null) return { error: `Enter a selling price (${priceIncludesGst ? 'including' : 'before'} GST) of 0 or more.` };
     // Roadmap 6.2: the cost price is what you paid, never guessed from the selling price.
     if (cost === null) return { error: 'Enter the cost price (what you pay per unit). Use 0 if there is none.' };
     if (source.mrp.trim() !== '' && mrp === null) return { error: 'The MRP must be a number of 0 or more.' };
@@ -343,7 +387,10 @@ function ProductsPageContent() {
       sku: product.sku,
       barcode: product.barcode ?? '',
       category: product.category === 'General' && !product.categoryId ? '' : product.category,
-      price: String(product.sellingPrice ?? product.price),
+      // In the basis the owner types: the stored price is before GST.
+      price: priceIncludesGst
+        ? inclusiveUnitPrice(product.sellingPrice ?? product.price, product.gstRate ?? 'EIGHTEEN', product.cessRate ?? 0).toFixed(2)
+        : String(product.sellingPrice ?? product.price),
       cost: String(product.cost),
       mrp: String(product.mrp ?? product.price),
       gstRate: (GST_RATES.some((r) => r.value === product.gstRate) ? product.gstRate : 'EIGHTEEN') as GstRate,
@@ -473,6 +520,9 @@ function ProductsPageContent() {
     mode: 'add' | 'edit',
   ) => {
     const update = (patch: Partial<ProductForm>) => setState((current) => ({ ...current, ...patch }));
+    const cessRate = mode === 'edit' ? selectedProduct?.cessRate ?? 0 : 0;
+    const stored = storedPrice(state, cessRate);
+    const customerPays = stored === null ? null : Number(inclusiveUnitPrice(stored, state.gstRate, cessRate).toFixed(2));
     return (
       <>
         <div><label className="text-sm font-medium">Product Name *</label><input value={state.name} onChange={e=>update({ name: e.target.value })} required className="w-full mt-1 border rounded-lg p-2" /></div>
@@ -485,13 +535,24 @@ function ProductsPageContent() {
           <div><label className="text-sm font-medium">Category</label><input value={state.category} onChange={e=>update({ category: e.target.value })} list="product-category-options" className="w-full mt-1 border rounded-lg p-2" placeholder="e.g. Snacks" /></div>
         </div>
         <div className="grid grid-cols-3 gap-4">
-          <div><label className="text-sm font-medium">Selling Price before GST (₹) *</label><input value={state.price} onChange={e=>update({ price: e.target.value })} type="number" min="0" step="0.01" required className="w-full mt-1 border rounded-lg p-2" /></div>
+          <div><label className="text-sm font-medium">{priceIncludesGst ? 'Selling Price incl. GST (₹) *' : 'Selling Price before GST (₹) *'}</label><input value={state.price} onChange={e=>update({ price: e.target.value })} type="number" min="0" step="0.01" required aria-label={priceIncludesGst ? 'Selling price including GST' : 'Selling price before GST'} className="w-full mt-1 border rounded-lg p-2" /></div>
           <div><label className="text-sm font-medium">Cost Price (₹) *</label><input value={state.cost} onChange={e=>update({ cost: e.target.value })} type="number" min="0" step="0.01" required className="w-full mt-1 border rounded-lg p-2" placeholder="What you pay per unit" /></div>
           {mode === 'add' ? (
             <div><label className="text-sm font-medium">Initial Stock</label><input value={state.qty} onChange={e=>update({ qty: e.target.value })} type="number" min="0" step="0.001" className="w-full mt-1 border rounded-lg p-2" /></div>
           ) : (
             <div><label className="text-sm font-medium">Barcode</label><input value={state.barcode} onChange={e=>update({ barcode: e.target.value })} className="w-full mt-1 border rounded-lg p-2" placeholder="Optional" /></div>
           )}
+        </div>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg bg-gray-50 border border-gray-100 px-3 py-2">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input type="checkbox" checked={priceIncludesGst} onChange={(e) => setPriceBasis(e.target.checked)} className="rounded text-[#8B5CF6]" />
+            The selling price I type includes GST
+          </label>
+          <p data-testid="price-preview" className="text-xs text-gray-600">
+            {stored === null || customerPays === null
+              ? 'Customer pays: enter a selling price'
+              : `Customer pays ₹${customerPays.toFixed(2)} incl. GST · stored as ₹${stored.toFixed(2)} before GST`}
+          </p>
         </div>
         <div className="grid grid-cols-3 gap-4">
           <div>

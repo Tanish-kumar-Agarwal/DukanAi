@@ -93,6 +93,12 @@ above it:
   precision: a line of many units of a sub-paisa-rounded price can carry a
   fraction of a paisa per unit more than `quantity × MRP`, as any rounded
   per-line tax does.
+- `exclusiveUnitPrice(inclusivePrice, gstRate, cessPercent = 0)` is the
+  inverse the product form uses when the owner types a GST-inclusive shelf
+  price: the largest price in paise whose `inclusiveUnitPrice` is at most
+  `inclusivePrice`, so one unit never bills above the typed price (₹10 at
+  18 % stores ₹8.47, which bills ₹9.99; ₹118 stores ₹100.00 exactly), and
+  `inclusiveUnitPrice(exclusiveUnitPrice(x)) ≤ x` for every price and slab.
 - `discountLimitAmounts(result, limitPercent)` is what a percentage limit
   yields on a calculated invoice under the engine's own rounding: `invoice`
   = `round2((subtotal − totalItemDiscount) × limit / 100)` (an invoice

@@ -1,5 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Expense, LedgerEntryType, Prisma } from '@prisma/client';
+import { randomBytes } from 'crypto';
+import * as fs from 'fs-extra';
+import * as path from 'path';
+import { StoragePathBuilder } from '../storage/storage-path.builder';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { CreateExpenseDto, UpdateExpenseDto } from './dto/expense.dto';
@@ -36,7 +40,22 @@ export interface ExpenseView {
   /** The stored payment mode, also on a pending expense when one was chosen (what "Mark as Paid" records). */
   paymentMode: string | null;
   date: string;
+  /** A receipt photo or PDF is attached (`GET /expenses/:id/receipt`). */
+  hasReceipt: boolean;
+  /** Its content type, null without one. */
+  receiptType: string | null;
 }
+
+/** An attached receipt, ready to stream. */
+export interface ExpenseReceiptFile {
+  absolutePath: string;
+  mimeType: string;
+  fileName: string;
+  size: number;
+}
+
+/** The file extension a receipt is stored under, by its (sniffed and declared) content type. */
+const RECEIPT_EXTENSIONS: Readonly<Record<string, string>> = { 'image/jpeg': '.jpg', 'image/png': '.png', 'application/pdf': '.pdf' };
 
 /** Who records an expense: the shop, the user (whose open drawer pays a cash expense) and the request address. */
 export interface ExpenseActor {
@@ -58,6 +77,7 @@ function auditSnapshot(expense: Expense): Prisma.InputJsonObject {
     expenseDate: expense.expenseDate.toISOString(),
     shiftId: expense.shiftId,
     isDeleted: expense.isDeleted,
+    receiptAttached: expense.receiptPath !== null,
   };
 }
 
@@ -71,6 +91,8 @@ function toView(expense: Expense): ExpenseView {
     mode: expense.isPaid ? (expense.paymentMode ?? CASH_MODE) : 'Unpaid',
     paymentMode: expense.paymentMode,
     date: expense.expenseDate.toISOString(),
+    hasReceipt: expense.receiptPath !== null,
+    receiptType: expense.receiptPath !== null ? expense.receiptMimeType : null,
   };
 }
 
@@ -91,19 +113,26 @@ function toView(expense: Expense): ExpenseView {
  *    (`reverseCashPayout` / `applyCashPayout`; `shiftId` is cleared when the
  *    expense no longer takes cash from it); once it has closed, its counted
  *    drawer is history and is left alone.
- *  - Audit: an AuditLog row per create, update and delete, in the same
- *    transaction.
+ *  - Audit: an AuditLog row per create, update, delete and receipt, in the
+ *    same transaction.
+ *  - Receipt: one photo or PDF per expense under the shop's storage root
+ *    (`Expenses/<id>/receipt-<stamp>.<ext>`, written with `wx`, never in
+ *    place); attaching another moves the earlier file to the shop's
+ *    `Deleted/` folder, so a receipt is never destroyed by a replacement.
  *
  * Lock order: the expense row (edits), then the Shift, then the ledger
  * balances (inside `LedgerPostingService.post`).
  */
 @Injectable()
 export class ExpensesService {
+  private readonly logger = new Logger(ExpensesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
     private readonly ledger: LedgerPostingService,
     private readonly clock: Clock,
+    private readonly paths: StoragePathBuilder,
   ) {}
 
   async summary(): Promise<ExpenseSummary> {
@@ -219,6 +248,77 @@ export class ExpensesService {
       await this.syncLedger(tx, actor.shopId, deleted);
       await this.audit(tx, actor, 'EXPENSE_DELETED', id, before, deleted, now);
     });
+  }
+
+  /**
+   * `POST /expenses/:id/receipt`: stores the (already validated) photo or PDF
+   * and points the expense at it. The file is written first under a new name
+   * (`wx`), the row second under the expense lock; a failed row update
+   * removes the new file, a full volume answers 507 with nothing kept. The
+   * receipt it replaces is moved to `Deleted/`, never removed.
+   */
+  async attachReceipt(id: string, file: Pick<Express.Multer.File, 'buffer' | 'mimetype'>, actor: ExpenseActor): Promise<ExpenseView> {
+    const extension = RECEIPT_EXTENSIONS[file.mimetype];
+    if (!extension) throw new BadRequestException({ message: `Unsupported receipt type ${file.mimetype}`, code: 'EXPENSE_RECEIPT_TYPE' });
+    // 404 before anything is written for an unknown, deleted or foreign expense.
+    const live = await this.prisma.expense.findFirst({ where: { id, shopId: actor.shopId, isDeleted: false }, select: { id: true } });
+    if (!live) throw new NotFoundException({ message: `Expense ${id} not found`, code: 'EXPENSE_NOT_FOUND' });
+
+    const now = this.clock.now();
+    const directory = this.paths.getExpenseDirectory(actor.shopId, id);
+    const target = path.join(directory, `receipt-${now.getTime()}-${randomBytes(4).toString('hex')}${extension}`);
+    await fs.ensureDir(directory);
+    try {
+      await fs.writeFile(target, file.buffer, { flag: 'wx' });
+    } catch (error) {
+      await fs.remove(target).catch(() => undefined);
+      throw error;
+    }
+
+    const relative = this.paths.relativeToShop(actor.shopId, target);
+    let attached: { row: Expense; replaced: string | null };
+    try {
+      attached = await this.transaction(async (tx) => {
+        const before = await this.lockExpense(tx, actor.shopId, id);
+        const row = await tx.expense.update({ where: { id }, data: { receiptPath: relative, receiptMimeType: file.mimetype, updatedAt: now } });
+        await this.audit(tx, actor, 'EXPENSE_RECEIPT_ATTACHED', id, before, row, now);
+        return { row, replaced: before.receiptPath };
+      });
+    } catch (error) {
+      await fs.remove(target).catch(() => undefined);
+      throw error;
+    }
+    if (attached.replaced && attached.replaced !== relative) await this.retireReceipt(actor.shopId, attached.replaced);
+    return toView(attached.row);
+  }
+
+  /** `GET /expenses/:id/receipt`: the attached file of a live expense of this shop; 404 otherwise. */
+  async receipt(id: string): Promise<ExpenseReceiptFile> {
+    const shopId = this.tenantContext.getShopId();
+    const expense = await this.prisma.expense.findFirst({ where: { id, shopId, isDeleted: false }, select: { receiptPath: true, receiptMimeType: true } });
+    if (!expense) throw new NotFoundException({ message: `Expense ${id} not found`, code: 'EXPENSE_NOT_FOUND' });
+    if (!expense.receiptPath) throw new NotFoundException({ message: 'No receipt is attached to this expense', code: 'EXPENSE_RECEIPT_NOT_FOUND' });
+    const absolutePath = this.paths.fromShopRelative(shopId, expense.receiptPath);
+    const stat = await fs.stat(absolutePath).catch(() => null);
+    if (!stat?.isFile()) {
+      // The row survived but the file did not (a database restored without the documents volume).
+      throw new NotFoundException({ message: 'The receipt file is missing from storage', code: 'EXPENSE_RECEIPT_MISSING' });
+    }
+    const mimeType = expense.receiptMimeType ?? 'application/octet-stream';
+    return { absolutePath, mimeType, fileName: `receipt-${id}${RECEIPT_EXTENSIONS[mimeType] ?? path.extname(absolutePath)}`, size: stat.size };
+  }
+
+  /** Moves a replaced receipt to the shop's `Deleted/` folder; a failure is logged, the new receipt stands. */
+  private async retireReceipt(shopId: string, relativePath: string): Promise<void> {
+    try {
+      const source = this.paths.fromShopRelative(shopId, relativePath);
+      if (!(await fs.pathExists(source))) return;
+      const target = this.paths.getDeletedFileTarget(shopId, path.basename(source));
+      await fs.ensureDir(path.dirname(target));
+      await fs.move(source, target);
+    } catch (error) {
+      this.logger.warn(`Could not move the replaced receipt ${relativePath} of shop ${shopId} to Deleted/: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private transaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {

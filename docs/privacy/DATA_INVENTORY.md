@@ -53,7 +53,7 @@ a time.
 | `Invoice`, `InvoiceItem`, `InvoicePayment`, `UdharTransaction` | the customer (by id), what they bought, amounts, tender, free-text notes, discount and cancellation reasons | the sale, its tax, the shop's books | GST retention period (§3) | free text erased; amounts stay (non-personal once the customer row is anonymised) |
 | `LedgerTransaction`, `LedgerPosting` | none: document references only, since migration `20261011090000` | the books | immutable (database triggers) | not needed |
 | `Supplier`, `Manufacturer`, `Warehouse` | contact person, phone, email, address, GSTIN (a sole proprietor's is a person's) | purchasing | while the shop keeps the supplier | anonymised |
-| `Expense`, `Shift`, `InventoryLog`, procurement documents | free text (descriptions, notes, remarks, reasons, comments, signatures) | the shop's records | the shop's records | free text erased |
+| `Expense`, `Shift`, `InventoryLog`, procurement documents | free text (descriptions, notes, remarks, reasons, comments, signatures); an expense's receipt path (`Expense.receiptPath`, the file is in §2.2) | the shop's records | the shop's records | free text and receipt paths erased |
 | `AuditLog` | who did what (user id), the row before and after (may contain a customer's details), IP, user agent | accountability, investigating disputes | while the shop is a customer | snapshots, IP and user agent erased; the action, time and user id stay |
 | `Notification` | messages that may name a product or customer | in-app notices | until the shop deletes them | deleted |
 | `SearchHistory`, `SearchAnalytics`, `SearchClick`, `SavedSearch` | what staff typed into search boxes | the popular-searches card | `SearchHistory` 90 days (retention sweep); the others while the shop is a customer | deleted (`SearchHistory`) or query text erased |
@@ -73,7 +73,7 @@ erasure.
 
 | Store | Personal data | Retention | Erasure |
 |---|---|---|---|
-| `STORAGE_ROOT/<shopId>/` (documents volume) | customer folders: invoices, Smart Capture bill photos, statements, payment slips, profile documents | while the shop is a customer; invoices for the GST retention period | `erase` removes the shop's folder; `erase-customer` removes the customer's folder (except `Invoices/` under a legal hold) |
+| `STORAGE_ROOT/<shopId>/` (documents volume) | customer folders: invoices, Smart Capture bill photos, statements, payment slips, profile documents; `Expenses/<id>/` receipt photos and PDFs (a replaced one moves to `Deleted/`) | while the shop is a customer; invoices for the GST retention period | `erase` removes the shop's folder; `erase-customer` removes the customer's folder (except `Invoices/` under a legal hold) |
 | `uploads/media/` | product photos and their thumbnails (content-addressed, shared between shops when identical) | while the product exists | removed unless another shop references the same file |
 | `uploads/imports/<shopId>-*` | the original import files (customer lists, opening balances) | while the shop is a customer | removed |
 | `uploads/tmp/` | uploads in flight | deleted when the request ends (`UploadCleanupInterceptor`) | — |

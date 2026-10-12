@@ -109,8 +109,8 @@ and enter the lines by hand.
 
 **I forgot my password.**
 Tap **Forgot?** on the sign-in page. The link in the email works for one
-hour and signs you out everywhere. There is no "change password" screen
-yet: use the same link.
+hour and signs you out everywhere. To change a password you still know,
+use **Settings › Account & Security › Change password**.
 
 **Someone left the shop.**
 Go to **Employees** › their row › **Suspend Access** or **Remove from

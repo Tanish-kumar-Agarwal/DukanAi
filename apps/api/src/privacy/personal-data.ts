@@ -55,7 +55,7 @@ const EXPLICIT: Record<string, PersonalDataClass> = {
   'Expense.description': 'freeText', 'SupplierCreditLine.description': 'freeText', 'EnterpriseInvoiceLine.description': 'freeText', 'PaymentLedger.description': 'freeText',
   'EnterpriseInvoice.terms': 'freeText',
   'MediaAsset.originalName': 'file', 'MediaStorage.path': 'file', 'MediaStorage.cdnUrl': 'file', 'MediaThumbnail.path': 'file', 'MediaThumbnail.cdnUrl': 'file', 'MediaVersion.path': 'file',
-  'ProductImage.url': 'file', 'SalesOrderAttachment.name': 'file',
+  'ProductImage.url': 'file', 'SalesOrderAttachment.name': 'file', 'Expense.receiptPath': 'file',
   // Child tables without a shop column (reached through their parent, `childModels`):
   // the customer's own detail rows, the import report, the webhook log
   'CustomerProfile.customFields': 'payload', 'CustomerProfile.website': 'identity', 'CustomerProfile.registrationNo': 'identity', 'CustomerProfile.profilePicture': 'file',
@@ -77,7 +77,7 @@ export const NOT_PERSONAL: Record<string, string> = {
   'LedgerPosting.description': 'document references only since roadmap 9.24',
   'Invoice.requestHash': 'a hash of the request', 'ProductRevision.contentHash': 'a hash', 'ProductImage.hash': 'a content hash', 'MediaAsset.hash': 'a content hash',
   'ProductRevision.data': 'catalogue content', 'ProductRevision.commitMessage': 'catalogue change note', 'RevisionBranch.name': 'a branch label',
-  'Shift.openToken': "the open-shift token 'OPEN'", 'ShopSettings.subscriptionPlan': 'a plan code',
+  'Shift.openToken': "the open-shift token 'OPEN'", 'Expense.receiptMimeType': 'a file type (image/jpeg, image/png, application/pdf)', 'ShopSettings.subscriptionPlan': 'a plan code',
   'OutboxEvent.correlationId': 'a request id', 'ProductEventLog.correlationId': 'a request id', 'InventoryAdjustment.correlationId': 'a request id', 'InventoryMovement.correlationId': 'a request id', 'StockLedgerEntry.correlationId': 'a request id',
   'GoodsReceiptLine.goodsReceiptId': 'an id', 'GoodsReceiptAttachment.goodsReceiptId': 'an id', 'GoodsReceiptAudit.goodsReceiptId': 'an id', 'GoodsReceiptStatusHistory.goodsReceiptId': 'an id', 'GoodsReceiptInspection.goodsReceiptId': 'an id', 'GoodsReceiptVersion.goodsReceiptId': 'an id', 'GoodsReceiptComment.goodsReceiptId': 'an id', 'GoodsReceiptApproval.goodsReceiptId': 'an id', 'VendorBill.goodsReceiptId': 'an id', 'PurchaseReturn.goodsReceiptId': 'an id', 'WorkflowInstance.goodsReceiptId': 'an id',
   'BarcodePrintJob.templateId': 'an id', 'WorkflowStep.escalationRoleId': 'an id', 'WorkflowTask.escalatedToRoleId': 'an id',

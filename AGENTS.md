@@ -1484,8 +1484,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (`attach-release.sh` now takes many files). The CI deploy job runs the
   control on every push. gitleaks (9.11) and `npm audit --omit=dev
   --audit-level=high` stay the secret and advisory gates;
-  `.github/dependabot.yml` adds weekly grouped npm PRs (root + each
-  workspace) beside the github-actions pins. No docker here, so the image
+  `.github/dependabot.yml` adds weekly grouped npm PRs (from the root only:
+  it reads every workspace and rewrites the one root lockfile; listing the
+  workspace directories made PRs without it, and `npm ci` failed on each)
+  beside the github-actions pins. No docker here, so the image
   scan, SBOM and control are proven by the jobs; locally the pinned Trivy
   was shown to produce a valid CycloneDX document and `trivy fs` of the
   tree is clean. What the first gate run on main found, keep it so: every
@@ -1920,6 +1922,33 @@ the fixes made true, and must stay true:
   (Next copied `.env.production` into the standalone output).
   `apps/web/next-env.d.ts` is untracked. The CI integration job is a matrix
   over MySQL 8.0 and 8.4.
+
+- Follow-up (2026-10-12), keep so: dark mode inverts `white` and the gray
+  scale through CSS variables (`globals.css`), so a `dark:` variant on them
+  flips them back (`dark:bg-gray-900` is white in dark mode): never add one
+  (`e2e/dark-mode.spec.ts` scans the source and measures form contrast);
+  form fields without a background class take `var(--color-white)` from a
+  base rule, and `.dark .sidebar-bg` restores the light palette because the
+  sidebar is navy in both themes. The sidebar pins Notifications and Settings
+  under the scrolling list inside the same `nav` "Main" (`pinned` items) and
+  the Upgrade card shrinks under `max-height` 820 / 640 px
+  (`e2e/sidebar.spec.ts`, five window sizes). Expense receipts:
+  `POST /expenses/:id/receipt` (MANAGEMENT_ROLES, `documents` feature gate,
+  multer memory storage with `expenseReceiptUploadPolicy`: JPEG / PNG / PDF,
+  10 MB, bytes sniffed) writes `<shop>/Expenses/<id>/receipt-<stamp>.<ext>`
+  with `wx`, then points `Expense.receiptPath` (shop-relative) at it under
+  the expense lock with an `EXPENSE_RECEIPT_ATTACHED` audit row; a replaced
+  file moves to `Deleted/`; `GET /expenses/:id/receipt` streams it like the
+  media file route (`expense-receipts.integration-spec.ts`). The web loads it
+  as a Blob (the request carries the session): an image in place, a PDF by
+  download (CSP has no frames). Settings › Account & Security posts
+  `POST /auth/change-password` and then signs out
+  (`/login?notice=password-changed`). The product form's "price I type
+  includes GST" converts through `exclusiveUnitPrice` (invoice-math: the
+  largest paise price whose `inclusiveUnitPrice` is at most the typed one)
+  and always shows what the customer pays; off by default, remembered in
+  `localStorage`. The inventory expiry filters and the row badge share
+  `expiryStatus` (Depleted, Expired, Expiring Soon, Safe).
 
 ## Toolchain
 

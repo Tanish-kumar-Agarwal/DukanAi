@@ -16,10 +16,10 @@ release notes of the tag.
 ### Upgrade notes
 
 - Take a backup, then `migrate deploy`: `20261012090000_audit_fixes` (ledger accounts INPUT_GST and EXPENSES, the
-  drawer columns `Expense.shiftId`, `SupplierPayment.shiftId`, `Shift.cashPayouts`, `StockCountItem.countedAt`, indexes)
-  and `20261012090100_webhook_delivery_retention_index`. The API now refuses to start against a database that lacks a
-  migration of its build. The new enum values mean this release cannot be rolled back by image once a row uses them
-  (`prisma/MIGRATIONS.md`).
+  drawer columns `Expense.shiftId`, `SupplierPayment.shiftId`, `Shift.cashPayouts`, `StockCountItem.countedAt`,
+  indexes), `20261012090100_webhook_delivery_retention_index` and `20261012120000_expense_receipts` (two nullable
+  columns on `Expense`). The API now refuses to start against a database that lacks a migration of its build. The
+  new enum values mean this release cannot be rolled back by image once a row uses them (`prisma/MIGRATIONS.md`).
 - Production requires `METRICS_TOKEN` and `GRAFANA_ADMIN_PASSWORD` (`docker-compose.prod.yml` refuses to start without
   them); monitoring ports listen on 127.0.0.1 only (reach Grafana through an SSH tunnel). Kubernetes: the Secret file
   moves to `deploy/k8s/common/dukaanai-secrets.env`, and a release applies `deploy/k8s/migrate`, waits for the Job, then
@@ -60,6 +60,17 @@ release notes of the tag.
   cancel for every procurement document, `GET /suppliers/summary`.
 - `GET /api/media/assets/:id/file` serves uploaded media to the shop that owns it.
 - `GET /notifications/unread-count`: the navbar badge counts every unread notification, not only the newest page.
+- Expense receipts: the expense form's "Attach Receipt" stores a JPEG, PNG or PDF (up to 10 MB, bytes checked)
+  under the shop's storage root (`POST /expenses/:id/receipt`, MANAGEMENT_ROLES; a replaced receipt is kept in
+  `Deleted/`), and the expenses list opens it (`GET /expenses/:id/receipt`); it is part of the shop export, erasure
+  and documents backup.
+- Settings › Account & Security changes the password (current, new, confirm; `POST /auth/change-password`); every
+  session ends and the sign-in page says why.
+- Product form: "The selling price I type includes GST" turns a shelf price into the before-GST price the API stores,
+  never billing above what was typed (`exclusiveUnitPrice` in invoice-math: ₹10 at 18 % stores ₹8.47, billing ₹9.99),
+  and the form always shows what the customer pays. The choice is remembered per browser; off by default.
+- Inventory › Batches & Expiry: the Filters menu's expiry checkboxes (expired, expiring within 30 days, safe, and
+  the new depleted) filter the list with the search.
 - Support and training (9.23): a cashier guide, an owner guide and an FAQ (`docs/guides/`), the support channel with
   response targets (`docs/SUPPORT.md`), and feature pause switches: `FEATURE_<NAME>_ENABLED=false` plus an API restart
   pauses one feature (credit sales, returns, cancellations, OCR, imports, documents, media, procurement, dashboard
@@ -78,6 +89,8 @@ release notes of the tag.
   credit limit is read-only); a shift cannot be closed with the counted cash left blank; the shop profile saves with a
   blank email; labelled sign-in forms and announced errors; the inventory wastage tile says "Not tracked" instead of
   an invented ₹0.
+- Sidebar: Notifications and Settings stay pinned under the scrolling menu (which shows its scrollbar), and the
+  Upgrade card shrinks on short windows, so a laptop or a phone no longer hides them.
 - Billing rules: MRP is the tax-inclusive ceiling of a sale; a counter sale is an intra-state supply; cashiers have
   refund, return-window and custom-line limits; damaged and expired returns are not restocked; returns after the GST
   credit-note deadline are refused; a retried sale whose answer was lost shows the saved bill.
@@ -99,6 +112,13 @@ release notes of the tag.
 
 ### Fixed
 
+- Dark mode: dialogs (add / edit product, expense, supplier, customer, confirmations), slide-out panels and toasts
+  painted white with white labels and typed text; the theme already inverts white and the grays, and the components'
+  own dark-mode classes flipped them back. Form fields now take the themed surface, the sidebar keeps its light text
+  on navy, and `e2e/dark-mode.spec.ts` measures the contrast.
+- The expense form's Cancel kept the last edit, so the next "Record Expense" reopened it.
+- Dependabot opened npm pull requests per workspace that never updated the root lockfile (`npm ci` failed on each);
+  it now updates npm from the workspace root only.
 - Money and stock: a sale reused under its idempotency key after a lost answer could be billed twice; cashiers could
   exceed their discount authority through rounding; one-paisa row differences on returns; a zero-value line blocked
   completing an invoice; COGS drifted by paise over piecewise returns; stock counts ignored sales made while counting;
