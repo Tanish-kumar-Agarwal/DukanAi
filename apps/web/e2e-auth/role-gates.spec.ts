@@ -157,9 +157,12 @@ async function expectNoFinancials(page: Page, request: APIRequestContext, email:
 
   await page.goto(`/products?q=${encodeURIComponent(sale.productName)}`);
   await page.getByTestId(`product-row-${sale.productId}`).click();
-  await expect(page.getByText('Selling Price', { exact: true })).toBeVisible();
-  await expect(page.getByText('Cost Price', { exact: true })).toHaveCount(0);
-  await expect(page.getByText('Stock Value (at cost)')).toHaveCount(0);
+  // The SlidingPanel has no dialog role: scope on its overlay, which carries the title.
+  const details = page.locator('div.fixed.inset-0').filter({ has: page.getByRole('heading', { name: 'Product Details' }) });
+  await expect(details.getByText('Selling Price', { exact: true })).toBeVisible();
+  await expect(details.getByText('Current Stock', { exact: true })).toBeVisible();
+  await expect(details.getByText('Cost Price', { exact: true })).toHaveCount(0);
+  await expect(details.getByText('Stock Value (at cost)')).toHaveCount(0);
   await expect(page.getByTestId('stat-total-products')).toBeVisible();
   await expect(page.getByTestId('stat-inventory-value')).toHaveCount(0);
 
