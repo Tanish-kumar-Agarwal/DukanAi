@@ -1,12 +1,15 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
   Injectable,
   InternalServerErrorException,
   Logger,
   NotFoundException,
-  Inject
+  Inject,
+  ServiceUnavailableException
 } from '@nestjs/common';
+import { isPlaceholderValue } from '../config/validation/env-rules';
 import { StorageConfig } from '../config/domains/storage.config';
 import { PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { S3_CLIENT } from './storage.constants';
@@ -508,8 +511,11 @@ export class StorageService {
   ): Promise<string> {
     const shopId = this.tenantContext.getShopId();
     const bucketName = this.storageConfig.s3Bucket;
-    if (!bucketName) {
-      throw new InternalServerErrorException('Cloud storage is not configured');
+    // A missing or template value (`your_bucket`) is "not configured": no request leaves the server
+    // (the committed templates carry placeholders, and a call to the real store answered a bare 500).
+    const settings = [bucketName, this.storageConfig.s3AccessKey, this.storageConfig.s3SecretKey];
+    if (!bucketName || settings.some(isPlaceholderValue)) {
+      throw new ServiceUnavailableException({ message: 'Cloud storage is not configured on this server (S3_BUCKET and its keys).', code: 'CLOUD_STORAGE_NOT_CONFIGURED' });
     }
 
     const safeOriginalName = file.originalname.replace(/[^a-zA-Z0-9_.-]/g, '');
@@ -543,7 +549,9 @@ export class StorageService {
       return `https://${bucketName}.${domain}/${objectKey}`;
     } catch (error) {
       await this.logAction(`Cloud upload failed key=${objectKey}`, 'error');
-      throw error;
+      // The store refused or could not be reached: the caller hears that, not an unhandled 500.
+      this.logger.error(`Cloud upload failed for shop ${shopId}: ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`);
+      throw new BadGatewayException({ message: 'The cloud store did not accept the file; nothing was stored. Try again later.', code: 'CLOUD_UPLOAD_FAILED' });
     }
   }
 }

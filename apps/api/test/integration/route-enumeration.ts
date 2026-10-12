@@ -1,5 +1,6 @@
-import { INestApplication, RequestMethod } from '@nestjs/common';
-import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { INestApplication, RequestMethod, Type } from '@nestjs/common';
+import { METHOD_METADATA, PATH_METADATA, ROUTE_ARGS_METADATA } from '@nestjs/common/constants';
+import { RouteParamtypes } from '@nestjs/common/enums/route-paramtypes.enum';
 import { DiscoveryService, MetadataScanner } from '@nestjs/core';
 import { Role } from '@prisma/client';
 import { ANY_AUTHENTICATED_KEY } from '../../src/auth/any-authenticated.decorator';
@@ -19,6 +20,42 @@ export interface Handler {
   isPublic: boolean;
   anyAuthenticated: boolean;
   roles: Role[] | undefined;
+  /** The controller method, for suites that build requests from its parameters. */
+  methodName: string;
+  /** The `@Body()` parameter's class (a DTO), when the handler takes a whole body. */
+  bodyType?: Type<unknown>;
+  /** The `@Query()` parameter's class, when the handler takes the whole query as a DTO. */
+  queryType?: Type<unknown>;
+  /** Single `@Query('name')` parameters. */
+  queryNames: string[];
+  /** The handler takes an uploaded file (`@UploadedFile()` / `@UploadedFiles()`). */
+  takesFile: boolean;
+}
+
+interface RouteArg {
+  index: number;
+  data?: unknown;
+}
+
+const PRIMITIVES = new Set<unknown>([String, Number, Boolean, Object, Array]);
+
+/** What the handler's parameter decorators ask of the request. */
+function parameterShape(metatype: Type<unknown>, prototype: object, name: string) {
+  const args = (Reflect.getMetadata(ROUTE_ARGS_METADATA, metatype, name) ?? {}) as Record<string, RouteArg>;
+  const types = (Reflect.getMetadata('design:paramtypes', prototype, name) ?? []) as Array<Type<unknown> | undefined>;
+  let bodyType: Type<unknown> | undefined;
+  let queryType: Type<unknown> | undefined;
+  const queryNames: string[] = [];
+  let takesFile = false;
+  for (const [key, arg] of Object.entries(args)) {
+    const kind = Number(key.split(':')[0]);
+    const type = types[arg.index];
+    if (kind === RouteParamtypes.BODY && arg.data === undefined && type && !PRIMITIVES.has(type)) bodyType = type;
+    if (kind === RouteParamtypes.QUERY && arg.data === undefined && type && !PRIMITIVES.has(type)) queryType = type;
+    if (kind === RouteParamtypes.QUERY && typeof arg.data === 'string') queryNames.push(arg.data);
+    if (kind === RouteParamtypes.FILE || kind === RouteParamtypes.FILES) takesFile = true;
+  }
+  return { bodyType, queryType, queryNames, takesFile };
 }
 
 const METHODS: Record<number, Handler['method'] | undefined> = {
@@ -58,6 +95,8 @@ export function enumerateHandlers(app: INestApplication): Handler[] {
             isPublic: classPublic || Reflect.getMetadata(IS_PUBLIC_KEY, fn) === true,
             anyAuthenticated: classAny || Reflect.getMetadata(ANY_AUTHENTICATED_KEY, fn) === true,
             roles: (Reflect.getMetadata(ROLES_KEY, fn) as Role[] | undefined) ?? classRoles,
+            methodName: name,
+            ...parameterShape(metatype as Type<unknown>, prototype, name),
           });
         }
       }

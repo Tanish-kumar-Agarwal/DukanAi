@@ -162,8 +162,8 @@ describe('tenant isolation: foreign IDs on every write route', () => {
 
     it('reservations, stock counts and inventory items refuse foreign products, items, warehouses and users', async () => {
       rejected((await http.post('/api/reservations').send({ source: 'POS', items: [{ productId: b.product, requestedQuantity: 1 }] })).status);
-      rejected((await http.post('/api/stock-counts/sessions').send({ type: 'FULL', warehouseId: b.warehouse })).status);
-      rejected((await http.post('/api/stock-counts/sessions').send({ type: 'FULL', assignedToUserId: b.user })).status);
+      rejected((await http.post('/api/stock-counts/sessions').send({ type: 'FULL_COUNT', warehouseId: b.warehouse })).status);
+      rejected((await http.post('/api/stock-counts/sessions').send({ type: 'FULL_COUNT', assignedToUserId: b.user })).status);
       rejected((await http.post('/api/stock-counts/adjustments').send({ inventoryItemId: b.item, reason: 'CORRECTION', requestedQuantityDelta: 1 })).status);
       rejected((await http.post('/api/inventory-domain').send({ productId: b.product })).status);
       rejected((await http.post('/api/warehouse-domain/locations').send({ warehouseId: b.warehouse, code: `L-${A.suffix}`, name: 'Bin', type: 'BIN' })).status);

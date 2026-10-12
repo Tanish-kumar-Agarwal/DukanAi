@@ -204,6 +204,10 @@ For the first hour:
 The next morning the nightly reconciliation must be CLEAN for every shop
 (`DukaanAiReconciliationDrift` stays quiet).
 
+The same day, run the cross-shop audit in the API container: `dc exec api node
+dist/cli/tenant-audit` must print CLEAN (exit 0). It only reads, and a finding
+is a row of one shop naming a row of another (`docs/security/TENANT_ISOLATION.md`).
+
 Then the owner edits the draft release. They add:
 - where the evidence is: the certification bundle, the staging smoke line, the
   rollback rehearsal and the production smoke;

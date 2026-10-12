@@ -58,9 +58,16 @@ release notes of the tag.
   product; webhook SSRF through IPv6 forms; case-variant paths reaching `/API/metrics`.
 - The secret scanner now scans test files and committed templates (a global path allowlist had hidden them), with a
   CI control that plants five secrets; environment files are kept out of the images.
+- Shop-to-shop isolation tested in depth (`docs/security/TENANT_ISOLATION.md`): two full shops attack each other
+  through every route, background job, report, export, stored file and socket. Closed on the way: an ownership
+  transfer told an owner whether an id was a user of another shop (now the same 404 as an unknown id); the purchase
+  event replay accepted another shop's document id (404); the warehouse location subtree answered an empty page for
+  another shop's warehouse (404); a draft order's `supplierId` was accepted and silently dropped (now checked and saved).
 
 ### Added
 
+- `node dist/cli/tenant-audit` (`npm run tenant-audit` from a checkout): checks, read-only, that no row of one shop
+  names a row of another across every relation of the schema; exit 1 lists the rows. Run it after each release.
 - Expenses reach the books and the drawer: a paid expense posts to the ledger, a cash one leaves the recorder's open
   shift, and edits post the difference; reconciliation gains receivables and payables checks and runs in one consistent
   snapshot.
@@ -91,6 +98,9 @@ release notes of the tag.
 
 ### Changed
 
+- `POST /storage/cloud/upload` answers 503 `CLOUD_STORAGE_NOT_CONFIGURED` while the bucket or its keys are unset or
+  template values (it used to call the store with them), and 502 `CLOUD_UPLOAD_FAILED` when the store refuses the file
+  (an unhandled 500 before).
 - Web: every page shows only the actions the signed-in role can perform (POS, customer writes, returns, exports,
   OCR, employees, expenses, supplier payments, mark-all-read, quick actions); lists that were cut at 100 rows page through
   every row; the invoices filter and report exports use the shop's business date, not the browser's; exports wait up to

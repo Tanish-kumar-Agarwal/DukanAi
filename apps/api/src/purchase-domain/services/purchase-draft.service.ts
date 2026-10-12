@@ -19,6 +19,8 @@ function pickDraftFields(updates: Omit<UpdatePurchaseDraftDto, 'items'>): Prisma
     if (updates[field] !== undefined) (data as Record<string, unknown>)[field] = updates[field];
   }
   if (updates.expectedDelivery !== undefined) data.expectedDelivery = new Date(updates.expectedDelivery);
+  // Checked by the caller (`PurchaseRepository.updateDraft`): the shop's own active supplier.
+  if (updates.supplierId !== undefined) data.supplier = { connect: { id: updates.supplierId } };
   return data;
 }
 

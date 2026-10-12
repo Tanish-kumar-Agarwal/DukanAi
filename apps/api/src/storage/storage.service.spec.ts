@@ -236,4 +236,29 @@ describe('StorageService on a full volume (roadmap 9.18)', () => {
     await expect(service.storeCapturedBill(WALK_IN_CUSTOMER_ID, 'log1', file('b.jpg', 'img', 'image/jpeg'), undefined, undefined, undefined)).resolves.toBeUndefined();
     expect(await fs.pathExists(path.join(root, shopId, 'Customers', WALK_IN_CUSTOMER_ID, StorageCustomerDirectory.Bills, 'BILL-log1.jpg'))).toBe(true);
   });
+  describe('cloud upload', () => {
+    const cloud = (settings: Partial<StorageConfig>, send: jest.Mock) => {
+      const tenant = { getShopId: () => shopId, getUserId: () => 'user-1' };
+      const builder = new StoragePathBuilder(Object.assign(new StorageConfig(), { storageRoot: root }));
+      return new StorageService(Object.assign(new StorageConfig(), settings), {} as never, tenant as never, builder, { send } as never);
+    };
+    const pdf = () => file('c.pdf', '%PDF-1.7', 'application/pdf');
+
+    it('a missing or template bucket or key is 503 CLOUD_STORAGE_NOT_CONFIGURED and nothing leaves the server', async () => {
+      const send = jest.fn();
+      for (const settings of [{}, { s3Bucket: 'your_bucket', s3AccessKey: 'AKIA1', s3SecretKey: 'secret' }, { s3Bucket: 'real-bucket', s3AccessKey: 'your_access_key', s3SecretKey: 'secret' }]) {
+        await expect(cloud(settings, send).uploadFileToCloud(pdf())).rejects.toMatchObject({ status: 503, response: { code: 'CLOUD_STORAGE_NOT_CONFIGURED' } });
+      }
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('a refusal of the store is 502 CLOUD_UPLOAD_FAILED, not an unhandled 500; a success answers the object URL under the shop', async () => {
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      const settings = { s3Bucket: 'real-bucket', s3AccessKey: 'AKIA1', s3SecretKey: 'secret', s3PublicUrl: 'https://cdn.test' };
+      const refused = jest.fn(async () => Promise.reject(Object.assign(new Error('The AWS Access Key Id you provided does not exist'), { name: 'InvalidAccessKeyId' })));
+      await expect(cloud(settings, refused).uploadFileToCloud(pdf())).rejects.toMatchObject({ status: 502, response: { code: 'CLOUD_UPLOAD_FAILED' } });
+      const url = await cloud(settings, jest.fn(async () => ({}))).uploadFileToCloud(pdf(), 'general');
+      expect(url).toMatch(new RegExp(`^https://cdn\\.test/${shopId}/general/c-[0-9a-f]{16}\\.pdf$`));
+    });
+  });
 });

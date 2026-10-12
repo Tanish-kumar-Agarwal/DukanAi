@@ -2043,6 +2043,22 @@ the fixes made true, and must stay true:
   shop in its own context, per-shop and per-row failures logged and skipped.
   `TenantGuard` lets only `ACTIVE` shops through (SUSPENDED/LOCKED/ARCHIVED/
   DELETED and an unknown status are 403).
+- Cross-shop isolation (audit 2026-10-12, `docs/security/TENANT_ISOLATION.md`):
+  `test/integration/cross-shop-isolation.integration-spec.ts` seeds two full
+  shops (`isolation/seed-shop.ts`) and attacks every route from the Nest
+  metadata in both directions with DTO-generated valid bodies
+  (`isolation/request-bodies.ts`, `isolation/attack.ts`): no 2xx for a victim
+  id, the same status and code as an id of nothing, every write refused by the
+  lookup of the attacked field while its all-own control passes, the victim's
+  rows byte-for-byte unchanged (`isolation/shop-data.ts` fingerprint) and files
+  unchanged, no victim id or text in any answer. A new write route whose
+  generated body fails validation or stops at a state rule fails the suite:
+  give the attacker the right row through `ownFor` / `extraBodies` in the spec.
+  `User` and `Invitation` are global models: a lookup by a request-supplied id
+  must name the shop. Raw SQL on a shop's tables names the shop or is listed in
+  `src/prisma/raw-sql-tenancy.spec.ts` with its reason. `node dist/cli/tenant-audit`
+  (`src/prisma/cross-shop-audit.ts`, DMMF shop paths) finds rows naming another
+  shop's rows; `cross-shop-audit.spec.ts` lists the one table with no shop path.
 - Procurement line tables (`PurchaseOrderItem`, `GoodsReceiptLine`,
   `VendorBillLine`, `PurchaseReturnLine`, `SupplierCreditLine`) carry
   `shopId` (migration `20260927180000_scope_line_tables_by_shop`, backfilled

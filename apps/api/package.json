@@ -30,6 +30,7 @@
     "reconcile": "ts-node scripts/reconcile.ts",
     "sessions:revoke-all": "ts-node scripts/revoke-all-sessions.ts",
     "shop-data": "ts-node scripts/shop-data.ts",
+    "tenant-audit": "ts-node scripts/tenant-audit.ts",
     "certify:exploits": "ts-node test/certification/exploit-replay.ts",
     "load:business-day": "bash load/business-day.sh",
     "postinstall": "prisma generate"

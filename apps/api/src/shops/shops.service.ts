@@ -80,9 +80,11 @@ export class ShopsService {
     const passwordValid = await bcrypt.compare(dto.currentPassword, currentOwner.password);
     if (!passwordValid) throw new ForbiddenException('Invalid password');
 
-    const newOwner = await this.prisma.user.findUnique({ where: { id: dto.newOwnerId } });
-    if (!newOwner) throw new NotFoundException('New owner not found');
-    if (newOwner.shopId !== shopId) throw new BadRequestException('New owner must belong to this shop');
+    // User is a global model (not narrowed by the tenant extension): the lookup names the shop, so a
+    // user of another shop answers exactly like an id of nobody (cross-shop audit 2026-10-12; a 400
+    // "must belong to this shop" told an owner that the id was a user of some other shop).
+    const newOwner = await this.prisma.user.findFirst({ where: { id: dto.newOwnerId, shopId } });
+    if (!newOwner) throw new NotFoundException({ message: 'New owner not found', code: 'USER_NOT_FOUND' });
     if (newOwner.isDeleted || !newOwner.isActive) throw new BadRequestException('New owner account is inactive or deleted');
 
     // Execute atomic ownership transfer and token version invalidation

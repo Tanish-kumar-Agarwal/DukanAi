@@ -205,6 +205,9 @@ export class PurchaseRepository {
   }
 
   async updateDraft(shopId: string, id: string, payload: UpdatePurchaseDraftDto, actorId: string) {
+    // A draft may change supplier, under the same rule as a new order: the shop's own, live and active
+    // (cross-shop audit 2026-10-12: the field was accepted and silently dropped).
+    if (payload.supplierId !== undefined) await this.validation.validateSupplier(shopId, payload.supplierId);
     if (payload.items) {
       await this.validation.validateItems(shopId, payload.items);
       await this.assertItemReferencesOwned(shopId, payload.items);
