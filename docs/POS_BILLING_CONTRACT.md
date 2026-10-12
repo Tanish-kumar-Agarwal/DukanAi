@@ -462,6 +462,19 @@ Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
 
 ## 6. Dashboard and reports
 
+- Financial figures are for `FINANCE_ROLES` (OWNER, ADMIN, SUPER_ADMIN,
+  MANAGER; `apps/api/src/auth/role-sets.ts`): cost prices, profit and margin,
+  stock at cost, supplier payables and purchasing, expenses. For a CASHIER or
+  a VIEWER, `GET /dashboard/analytics`, `GET /dashboard/products`, the
+  `/suppliers`, `/expenses`, `/purchases`, `/grn`, `/purchase-returns`,
+  `/vendor-bills`, `/supplier-credit-notes`, `/purchase-analytics` and
+  `/purchase-events` reads answer 403, and every other answer leaves out
+  each field whose name holds `cost`, `profit`, `margin`, `payable` or `cogs`
+  and the stock valuations (`inventoryValue`, `stockValue`, `valuation`):
+  `FinancialFieldsInterceptor`, at any depth (product, invoice line, batch,
+  revision snapshot, event payload). Selling price, MRP, taxes, discounts,
+  invoice totals, udhar and drawer cash are unchanged.
+
 - `GET /dashboard/summary` returns
   `{ businessDate, timezone, failedSections, todayGrossSales, todayReturns,
   todaySales (net), todayProfit (gross profit: taxable value minus the cost
@@ -484,7 +497,10 @@ Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
   `shift`) loads independently: a part that fails is listed in
   `failedSections`, its figures are `null` and its lists empty, and the rest
   of the response is authoritative. Only when every part fails does the route
-  answer `503 DASHBOARD_UNAVAILABLE`.
+  answer `503 DASHBOARD_UNAVAILABLE`. `restrictedSections` lists the parts
+  not computed for the caller's role: `[]` for FINANCE_ROLES,
+  `['todayProfit', 'inventoryValue']` for a CASHIER or VIEWER, whose answer
+  carries neither figure.
 - Stock alerts (`lowStockCount`, `outOfStockCount`, `lowStockItems`,
   `GET /dashboard/low-stock`) cover active (`isActive`), non-deleted,
   stock-tracked products (not `SERVICE`/`DIGITAL`): out of stock is
@@ -498,7 +514,7 @@ Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
   Reports page) }` computed live and cached for 60 s under key
   `shop:{shopId}:analytics:kpis`.
 - `GET /dashboard/insights` (the dashboard's AI insights card) returns
-  `{ businessDate, generatedAt, failedSections, forecast: { forecastNetRevenue,
+  `{ businessDate, generatedAt, failedSections, restrictedSections, forecast: { forecastNetRevenue,
   basisDays, confidence, basisFrom, basisTo, todayNetSales, progressPct },
   restock: { basisDays: 30, coverDays: 14, items: [{ productId, name, sku,
   unit, currentStock, reorderPoint, avgDailyUnits, daysOfCover,
@@ -508,8 +524,9 @@ Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
   suggestions cover stock-alert products plus products with under 7 days of
   cover, and refill to reorder point plus 14 days of demand. Sections fail
   independently like the summary (`503 INSIGHTS_UNAVAILABLE` only when all
-  fail).
-- `GET /dashboard/analytics?range` and `GET /dashboard/trends?days` keep their
+  fail). `topProduct` is ranked by gross profit, so a CASHIER or VIEWER gets
+  `topProduct: null` with `restrictedSections: ['topProduct']`.
+- `GET /dashboard/analytics?range` (FINANCE_ROLES) and `GET /dashboard/trends?days` keep their
   shapes with the same SALE/RETURN/CANCELLED rules and business-day ranges.
   The analytics `kpis` carry `grossProfit` (as `todayProfit`, over the
   range), `expenses` (live expenses whose `expenseDate` falls in the range,

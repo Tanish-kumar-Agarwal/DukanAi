@@ -1,16 +1,13 @@
-import { INestApplication, RequestMethod } from '@nestjs/common';
-import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
-import { DiscoveryService, MetadataScanner } from '@nestjs/core';
+import { INestApplication } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { mkdirSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import request from 'supertest';
-import { ANY_AUTHENTICATED_KEY } from '../../src/auth/any-authenticated.decorator';
-import { IS_PUBLIC_KEY } from '../../src/auth/public.decorator';
-import { ROLES_KEY } from '../../src/auth/roles.decorator';
 import { bearerToken, createUser, ownerOf } from '../security/security-fixtures';
 import { bootApp, createShop, httpTarget, TestShop } from './pos-fixtures';
+import { enumerateHandlers, Handler } from './route-enumeration';
+import { financialKeysIn } from './financial-keys';
 
 /**
  * Phase 4 exit gate: every registered route, as nobody, a VIEWER, the OWNER of
@@ -30,23 +27,6 @@ import { bootApp, createShop, httpTarget, TestShop } from './pos-fixtures';
  */
 jest.setTimeout(240_000);
 
-interface Handler {
-  key: string;
-  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-  path: string;
-  isPublic: boolean;
-  anyAuthenticated: boolean;
-  roles: Role[] | undefined;
-}
-
-const METHODS: Record<number, Handler['method'] | undefined> = {
-  [RequestMethod.GET]: 'GET',
-  [RequestMethod.POST]: 'POST',
-  [RequestMethod.PUT]: 'PUT',
-  [RequestMethod.PATCH]: 'PATCH',
-  [RequestMethod.DELETE]: 'DELETE',
-};
-
 /**
  * Routes that end a session or the shop: walked last, as the OWNER only, in
  * this order. Logout runs first on a session opened just for it, so the
@@ -64,43 +44,6 @@ const FOREIGN_ID_IS_NOT_A_ROW: Record<string, string> = {
   'GET /api/product-identity/barcode/:code/render': 'renders the barcode image for any code string; no row is read',
 };
 
-function enumerateHandlers(app: INestApplication): Handler[] {
-  const discovery = app.get(DiscoveryService);
-  const scanner = app.get(MetadataScanner);
-  const handlers = new Map<string, Handler>();
-  for (const wrapper of discovery.getControllers()) {
-    const { instance, metatype } = wrapper;
-    if (!instance || !metatype) continue;
-    const prototype = Object.getPrototypeOf(instance) as Record<string, unknown>;
-    const prefixes = ([] as string[]).concat((Reflect.getMetadata(PATH_METADATA, metatype) as string | string[] | undefined) ?? '');
-    const classPublic = Reflect.getMetadata(IS_PUBLIC_KEY, metatype) === true;
-    const classAny = Reflect.getMetadata(ANY_AUTHENTICATED_KEY, metatype) === true;
-    const classRoles = Reflect.getMetadata(ROLES_KEY, metatype) as Role[] | undefined;
-    for (const name of scanner.getAllMethodNames(prototype)) {
-      const fn = prototype[name];
-      if (typeof fn !== 'function') continue;
-      const method = METHODS[Reflect.getMetadata(METHOD_METADATA, fn) as number];
-      if (!method) continue;
-      const paths = ([] as string[]).concat((Reflect.getMetadata(PATH_METADATA, fn) as string | string[] | undefined) ?? '');
-      for (const prefix of prefixes) {
-        for (const sub of paths) {
-          const path = ('/api/' + [prefix, sub].filter((p) => p && p !== '/').join('/')).replace(/\/+/g, '/').replace(/\/$/, '');
-          const key = `${method} ${path}`;
-          handlers.set(key, {
-            key,
-            method,
-            path,
-            isPublic: classPublic || Reflect.getMetadata(IS_PUBLIC_KEY, fn) === true,
-            anyAuthenticated: classAny || Reflect.getMetadata(ANY_AUTHENTICATED_KEY, fn) === true,
-            roles: (Reflect.getMetadata(ROLES_KEY, fn) as Role[] | undefined) ?? classRoles,
-          });
-        }
-      }
-    }
-  }
-  return [...handlers.values()].sort((a, b) => a.key.localeCompare(b.key));
-}
-
 /** Every path parameter becomes a random id (an unknown row), `:code` a code no barcode carries. */
 const withRandomIds = (path: string) => path.replace(/:([A-Za-z]+)/g, (_, name: string) => (name === 'code' ? `NOCODE-${randomUUID().slice(0, 8)}` : randomUUID()));
 
@@ -109,6 +52,8 @@ interface Outcome {
   handler: Handler;
   status: number;
   body: string;
+  contentType: string;
+  json: unknown;
 }
 
 describe('route walker (phase 4 exit gate): every handler, four identities, never a 500', () => {
@@ -125,7 +70,15 @@ describe('route walker (phase 4 exit gate): every handler, four identities, neve
     if (token) req = req.set('Authorization', `Bearer ${token}`);
     if (handler.method !== 'GET') req = req.set('Content-Type', 'application/json').send({});
     const res = await req;
-    outcomes.push({ who, handler, status: res.status, body: typeof res.text === 'string' ? res.text.slice(0, 200) : '' });
+    const contentType = String(res.headers['content-type'] ?? '');
+    outcomes.push({
+      who,
+      handler,
+      status: res.status,
+      body: typeof res.text === 'string' ? res.text.slice(0, 200) : '',
+      contentType,
+      json: contentType.includes('json') ? (res.body as unknown) : undefined,
+    });
   }
 
   beforeAll(async () => {
@@ -205,6 +158,23 @@ describe('route walker (phase 4 exit gate): every handler, four identities, neve
       .filter((o) => o.who === 'viewer' && o.handler.method !== 'GET' && !o.handler.isPublic && !o.handler.anyAuthenticated)
       .filter((o) => o.handler.roles && !o.handler.roles.includes(Role.VIEWER) && o.status !== 403)
       .map(describeOutcome);
+    expect(leaks).toEqual([]);
+  });
+
+  it('a VIEWER is refused (403) on every read narrowed to other roles (the FINANCE_ROLES reads among them)', () => {
+    const leaks = outcomes
+      .filter((o) => o.who === 'viewer' && o.handler.method === 'GET' && !o.handler.isPublic && !o.handler.anyAuthenticated)
+      .filter((o) => o.handler.roles && !o.handler.roles.includes(Role.VIEWER) && o.status !== 403)
+      .map(describeOutcome);
+    expect(leaks).toEqual([]);
+    expect(outcomes.some((o) => o.who === 'viewer' && o.handler.key === 'GET /api/suppliers' && o.status === 403)).toBe(true);
+  });
+
+  it('no answer to the VIEWER carries a cost, profit, valuation or payable field', () => {
+    const leaks = outcomes
+      .filter((o) => o.who === 'viewer' && o.status < 300 && o.contentType.includes('json'))
+      .filter((o) => financialKeysIn(o.json).length > 0)
+      .map((o) => `${describeOutcome(o)} keys: ${financialKeysIn(o.json).join(', ')}`);
     expect(leaks).toEqual([]);
   });
 

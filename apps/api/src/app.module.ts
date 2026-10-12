@@ -32,9 +32,10 @@ import { buildCacheOptions } from './common/cache/cache-options';
 import { bullDefaultJobOptions } from './common/queues/job-options';
 import { RedisThrottlerStorage } from './common/throttling/redis-throttler.storage';
 import { buildThrottlerOptions } from './common/throttling/throttler-options';
-import { APP_GUARD, DiscoveryModule } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR, DiscoveryModule } from '@nestjs/core';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RolesGuard } from './auth/roles.guard';
+import { FinancialFieldsInterceptor } from './auth/financial-fields.interceptor';
 import { FeatureGateGuard } from './common/features/feature-gate';
 import { RouteAuthorizationAssertion } from './auth/route-authorization.assertion';
 import { QueueWiringAssertion } from './common/queues/queue-wiring.assertion';
@@ -192,6 +193,8 @@ import { ReconciliationModule } from './reconciliation/reconciliation.module';
     { provide: APP_GUARD, useClass: RolesGuard },
     // 5. FeatureGateGuard (roadmap 9.23: a paused feature answers 503 FEATURE_PAUSED, after auth)
     { provide: APP_GUARD, useClass: FeatureGateGuard },
+    // Cost, profit, valuation and payable fields leave only to FINANCE_ROLES (release audit 2026-10-12).
+    { provide: APP_INTERCEPTOR, useClass: FinancialFieldsInterceptor },
     // Refuses to boot while any write handler lacks @Roles / @AnyAuthenticated / @Public.
     RouteAuthorizationAssertion,
     // Refuses to boot while a registered queue has no worker or a worker no queue (roadmap 4.6).

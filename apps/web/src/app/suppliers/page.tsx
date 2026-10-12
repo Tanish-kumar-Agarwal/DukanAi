@@ -16,6 +16,7 @@ import { describeApiError } from '@/lib/api-error';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
 import { generateUuid } from '@/lib/uuid';
 import type { TenderType } from '@/types';
+import { FinanceOnly } from '@/components/layout/FinanceOnly';
 
 /** `PATCH /suppliers/:id` and `POST /suppliers/:id/payments` are MANAGER and above, `DELETE /suppliers/:id` OWNER/ADMIN (contract). */
 const EDIT_ROLES = new Set(['MANAGER', 'ADMIN', 'OWNER', 'SUPER_ADMIN']);
@@ -33,7 +34,7 @@ const PAYMENT_MODES: Array<{ label: string; tender: TenderType }> = [
   { label: 'Card', tender: 'CARD' },
 ];
 
-export default function SuppliersPage() {
+function SuppliersPageContent() {
   const { toast } = useToast();
   const { data: session } = useSession();
   const allowEdit = hasRole(EDIT_ROLES, session?.user?.role);
@@ -659,5 +660,14 @@ export default function SuppliersPage() {
         )}
       </SlidingPanel>
     </div>
+  );
+}
+
+/** FINANCE_ROLES only: the API refuses this page's reads to a cashier or a stock clerk. */
+export default function SuppliersPage() {
+  return (
+    <FinanceOnly what="Supplier balances, purchases and payments">
+      <SuppliersPageContent />
+    </FinanceOnly>
   );
 }

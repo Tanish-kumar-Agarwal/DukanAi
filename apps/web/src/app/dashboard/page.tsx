@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useSession } from 'next-auth/react';
 import {
   Database, FileText, Package, RefreshCw, ShoppingBag, TrendingUp, Users, Wallet,
 } from 'lucide-react';
@@ -19,6 +20,7 @@ import { useVisibilityPolling } from '@/components/dashboard/useVisibilityPollin
 import { useDashboardResource } from '@/components/dashboard/useDashboardResource';
 import { ErrorState } from '@/components/customers/States';
 import { formatCount, formatMoney, formatTime } from '@/components/customers/format';
+import { canSeeFinancials } from '@/components/customers/permissions';
 
 const POLL_INTERVAL_MS = 30 * 1000;
 
@@ -78,6 +80,11 @@ export default function DashboardPage() {
   const summaryLoading = summary.loading && !s;
   const summaryDown = !!summary.error && !s;
   const failed = new Set<DashboardSummarySection>(s?.failedSections ?? []);
+  // Profit and stock at cost are for owners, admins and managers; the API leaves them out for anyone else.
+  const { data: session, status: sessionStatus } = useSession();
+  const restricted = new Set<DashboardSummarySection>(s?.restrictedSections ?? []);
+  const shows = (section: DashboardSummarySection) =>
+    !restricted.has(section) && (sessionStatus === 'loading' || canSeeFinancials(session?.user?.role));
   const tile = (section: DashboardSummarySection) => ({ loading: summaryLoading, unavailable: summaryDown || failed.has(section) });
   const card = (section: DashboardSummarySection) => ({
     loading: summaryLoading,
@@ -133,7 +140,7 @@ export default function DashboardPage() {
       )}
 
       {/* Today */}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+      <div className={`grid grid-cols-2 gap-4 ${shows('todayProfit') ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
         <SummaryStatCard
           icon={<TrendingUp size={24} />}
           tone="bg-[#8B5CF6]/10 text-[#8B5CF6]"
@@ -142,14 +149,16 @@ export default function DashboardPage() {
           hint={s && s.todayGrossSales !== null ? `Gross ${formatMoney(s.todayGrossSales)} · Returns ${formatMoney(s.todayReturns ?? 0)}` : undefined}
           {...tile('today')}
         />
-        <SummaryStatCard
-          icon={<ShoppingBag size={24} />}
-          tone="bg-green-500/10 text-green-500"
-          label="Today's gross profit"
-          value={money(s?.todayProfit)}
-          hint="Sales − cost of goods, after returns"
-          {...tile('todayProfit')}
-        />
+        {shows('todayProfit') && (
+          <SummaryStatCard
+            icon={<ShoppingBag size={24} />}
+            tone="bg-green-500/10 text-green-500"
+            label="Today's gross profit"
+            value={money(s?.todayProfit)}
+            hint="Sales − cost of goods, after returns"
+            {...tile('todayProfit')}
+          />
+        )}
         <SummaryStatCard
           icon={<FileText size={24} />}
           tone="bg-blue-500/10 text-blue-500"
@@ -186,7 +195,7 @@ export default function DashboardPage() {
       </div>
 
       {/* All time */}
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+      <div className={`grid grid-cols-2 gap-4 ${shows('inventoryValue') ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
         <SummaryStatCard
           icon={<Wallet size={24} />}
           tone="bg-emerald-500/10 text-emerald-500"
@@ -222,15 +231,17 @@ export default function DashboardPage() {
           href="/products"
           {...tile('products')}
         />
-        <SummaryStatCard
-          icon={<Database size={24} />}
-          tone="bg-cyan-500/10 text-cyan-500"
-          label="Inventory value"
-          value={money(s?.inventoryValue)}
-          hint="Current stock at cost"
-          href="/inventory"
-          {...tile('inventoryValue')}
-        />
+        {shows('inventoryValue') && (
+          <SummaryStatCard
+            icon={<Database size={24} />}
+            tone="bg-cyan-500/10 text-cyan-500"
+            label="Inventory value"
+            value={money(s?.inventoryValue)}
+            hint="Current stock at cost"
+            href="/inventory"
+            {...tile('inventoryValue')}
+          />
+        )}
       </div>
 
       {/* Trend + quick actions + shift */}

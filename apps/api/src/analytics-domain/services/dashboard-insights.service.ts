@@ -49,12 +49,15 @@ export interface SalesForecastInsight extends NetRevenueForecast {
 
 /**
  * Figures of a section listed in `failedSections` are null; every other
- * figure is computed live from committed invoices and product stock.
+ * figure is computed live from committed invoices and product stock. A
+ * section in `restrictedSections` is null because the caller is outside
+ * FINANCE_ROLES (`topProduct`: ranked and described by profit).
  */
 export interface DashboardInsights {
   businessDate: string;
   generatedAt: string;
   failedSections: InsightSection[];
+  restrictedSections: InsightSection[];
   forecast: SalesForecastInsight | null;
   restock: {
     basisDays: number;
@@ -83,8 +86,10 @@ export class DashboardInsightsService {
     private readonly shopTimezone: ShopTimezoneService,
   ) {}
 
-  async getInsights(shopId: string, now: Date = new Date()): Promise<DashboardInsights> {
+  /** `financials: false` (a caller outside FINANCE_ROLES) leaves out the top product, which is ranked by profit. */
+  async getInsights(shopId: string, now: Date = new Date(), options: { financials?: boolean } = {}): Promise<DashboardInsights> {
     const timeZone = await this.shopTimezone.resolve(shopId);
+    const restricted: InsightSection[] = options.financials === false ? ['topProduct'] : [];
     const failed: InsightSection[] = [];
     const section = <T>(name: InsightSection, work: () => Promise<T>): Promise<T | null> =>
       // Promise.resolve().then: a synchronous throw is isolated like a rejection.
@@ -97,14 +102,16 @@ export class DashboardInsightsService {
     const [forecast, restock, topProduct] = await Promise.all([
       section('forecast', () => this.salesForecast(shopId, timeZone, now)),
       section('restock', () => this.restockSuggestions(shopId, timeZone, now)),
-      section('topProduct', async () => {
-        const window = trailingBusinessDays(RESTOCK_BASIS_DAYS, timeZone, now);
-        const [best] = await this.profitMarginEngine.getTopProductsByProfit(shopId, window.start, window.end, 1);
-        return best && best.grossProfit > 0 ? best : null;
-      }),
+      restricted.includes('topProduct')
+        ? Promise.resolve(null)
+        : section('topProduct', async () => {
+            const window = trailingBusinessDays(RESTOCK_BASIS_DAYS, timeZone, now);
+            const [best] = await this.profitMarginEngine.getTopProductsByProfit(shopId, window.start, window.end, 1);
+            return best && best.grossProfit > 0 ? best : null;
+          }),
     ]);
 
-    if (failed.length === 3) {
+    if (failed.length === 3 - restricted.length) {
       throw new ServiceUnavailableException({ message: 'Insights are temporarily unavailable.', code: 'INSIGHTS_UNAVAILABLE' });
     }
 
@@ -112,6 +119,7 @@ export class DashboardInsightsService {
       businessDate: businessDateString(now, timeZone),
       generatedAt: now.toISOString(),
       failedSections: (['forecast', 'restock', 'topProduct'] as const).filter((name) => failed.includes(name)),
+      restrictedSections: restricted,
       forecast,
       restock: restock ? { basisDays: RESTOCK_BASIS_DAYS, coverDays: RESTOCK_COVER_DAYS, items: restock } : null,
       topProduct,

@@ -36,6 +36,8 @@ export function AiInsightsCard({ insights, loading, error, onRetry, className = 
   const forecast = insights?.forecast ?? null;
   const restock = insights?.restock ?? null;
   const top = insights?.topProduct ?? null;
+  // Ranked by profit: an owner's, admin's or manager's line (the API sends none to anyone else).
+  const showTop = !(insights?.restrictedSections ?? []).includes('topProduct');
 
   return (
     <Card className={`p-5 ${className}`}>
@@ -116,20 +118,22 @@ export function AiInsightsCard({ insights, loading, error, onRetry, className = 
           </section>
 
           {/* Top product */}
-          <section aria-label="Top product" className="md:col-span-3 flex items-center justify-between gap-3 border-t border-gray-100 pt-3">
-            <p className="flex items-center gap-1.5 text-xs font-bold text-gray-700">
-              <Trophy size={14} className="text-emerald-500" /> Top earner, last 30 days
-            </p>
-            {failed.has('topProduct') ? (
-              <SectionUnavailable what="The top product" />
-            ) : top ? (
-              <Link href="/analytics" className="min-w-0 truncate text-right text-xs text-gray-600 hover:text-gray-900">
-                <span className="font-bold text-gray-800">{top.name}</span> · {formatMoney(top.grossProfit)} profit · {top.grossMarginPct}% margin
-              </Link>
-            ) : (
-              <span className="text-xs text-gray-500">No profitable sales in the last 30 days yet.</span>
-            )}
-          </section>
+          {showTop && (
+            <section aria-label="Top product" className="md:col-span-3 flex items-center justify-between gap-3 border-t border-gray-100 pt-3">
+              <p className="flex items-center gap-1.5 text-xs font-bold text-gray-700">
+                <Trophy size={14} className="text-emerald-500" /> Top earner, last 30 days
+              </p>
+              {failed.has('topProduct') ? (
+                <SectionUnavailable what="The top product" />
+              ) : top ? (
+                <Link href="/analytics" className="min-w-0 truncate text-right text-xs text-gray-600 hover:text-gray-900">
+                  <span className="font-bold text-gray-800">{top.name}</span> · {formatMoney(top.grossProfit)} profit · {top.grossMarginPct}% margin
+                </Link>
+              ) : (
+                <span className="text-xs text-gray-500">No profitable sales in the last 30 days yet.</span>
+              )}
+            </section>
+          )}
         </div>
       ) : null}
     </Card>

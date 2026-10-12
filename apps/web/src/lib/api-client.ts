@@ -598,11 +598,17 @@ export interface LowStockList {
   items: LowStockItem[];
 }
 
-/** Figures of a section listed in `failedSections` are null (lists empty). */
+/**
+ * Figures of a section listed in `failedSections` are null (lists empty). A
+ * section in `restrictedSections` is one the caller's role does not receive
+ * (profit and stock value for a cashier or stock clerk): its figures are null
+ * and its tile is not shown.
+ */
 export interface DashboardSummary {
   businessDate: string;
   timezone: string;
   failedSections: DashboardSummarySection[];
+  restrictedSections: DashboardSummarySection[];
   todayGrossSales: number | null;
   todayReturns: number | null;
   /** Net: gross sales minus returns. */
@@ -649,6 +655,8 @@ export interface DashboardInsights {
   businessDate: string;
   generatedAt: string;
   failedSections: InsightSection[];
+  /** Not sent to this role (`topProduct`, ranked by profit, for a cashier or stock clerk). */
+  restrictedSections: InsightSection[];
   forecast: {
     forecastNetRevenue: number;
     basisDays: number;
@@ -794,6 +802,7 @@ function mapDashboardSummary(payload: unknown): DashboardSummary {
     businessDate: raw.businessDate as string,
     timezone: raw.timezone as string,
     failedSections: Array.isArray(raw.failedSections) ? (raw.failedSections as DashboardSummarySection[]) : [],
+    restrictedSections: Array.isArray(raw.restrictedSections) ? (raw.restrictedSections as DashboardSummarySection[]) : [],
     todayGrossSales: toNullableNumber(raw.todayGrossSales),
     todayReturns: toNullableNumber(raw.todayReturns),
     todaySales: toNullableNumber(raw.todaySales),
@@ -855,6 +864,7 @@ function mapInsights(payload: unknown): DashboardInsights {
     businessDate: raw.businessDate as string,
     generatedAt: (raw.generatedAt as string) ?? '',
     failedSections: Array.isArray(raw.failedSections) ? (raw.failedSections as InsightSection[]) : [],
+    restrictedSections: Array.isArray(raw.restrictedSections) ? (raw.restrictedSections as InsightSection[]) : [],
     forecast: forecast
       ? {
           forecastNetRevenue: toNumber(forecast.forecastNetRevenue),

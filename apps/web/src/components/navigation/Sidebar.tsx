@@ -13,7 +13,7 @@ import {
 import { clsx } from '@/lib/utils';
 import { useAppStore } from '@/store';
 import { Modal } from '@/components/ui/Modal';
-import { canUsePos, isManagement } from '@/components/customers/permissions';
+import { canSeeFinancials, canUsePos, isManagement } from '@/components/customers/permissions';
 
 interface NavItem {
   name: string;
@@ -36,11 +36,11 @@ const navigation: NavItem[] = [
   { name: 'Customers (Udhar)', href: '/customers', icon: UserCheck },
   { name: 'AI OCR Scanner', href: '/ai-scanner', icon: ScanLine, badge: 'Magic', badgeColor: 'bg-green-500', allowed: isManagement },
   { name: 'Smart Bill Capture', href: '/smart-capture', icon: Camera, badge: 'Mobile', badgeColor: 'bg-blue-500' },
-  { name: 'Suppliers', href: '/suppliers', icon: Users },
+  { name: 'Suppliers', href: '/suppliers', icon: Users, allowed: canSeeFinancials },
   { name: 'Inventory', href: '/inventory', icon: ClipboardList },
-  { name: 'Expenses', href: '/expenses', icon: Receipt },
+  { name: 'Expenses', href: '/expenses', icon: Receipt, allowed: canSeeFinancials },
   { name: 'Employees', href: '/employees', icon: UserCircle, allowed: isManagement },
-  { name: 'Reports & Analytics', href: '/analytics', icon: BarChart3 },
+  { name: 'Reports & Analytics', href: '/analytics', icon: BarChart3, allowed: canSeeFinancials },
   { name: 'Notifications', href: '/notifications', icon: Bell, pinned: true },
   { name: 'Settings', href: '/settings', icon: Settings, pinned: true },
 ];

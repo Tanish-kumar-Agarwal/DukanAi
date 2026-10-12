@@ -23,6 +23,7 @@ import { describeApiError } from '@/lib/api-error';
 import { ErrorState } from '@/components/customers/States';
 import { formatBusinessDate, formatDate, formatMoney, labelFor, PAYMENT_MODE_LABELS } from '@/components/customers/format';
 import { isManagement } from '@/components/customers/permissions';
+import { FinanceOnly } from '@/components/layout/FinanceOnly';
 
 // recharts is loaded after the shell (roadmap 6.8); each chart shows a placeholder until then.
 const chartLoading = () => <SkeletonBox className="h-full w-full rounded-lg" />;
@@ -98,7 +99,7 @@ function AnalyticsSkeleton() {
   );
 }
 
-export default function AnalyticsPage() {
+function AnalyticsPageContent() {
   const { toast } = useToast();
   const { data: session } = useSession();
   // The CSV exports are EXPORT_ROLES (MANAGER and above): a cashier or viewer would only collect 403s (audit W12).
@@ -498,5 +499,14 @@ export default function AnalyticsPage() {
         </>
       )}
     </div>
+  );
+}
+
+/** FINANCE_ROLES only: the API refuses this page's reads to a cashier or a stock clerk. */
+export default function AnalyticsPage() {
+  return (
+    <FinanceOnly what="Profit, expenses and the sales reports">
+      <AnalyticsPageContent />
+    </FinanceOnly>
   );
 }

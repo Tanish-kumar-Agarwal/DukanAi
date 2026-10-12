@@ -3,7 +3,7 @@ import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { PurchaseRepository } from './repositories/purchase.repository';
 import type { Request } from 'express';
-import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { FINANCE_ROLES, MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
 import { LimitOffsetQueryDto, limitOffsetArgs } from '../common/pagination';
 import { ApprovalDecisionDto } from '../common/dto/approval-decision.dto';
@@ -22,6 +22,7 @@ export class PurchaseController {
     return this.repository.createPurchaseOrder(shopId, payload, actorId, ipAddress);
   }
 
+  @Roles(...FINANCE_ROLES)
   @Get()
   async listPurchaseOrders(
     @CurrentShop() shopId: string,
@@ -31,6 +32,7 @@ export class PurchaseController {
     return this.repository.listPurchaseOrders(shopId, limit, offset);
   }
 
+  @Roles(...FINANCE_ROLES)
   @Get(':id')
   async getPurchaseOrder(@CurrentShop() shopId: string, @Param('id') id: string) {
     return this.repository.getPurchaseOrder(shopId, id);

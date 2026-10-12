@@ -86,14 +86,21 @@ export interface LowStockList {
   items: LowStockItem[];
 }
 
+/** Sections only FINANCE_ROLES receive: profit and stock at cost. */
+export const FINANCIAL_SUMMARY_SECTIONS: readonly DashboardSummarySection[] = ['todayProfit', 'inventoryValue'];
+
 /**
  * Figures of a section listed in `failedSections` are `null` (and lists are
- * empty); every other figure is authoritative.
+ * empty); every other figure is authoritative. A section listed in
+ * `restrictedSections` was not computed for this caller (a CASHIER or VIEWER:
+ * `FINANCIAL_SUMMARY_SECTIONS`), and `FinancialFieldsInterceptor` leaves its
+ * figures out of the answer.
  */
 export interface DashboardSummary {
   businessDate: string;
   timezone: string;
   failedSections: DashboardSummarySection[];
+  restrictedSections: DashboardSummarySection[];
   todayGrossSales: number | null;
   todayReturns: number | null;
   /** Net: gross sales minus returns. */
@@ -171,20 +178,24 @@ export class DashboardService {
     private readonly clock: Clock,
   ) {}
 
-  async getSummary(shopId: string, userId: string): Promise<DashboardSummary> {
+  /** `financials: false` (a caller outside FINANCE_ROLES) skips `FINANCIAL_SUMMARY_SECTIONS`. */
+  async getSummary(shopId: string, userId: string, options: { financials?: boolean } = {}): Promise<DashboardSummary> {
     const timeZone = await this.shopTimezone.resolve(shopId);
     const now = this.clock.now();
     const start = startOfBusinessDay(now, timeZone);
     const end = endOfBusinessDay(now, timeZone);
+    const restricted = options.financials === false ? [...FINANCIAL_SUMMARY_SECTIONS] : [];
 
     const failed: DashboardSummarySection[] = [];
-    const section = <T>(name: DashboardSummarySection, work: () => Promise<T>): Promise<T | null> =>
+    const section = <T>(name: DashboardSummarySection, work: () => Promise<T>): Promise<T | null> => {
+      if (restricted.includes(name)) return Promise.resolve(null);
       // Promise.resolve().then: a synchronous throw is isolated like a rejection.
-      Promise.resolve().then(work).catch((error: unknown) => {
+      return Promise.resolve().then(work).catch((error: unknown) => {
         failed.push(name);
         this.logger.error(`Dashboard summary section "${name}" failed for shop ${shopId}: ${(error as Error)?.message ?? error}`);
         return null;
       });
+    };
 
     const [
       today,
@@ -235,7 +246,7 @@ export class DashboardService {
 
     // Nothing could be read (e.g. the database is down): that is an outage,
     // not a partial dashboard.
-    if (failed.length === SUMMARY_SECTIONS.length) {
+    if (failed.length === SUMMARY_SECTIONS.length - restricted.length) {
       throw new ServiceUnavailableException({
         message: 'Dashboard data is temporarily unavailable.',
         code: 'DASHBOARD_UNAVAILABLE',
@@ -248,6 +259,7 @@ export class DashboardService {
       businessDate: businessDateString(now, timeZone),
       timezone: timeZone,
       failedSections: SUMMARY_SECTIONS.filter((name) => failed.includes(name)),
+      restrictedSections: SUMMARY_SECTIONS.filter((name) => restricted.includes(name)),
       todayGrossSales: today ? toMoney(today.grossSales) : null,
       todayReturns: today ? toMoney(today.returns) : null,
       todaySales: today ? toMoney(today.netSales) : null,

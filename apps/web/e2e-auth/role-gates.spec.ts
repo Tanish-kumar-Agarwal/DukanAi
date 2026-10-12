@@ -8,7 +8,8 @@ import { createRequire } from 'node:module';
  * accepts from the signed-in role (the API's role sets; AUTH_DISABLED is the
  * OWNER). W4: a cashier edits a customer without the credit limit the API
  * refuses from anyone below MANAGER. W17: the sign-in forms are labelled and
- * their error is an alert.
+ * their error is an alert. 2026-10-12: cost, profit, stock value, suppliers,
+ * expenses and Reports are for owners, admins and managers only.
  */
 
 const API_URL = `http://localhost:${process.env.E2E_AUTH_API_PORT ?? 3005}/api`;
@@ -95,9 +96,10 @@ async function sessionRole(page: Page): Promise<string> {
 }
 
 /** A sale the owner rang up: a cash invoice of one ₹100 service line. */
-async function seedSale(request: APIRequestContext, shop: Shop): Promise<{ invoiceId: string; customerId: string; customerName: string }> {
+async function seedSale(request: APIRequestContext, shop: Shop): Promise<{ invoiceId: string; customerId: string; customerName: string; productId: string; productName: string }> {
+  const productName = `Gate item ${stamp()}`;
   const product = await call<{ id: string }>(request, shop.ownerToken, 'post', '/products', {
-    name: `Gate item ${stamp()}`, type: 'SERVICE', unit: 'PCS', gstRate: 'ZERO', costPrice: 40, sellingPrice: 100, mrp: 100,
+    name: productName, type: 'SERVICE', unit: 'PCS', gstRate: 'ZERO', costPrice: 40, sellingPrice: 100, mrp: 100,
   });
   const customerName = `Gate customer ${stamp()}`;
   const customer = await call<{ id: string }>(request, shop.ownerToken, 'post', '/customers', { name: customerName, phone: String(6_000_000_000 + Math.floor(Math.random() * 999_999_999)), creditLimit: 500 });
@@ -105,10 +107,10 @@ async function seedSale(request: APIRequestContext, shop: Shop): Promise<{ invoi
   const sale = await call<{ invoice: { id: string } }>(request, shop.ownerToken, 'post', '/billing/invoice', {
     idempotencyKey: randomUUID(), items: [{ productId: product.id, quantity: 1 }], customerId: customer.id, payments: [{ tender: 'CASH', amount: 100 }], udharAmount: 0,
   });
-  return { invoiceId: sale.invoice.id, customerId: customer.id, customerName };
+  return { invoiceId: sale.invoice.id, customerId: customer.id, customerName, productId: product.id, productName };
 }
 
-/** A pending expense and a supplier the owner recorded: what a lower role may read but not change. */
+/** A pending expense and a supplier the owner recorded: figures for owners, admins and managers only. */
 async function seedBooks(request: APIRequestContext, shop: Shop): Promise<{ expense: string; supplierId: string; supplierName: string }> {
   const expense = `Gate expense ${stamp()}`;
   await call(request, shop.ownerToken, 'post', '/expenses', { description: expense, category: 'Utilities', amount: 120.5, isPaid: false });
@@ -118,30 +120,70 @@ async function seedBooks(request: APIRequestContext, shop: Shop): Promise<{ expe
 }
 
 /**
- * Expenses and supplier payments are MANAGEMENT_ROLES on the API: below that, the
- * page offers no "Record Expense", no expense row actions and no "Pay Supplier",
- * and the API refuses both writes.
+ * Suppliers, expenses and Reports are FINANCE_ROLES on the API (reads and
+ * writes): below MANAGER the sidebar and the quick actions have no link, the
+ * page by address shows the "owner or a manager" note and loads nothing, the
+ * dashboard has no profit or stock-value tile, a product shows no cost, and
+ * the API refuses the reads and leaves the cost out of what it does answer.
  */
-async function expectNoBookWrites(page: Page, request: APIRequestContext, email: string, books: { expense: string; supplierId: string; supplierName: string }): Promise<void> {
-  await page.goto('/expenses');
-  await expect(page.getByText(books.expense)).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Record Expense' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: `Actions for ${books.expense}` })).toHaveCount(0);
+async function expectNoFinancials(page: Page, request: APIRequestContext, email: string, books: { expense: string; supplierId: string; supplierName: string }, sale: { productId: string; productName: string }): Promise<void> {
+  const nav = page.getByRole('navigation', { name: 'Main' });
+  await page.goto('/dashboard');
+  await expect(nav.getByRole('link', { name: 'Invoices' })).toBeVisible();
+  for (const name of ['Suppliers', 'Expenses', 'Reports & Analytics']) {
+    await expect(nav.getByRole('link', { name })).toHaveCount(0);
+  }
+  const quick = page.getByRole('heading', { name: 'Quick Actions' }).locator('..');
+  await expect(quick.getByRole('link', { name: 'Invoices' })).toBeVisible();
+  for (const label of ['Expenses', 'Reports']) await expect(quick.getByRole('link', { name: label })).toHaveCount(0);
+  await expect(page.getByText("Today's sales (net)")).toBeVisible();
+  await expect(page.getByText('Total products')).toBeVisible();
+  await expect(page.getByText("Today's gross profit")).toHaveCount(0);
+  await expect(page.getByText('Inventory value')).toHaveCount(0);
+  await expect(page.getByText('Top earner, last 30 days')).toHaveCount(0);
 
-  await page.goto('/suppliers');
-  await page.getByRole('button', { name: `Actions for ${books.supplierName}` }).click();
-  await expect(page.getByRole('button', { name: 'View Details' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Pay Supplier' })).toHaveCount(0);
+  for (const path of ['/expenses', '/suppliers', '/analytics']) {
+    const refused: string[] = [];
+    const watch = (r: { status(): number; url(): string }) => { if (r.status() === 403) refused.push(r.url()); };
+    page.on('response', watch);
+    await page.goto(path);
+    await expect(page.getByTestId('finance-only')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Only the owner or a manager can see this page' })).toBeVisible();
+    page.off('response', watch);
+    // The page is not mounted, so it never asks the API for what it would be refused.
+    expect(refused).toEqual([]);
+  }
+  await expect(page.getByText(books.expense)).toHaveCount(0);
+
+  await page.goto(`/products?q=${encodeURIComponent(sale.productName)}`);
+  await page.getByTestId(`product-row-${sale.productId}`).click();
+  await expect(page.getByText('Selling Price', { exact: true })).toBeVisible();
+  await expect(page.getByText('Cost Price', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Stock Value (at cost)')).toHaveCount(0);
+  await expect(page.getByTestId('stat-total-products')).toBeVisible();
+  await expect(page.getByTestId('stat-inventory-value')).toHaveCount(0);
 
   const as = { headers: { Authorization: `Bearer ${await apiToken(request, email)}` } };
+  for (const path of ['/expenses', '/expenses/summary', '/suppliers', '/suppliers/summary', '/dashboard/analytics?range=month', '/dashboard/products', '/purchases']) {
+    expect([path, (await request.get(`${API_URL}${path}`, as)).status()]).toEqual([path, 403]);
+  }
   expect((await request.post(`${API_URL}/expenses`, { ...as, data: { description: 'Nope', category: 'Utilities', amount: 1 } })).status()).toBe(403);
   expect((await request.post(`${API_URL}/suppliers/${books.supplierId}/payments`, { ...as, data: { amount: 1, tender: 'CASH', idempotencyKey: randomUUID() } })).status()).toBe(403);
+  const product = await request.get(`${API_URL}/products/${sale.productId}`, as);
+  expect(product.status()).toBe(200);
+  const body = (await product.json()) as Record<string, unknown>;
+  expect(body.sellingPrice).toBeDefined();
+  expect(body).not.toHaveProperty('costPrice');
+  const summary = (await (await request.get(`${API_URL}/dashboard/summary`, as)).json()) as Record<string, unknown>;
+  expect(summary.restrictedSections).toEqual(['todayProfit', 'inventoryValue']);
+  expect(summary).not.toHaveProperty('todayProfit');
 }
 
 test.describe('role gates (audit W12)', () => {
   test('a VIEWER sees no POS, OCR, customer write, return, export or mark-all-read action', async ({ page, request }) => {
     const shop = await createShop(request);
-    const { invoiceId, customerId, customerName } = await seedSale(request, shop);
+    const sale = await seedSale(request, shop);
+    const { invoiceId, customerId, customerName } = sale;
     const books = await seedBooks(request, shop);
     const viewer = await addStaff(shop, 'VIEWER');
     await signIn(page, viewer.email);
@@ -177,10 +219,6 @@ test.describe('role gates (audit W12)', () => {
     await expect(page.getByRole('button', { name: 'Print' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Return' })).toHaveCount(0);
 
-    await page.goto('/analytics');
-    await expect(page.getByRole('heading', { name: 'Reports & Analytics' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Export' })).toHaveCount(0);
-
     await page.goto('/ai-scanner');
     await expect(page.getByText('Only managers, admins and the owner can scan bills.', { exact: false })).toBeVisible();
     await expect(page.getByTestId('scan-input')).toBeDisabled();
@@ -203,12 +241,13 @@ test.describe('role gates (audit W12)', () => {
     // Smart Capture's saves (disabled for this role) go to a POS_ROLES route.
     expect((await request.post(`${API_URL}/storage/bills/Walk-in/${randomUUID()}`, as)).status()).toBe(403);
 
-    await expectNoBookWrites(page, request, viewer.email, books);
+    await expectNoFinancials(page, request, viewer.email, books, sale);
   });
 
-  test('a CASHIER edits a customer with the credit limit read-only (W4) and has no OCR or export', async ({ page, request }) => {
+  test('a CASHIER edits a customer with the credit limit read-only (W4) and has no OCR, export or financial figures', async ({ page, request }) => {
     const shop = await createShop(request);
-    const { customerId, customerName } = await seedSale(request, shop);
+    const sale = await seedSale(request, shop);
+    const { customerId, customerName } = sale;
     const books = await seedBooks(request, shop);
     const cashier = await addStaff(shop, 'CASHIER');
     await signIn(page, cashier.email);
@@ -251,13 +290,10 @@ test.describe('role gates (audit W12)', () => {
     expect(created.status(), await created.text()).toBe(201);
     expect(created.request().postDataJSON()).not.toHaveProperty('creditLimit');
 
-    await page.goto('/analytics');
-    await expect(page.getByRole('heading', { name: 'Reports & Analytics' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Export' })).toHaveCount(0);
     await page.goto('/ai-scanner');
     await expect(page.getByTestId('scan-input')).toBeDisabled();
 
-    await expectNoBookWrites(page, request, cashier.email, books);
+    await expectNoFinancials(page, request, cashier.email, books, sale);
   });
 
   test('invitations offer only lower roles; suspend and remove only lower-ranked users', async ({ page, request }) => {
@@ -289,6 +325,14 @@ test.describe('role gates (audit W12)', () => {
     await page.context().clearCookies();
     await signIn(page, manager.email);
     expect(await sessionRole(page)).toBe('MANAGER');
+    // A manager keeps the financial pages and figures.
+    const nav = page.getByRole('navigation', { name: 'Main' });
+    for (const name of ['Suppliers', 'Expenses', 'Reports & Analytics']) await expect(nav.getByRole('link', { name })).toBeVisible();
+    await expect(page.getByText("Today's gross profit")).toBeVisible();
+    await expect(page.getByText('Inventory value')).toBeVisible();
+    await page.goto('/expenses');
+    await expect(page.getByRole('button', { name: 'Record Expense' })).toBeVisible();
+    await expect(page.getByTestId('finance-only')).toHaveCount(0);
     await page.goto('/employees');
     await page.getByRole('button', { name: 'Invite Employee' }).click();
     await expect(inviteModal(page).locator('select option')).toHaveText(['Cashier', 'Stock Clerk']);

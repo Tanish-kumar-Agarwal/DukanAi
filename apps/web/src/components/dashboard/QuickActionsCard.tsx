@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 import { Card } from '@/components/ui/Card';
-import { canUsePos, canWriteCustomers, isManagement } from '@/components/customers/permissions';
+import { canSeeFinancials, canUsePos, canWriteCustomers, isManagement } from '@/components/customers/permissions';
 
 interface QuickAction {
   icon: React.ComponentType<{ size?: number | string }>;
@@ -26,10 +26,10 @@ const QUICK_ACTIONS: QuickAction[] = [
   { icon: UserPlus, label: 'Add Customer', href: '/customers?new=1', color: 'text-blue-500', bg: 'bg-blue-500/10', allowed: canWriteCustomers },
   { icon: Users, label: 'Customer Udhar', href: '/customers', color: 'text-orange-500', bg: 'bg-orange-500/10' },
   { icon: Package, label: 'Low Stock', href: '/inventory?tab=low-stock', color: 'text-amber-500', bg: 'bg-amber-500/10' },
-  { icon: Receipt, label: 'Expenses', href: '/expenses', color: 'text-pink-500', bg: 'bg-pink-500/10' },
+  { icon: Receipt, label: 'Expenses', href: '/expenses', color: 'text-pink-500', bg: 'bg-pink-500/10', allowed: canSeeFinancials },
   { icon: FileText, label: 'Invoices', href: '/invoices', color: 'text-indigo-500', bg: 'bg-indigo-500/10' },
   { icon: Clock, label: 'Shifts', href: '/shifts', color: 'text-teal-500', bg: 'bg-teal-500/10' },
-  { icon: BarChart3, label: 'Reports', href: '/analytics', color: 'text-[#8B5CF6]', bg: 'bg-[#8B5CF6]/10' },
+  { icon: BarChart3, label: 'Reports', href: '/analytics', color: 'text-[#8B5CF6]', bg: 'bg-[#8B5CF6]/10', allowed: canSeeFinancials },
 ];
 
 export function QuickActionsCard({ className = '' }: { className?: string }) {

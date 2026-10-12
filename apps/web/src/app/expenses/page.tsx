@@ -14,6 +14,7 @@ import { DOCUMENT_PHOTO_MAX_EDGE, photoForUpload } from '@/lib/photo';
 import { describeApiError } from '@/lib/api-error';
 import { useSession } from 'next-auth/react';
 import { isManagement } from '@/components/customers/permissions';
+import { FinanceOnly } from '@/components/layout/FinanceOnly';
 
 const CATEGORY_COLORS: Record<string, string> = {
   'Rent': 'bg-blue-100 text-blue-600',
@@ -43,7 +44,7 @@ const CATEGORY_ICONS: Record<string, React.ComponentType<{ size?: number | strin
   'Maintenance': TrendingDown,
 };
 
-export default function ExpensesPage() {
+function ExpensesPageContent() {
   const { toast } = useToast();
   const { data: session } = useSession();
   /** Recording, editing, paying and deleting an expense are MANAGEMENT_ROLES in the API (`expenses.controller.ts`). */
@@ -652,5 +653,14 @@ export default function ExpensesPage() {
         )}
       </Modal>
     </div>
+  );
+}
+
+/** FINANCE_ROLES only: the API refuses this page's reads to a cashier or a stock clerk. */
+export default function ExpensesPage() {
+  return (
+    <FinanceOnly what="Expenses and their receipts">
+      <ExpensesPageContent />
+    </FinanceOnly>
   );
 }

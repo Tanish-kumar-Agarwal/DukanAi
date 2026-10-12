@@ -28,12 +28,17 @@ getting help. Button names are exactly what the screen shows.
    | Role | Can |
    |---|---|
    | Cashier | sell, take payments, make returns, open and close their shift |
-   | Stock Clerk | look, but not change anything |
+   | Stock Clerk | look at products, stock, customers and invoices, but not change anything |
    | Manager | everything a cashier does, plus: products, stock, customers' credit limits, larger discounts and custom items, cancellations, suppliers, invitations below Manager |
    | Admin | everything a manager does, plus: deleting products and suppliers, suspending and removing staff |
    | Owner | everything |
 
    - You can only invite roles below your own.
+   - Cashiers and stock clerks never see what you paid for a product, your
+     profit, the value of your stock, what you owe suppliers, your expenses
+     or **Reports & Analytics**: those menu items and dashboard tiles are not
+     shown to them, and the pages say "Only the owner or a manager can see
+     this page". Managers and admins see everything you see.
    - When someone leaves, use **Suspend Access** or **Remove from Shop**
      on their row the same day.
 

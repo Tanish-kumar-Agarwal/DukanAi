@@ -27,6 +27,9 @@ release notes of the tag.
 - Products whose MRP is below the selling price plus GST can no longer be billed (409 `PRICE_ABOVE_MRP`) until the
   price or the MRP is corrected in Products (the POS names the product; an import reports each one as a warning,
   `docs/ONBOARDING.md`). A blank MRP is set to the price with GST.
+- API clients signed in as a CASHIER or VIEWER: `GET /dashboard/analytics`, `GET /dashboard/products` and the
+  supplier, expense, purchasing and purchase-analytics reads are 403, `costPrice` and the other cost and profit fields
+  are absent from their answers, and the dashboard summary and insights list what was left out in `restrictedSections`.
 - API clients: `POST /suppliers/:id/payments` and vendor-bill payments require an `idempotencyKey`; `PATCH
   /users/:id/suspend` requires `{ "isActive": boolean }`; counter sales are CGST + SGST unless the request names a
   `placeOfSupply`.
@@ -39,6 +42,12 @@ release notes of the tag.
 
 ### Security
 
+- Cashiers and stock clerks no longer see the shop's money behind the counter. Cost prices, profit and margin, stock
+  value at cost, supplier balances and purchasing, expenses and Reports & Analytics are for owners, admins and managers
+  (`FINANCE_ROLES`): those reads answer 403 to anyone else, and every other answer leaves the cost, profit, valuation
+  and payable fields out (products, search, invoices, batches, revisions, events). The dashboard drops the profit and
+  inventory-value tiles and the top-earner line for them (`restrictedSections`), and the Suppliers, Expenses and
+  Reports pages say "Only the owner or a manager can see this page" instead of loading.
 - A password-reset link could be sent to an attacker's mailbox: the database collation treats an accented lookalike
   domain (`tést.local`) as the account's own (`test.local`). Addresses are now canonicalised (NFC, lower case, punycode
   domain), every lookup is re-checked byte for byte and mail goes only to the stored address. Login no longer answers

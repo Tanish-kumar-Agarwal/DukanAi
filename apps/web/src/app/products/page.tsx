@@ -16,6 +16,7 @@ import apiClient from '@/lib/api';
 import { describeApiError } from '@/lib/api-error';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
 import { gstLabel } from '@/components/pos/format';
+import { canSeeFinancials } from '@/components/customers/permissions';
 import { exclusiveUnitPrice, inclusiveUnitPrice } from '@dukaanai/invoice-math';
 import type { Product, GstRate, ProductUnit } from '@/types';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -102,6 +103,8 @@ function ProductsPageContent() {
   const urlQuery = (searchParams.get('q') ?? '').trim();
   const allowWrite = hasRole(WRITE_ROLES, session?.user?.role);
   const allowDelete = hasRole(DELETE_ROLES, session?.user?.role);
+  // Cost and stock at cost are for owners, admins and managers; the API leaves them out for anyone else.
+  const showFinancials = canSeeFinancials(session?.user?.role);
 
   const [products, setProducts] = useState<Product[]>([]);
   const [total, setTotal] = useState(0);
@@ -593,7 +596,7 @@ function ProductsPageContent() {
       </div>
 
       {/* Stats Row (from GET /dashboard/summary; a failed section shows as unavailable) */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className={`grid grid-cols-1 gap-4 ${showFinancials ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
         <Card className="p-5 flex items-center gap-4 hoverable" data-testid="stat-total-products">
           <div className="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center text-[#8B5CF6]">
             <PackageSearch size={24} />
@@ -621,15 +624,17 @@ function ProductsPageContent() {
             {renderStatValue(stats?.outOfStockCount)}
           </div>
         </Card>
-        <Card className="p-5 flex items-center gap-4 hoverable" data-testid="stat-inventory-value">
-          <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center text-green-500">
-            <IndianRupee size={24} />
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 font-medium">Inventory Value</p>
-            {renderStatValue(stats?.inventoryValue, (n) => `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`)}
-          </div>
-        </Card>
+        {showFinancials && (
+          <Card className="p-5 flex items-center gap-4 hoverable" data-testid="stat-inventory-value">
+            <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center text-green-500">
+              <IndianRupee size={24} />
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 font-medium">Inventory Value</p>
+              {renderStatValue(stats?.inventoryValue, (n) => `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`)}
+            </div>
+          </Card>
+        )}
       </div>
 
       {/* Main Content Card */}
@@ -977,10 +982,12 @@ function ProductsPageContent() {
                       <p className="text-xs text-gray-500 mt-1">MRP ₹{selectedProduct.mrp}</p>
                     )}
                   </div>
-                  <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
-                    <p className="text-xs text-gray-500 mb-1">Cost Price</p>
-                    <p className="font-bold text-gray-800 text-lg">₹{selectedProduct.cost}</p>
-                  </div>
+                  {showFinancials && (
+                    <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                      <p className="text-xs text-gray-500 mb-1">Cost Price</p>
+                      <p className="font-bold text-gray-800 text-lg">₹{selectedProduct.cost}</p>
+                    </div>
+                  )}
                   <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
                     <p className="text-xs text-gray-500 mb-1">Current Stock</p>
                     <p className={`font-bold text-lg ${stockStatusOf(selectedProduct) === 'Out of Stock' ? 'text-red-500' : stockStatusOf(selectedProduct) === 'Low Stock' ? 'text-orange-500' : 'text-green-500'}`}>
@@ -988,10 +995,12 @@ function ProductsPageContent() {
                     </p>
                     <p className="text-xs text-gray-500 mt-1">Low below {selectedProduct.reorderPoint ?? 10}</p>
                   </div>
-                  <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
-                    <p className="text-xs text-gray-500 mb-1">Stock Value (at cost)</p>
-                    <p className="font-bold text-gray-800 text-lg">₹{(selectedProduct.cost * selectedProduct.quantity).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</p>
-                  </div>
+                  {showFinancials && (
+                    <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                      <p className="text-xs text-gray-500 mb-1">Stock Value (at cost)</p>
+                      <p className="font-bold text-gray-800 text-lg">₹{(selectedProduct.cost * selectedProduct.quantity).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</p>
+                    </div>
+                  )}
                 </div>
 
                 <div className="mt-6 border-t border-gray-100 pt-6">

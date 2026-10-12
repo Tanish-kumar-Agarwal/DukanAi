@@ -140,8 +140,9 @@ test.describe('real sign-in (6.9)', () => {
     await expect(page.getByRole('button', { name: 'Add Product' })).toHaveCount(0);
     await page.goto('/employees');
     await expect(page.getByRole('button', { name: 'Invite Employee' })).toHaveCount(0);
+    // Supplier balances are for owners, admins and managers: the page says so instead of loading.
     await page.goto('/suppliers');
-    await expect(page.getByRole('heading', { name: 'Suppliers & Vendors' })).toBeVisible();
+    await expect(page.getByTestId('finance-only')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Add Supplier' })).toHaveCount(0);
     await page.goto('/settings');
     await expect(page.getByRole('heading', { name: 'Shop Profile' })).toBeVisible();
@@ -153,8 +154,11 @@ test.describe('real sign-in (6.9)', () => {
     expect((await request.patch(`${API_URL}/shops/me`, { ...as, data: { name: 'Nope' } })).status()).toBe(403);
     expect((await request.post(`${API_URL}/invitations/generate`, { ...as, data: { email: 'x@example.com', role: 'CASHIER' } })).status()).toBe(403);
     expect((await request.post(`${API_URL}/suppliers`, { ...as, data: { name: 'Nope', phone: '9999999999' } })).status()).toBe(403);
-    // Reads stay open to every signed-in role.
-    expect((await request.get(`${API_URL}/products`, as)).status()).toBe(200);
+    expect((await request.get(`${API_URL}/suppliers`, as)).status()).toBe(403);
+    // Product reads stay open to every signed-in role, without the cost.
+    const products = await request.get(`${API_URL}/products`, as);
+    expect(products.status()).toBe(200);
+    expect(JSON.stringify(await products.json())).not.toContain('costPrice');
   });
 
   test('ending another session from Account & Security revokes it on the API', async ({ page, request }) => {

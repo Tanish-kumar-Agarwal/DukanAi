@@ -16,6 +16,13 @@ const ROLE_RANK: Readonly<Record<string, number>> = {
 
 /** `MANAGEMENT_ROLES`: stock, invoices, approvals, notifications read-all, OCR. */
 const MANAGEMENT_ROLES = new Set(['MANAGER', 'ADMIN', 'OWNER', 'SUPER_ADMIN']);
+/**
+ * `FINANCE_ROLES` (= MANAGEMENT_ROLES): cost prices, profit and margin, stock
+ * at cost, supplier balances and purchasing, expenses, Reports. The API
+ * refuses those pages' reads (403) and leaves the cost and profit fields out
+ * of every other answer to a CASHIER or VIEWER.
+ */
+const FINANCE_ROLES = MANAGEMENT_ROLES;
 /** `POS_ROLES`: everything a cashier does at the counter, plus management. */
 const POS_ROLES = new Set(['CASHIER', 'MANAGER', 'ADMIN', 'OWNER', 'SUPER_ADMIN']);
 
@@ -66,4 +73,9 @@ export function outranks(actor: string | null | undefined, subject: string | nul
   const s = subject ? subject.toUpperCase() : null;
   if (!a || !s) return false;
   return (ROLE_RANK[a] ?? 0) > (ROLE_RANK[s] ?? Number.POSITIVE_INFINITY);
+}
+
+/** Cost, profit, stock value, suppliers, expenses and Reports: owners, admins and managers only. */
+export function canSeeFinancials(role: string | null | undefined): boolean {
+  return inSet(FINANCE_ROLES, role);
 }

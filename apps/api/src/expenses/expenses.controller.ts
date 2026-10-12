@@ -5,7 +5,7 @@ import type { Request, Response } from 'express';
 import { ListQueryDto, PagedList } from '../common/pagination';
 import { ExpenseActor, ExpensesService } from './expenses.service';
 import { CreateExpenseDto, UpdateExpenseDto } from './dto/expense.dto';
-import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { FINANCE_ROLES, MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
@@ -37,6 +37,7 @@ export class ExpensesController {
     return { shopId: this.tenantContext.getShopId(), userId: user.id, ipAddress: req.ip ?? null };
   }
 
+  @Roles(...FINANCE_ROLES)
   @Get()
   @PagedList()
   findAll(@Query() query: ListQueryDto) {
@@ -44,6 +45,7 @@ export class ExpensesController {
   }
 
   /** This month's figures over every expense of the shop, not over the loaded page (roadmap 6.7). */
+  @Roles(...FINANCE_ROLES)
   @Get('summary')
   summary() {
     return this.expensesService.summary();
@@ -75,6 +77,7 @@ export class ExpensesController {
   }
 
   /** The attached receipt's bytes under their stored type; 404 without one or for another shop's expense. */
+  @Roles(...FINANCE_ROLES)
   @Get(':id/receipt')
   async receipt(@Param('id') id: string, @Res({ passthrough: true }) res: Response): Promise<StreamableFile> {
     const file = await this.expensesService.receipt(id);

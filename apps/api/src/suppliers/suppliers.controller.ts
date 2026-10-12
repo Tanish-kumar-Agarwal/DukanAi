@@ -4,13 +4,14 @@ import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
 import { SuppliersService } from './suppliers.service';
 import { CreateSupplierDto, RecordSupplierPaymentDto, UpdateSupplierDto } from './dto/supplier.dto';
-import { ADMIN_ROLES, MANAGEMENT_ROLES } from '../auth/role-sets';
+import { ADMIN_ROLES, FINANCE_ROLES, MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
 
 @Controller('suppliers')
 export class SuppliersController {
   constructor(private readonly suppliersService: SuppliersService) {}
 
+  @Roles(...FINANCE_ROLES)
   @Get()
   @PagedList()
   findAll(@Query() query: ListQueryDto) {
@@ -18,6 +19,7 @@ export class SuppliersController {
   }
 
   /** Totals over every live supplier for the page's tiles (the list itself is a capped page). */
+  @Roles(...FINANCE_ROLES)
   @Get('summary')
   summary() {
     return this.suppliersService.summary();

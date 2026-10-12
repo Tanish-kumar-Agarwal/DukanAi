@@ -3,7 +3,7 @@ import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { VendorBillRepository } from './repositories/vendor-bill.repository';
 import type { Request } from 'express';
-import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { FINANCE_ROLES, MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
 import { LimitOffsetQueryDto, limitOffsetArgs } from '../common/pagination';
 import { ApprovalDecisionDto } from '../common/dto/approval-decision.dto';
@@ -21,6 +21,7 @@ export class VendorBillController {
     return this.repository.createVendorBill(shopId, payload, actorId, req.ip);
   }
 
+  @Roles(...FINANCE_ROLES)
   @Get()
   async listBills(
     @CurrentShop() shopId: string,
@@ -30,6 +31,7 @@ export class VendorBillController {
     return this.repository.listVendorBills(shopId, limit, offset);
   }
 
+  @Roles(...FINANCE_ROLES)
   @Get(':id')
   async getBill(@CurrentShop() shopId: string, @Param('id') id: string) {
     return this.repository.getVendorBill(shopId, id);

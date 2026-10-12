@@ -3,7 +3,8 @@
  * Receipt" field stores a photo or PDF per expense under the shop's storage
  * root, and the expenses page opens it again. A receipt is never replaced in
  * place (the earlier file moves to Deleted/), the bytes must be what their
- * type says, writes are MANAGEMENT_ROLES, and another shop's expense is 404.
+ * type says, writes are MANAGEMENT_ROLES, reads FINANCE_ROLES (a cashier or a
+ * stock clerk is 403), and another shop's expense is 404.
  */
 import { INestApplication } from '@nestjs/common';
 import { Role } from '@prisma/client';
@@ -31,6 +32,7 @@ describe('Expense receipts', () => {
   let foreignOwner: string;
   let viewer: string;
   let cashier: string;
+  let manager: string;
 
   const http = () => request(app.getHttpServer());
   const as = (token: string) => ({ Authorization: `Bearer ${token}` });
@@ -56,6 +58,7 @@ describe('Expense receipts', () => {
     foreignOwner = await bearerToken(app, B, ownerOf(B));
     viewer = await bearerToken(app, A, await createUser(app, A, Role.VIEWER));
     cashier = await bearerToken(app, A, await createUser(app, A, Role.CASHIER));
+    manager = await bearerToken(app, A, await createUser(app, A, Role.MANAGER));
   });
 
   afterAll(async () => {
@@ -109,9 +112,11 @@ describe('Expense receipts', () => {
     expect(deleted.length).toBe(deletedBefore + 1);
     expect(deleted.some((name) => name.endsWith('.jpg') && fs.readFileSync(path.join(deletedDir, name)).equals(JPEG))).toBe(true);
 
-    const served = await http().get(`/api/expenses/${id}/receipt`).set(as(viewer));
+    const served = await http().get(`/api/expenses/${id}/receipt`).set(as(manager));
     expect(served.status).toBe(200);
     expect(served.headers['content-type']).toBe('application/pdf');
+    expect((await http().get(`/api/expenses/${id}/receipt`).set(as(viewer))).status).toBe(403);
+    expect((await http().get(`/api/expenses/${id}/receipt`).set(as(cashier))).status).toBe(403);
   });
 
   it('refuses a missing file, a disallowed type, bytes that are not what they claim and a file over the cap, keeping nothing', async () => {

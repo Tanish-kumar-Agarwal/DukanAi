@@ -128,6 +128,11 @@ When a customer pays off their udhar:
 
 - Never sign in as someone else, and sign out when you leave the
   counter: tap **Sign Out** at the top.
+- Cost prices, profit, stock value, suppliers, expenses and **Reports &
+  Analytics** are for the owner and managers: they are not in your menu,
+  and if you open one of those pages it says *"Only the owner or a manager
+  can see this page"*. Selling prices, MRP, stock and invoices are all
+  there for you.
 - Print a receipt whenever the customer wants one. The invoice number on
   it (`INV-2627-000123`) is how the owner finds the bill later.
 - Do not refresh the page in the middle of a payment. If the screen

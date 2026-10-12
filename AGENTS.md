@@ -1949,6 +1949,23 @@ the fixes made true, and must stay true:
   and always shows what the customer pays; off by default, remembered in
   `localStorage`. The inventory expiry filters and the row badge share
   `expiryStatus` (Depleted, Expired, Expiring Soon, Safe).
+- Financial visibility (2026-10-12): cost, profit, margin, stock at cost,
+  supplier payables / purchasing, expenses and Reports are `FINANCE_ROLES`
+  (`role-sets.ts`, = MANAGEMENT_ROLES; web `canSeeFinancials`). Reads that
+  are financial as a whole carry `@Roles(...FINANCE_ROLES)` (suppliers,
+  expenses, procurement documents, purchase analytics and events,
+  `/dashboard/analytics`, `/dashboard/products`); every other answer to a
+  CASHIER / VIEWER goes through `FinancialFieldsInterceptor` (global), which
+  drops any key matching `isFinancialField` (`cost|profit|margin|payable|cogs`,
+  plus `inventoryValue`/`stockValue`/`valuation`) at any depth without
+  mutating the source. Name a new money-behind-the-counter field so it
+  matches, or gate its route. The dashboard summary / insights skip those
+  sections for them and list them in `restrictedSections`. The web hides the
+  links, tiles and product cost, and `FinanceOnly` replaces the three pages
+  (it mounts nothing, so no 403 is requested). Guards: the route walker
+  (VIEWER: 403 on every narrowed read, no financial key in any 2xx JSON),
+  `financial-visibility.integration-spec.ts` (every GET with real ids as
+  CASHIER and VIEWER), `e2e-auth/role-gates.spec.ts`.
 
 ## Toolchain
 
