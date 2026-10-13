@@ -40,7 +40,7 @@
     "@dukaanai/invoice-math": "*",
     "@keyv/redis": "^5.1.6",
     "@nestjs/bullmq": "^11.0.4",
-    "@nestjs/cache-manager": "^3.1.2",
+    "@nestjs/cache-manager": "^12.0.1",
     "@nestjs/common": "^11.1.21",
     "@nestjs/config": "^4.0.4",
     "@nestjs/core": "^11.1.21",
