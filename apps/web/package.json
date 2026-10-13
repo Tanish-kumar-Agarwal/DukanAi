@@ -40,7 +40,7 @@
     "eslint-config-next": "^16.3.8",
     "mysql2": "^3.24.5",
     "postcss": "^8.5.28",
-    "tailwindcss": "^3.3.6",
+    "tailwindcss": "^4.3.3",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.3.0"
   }
