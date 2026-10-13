@@ -12,9 +12,9 @@ export class AnalyticsRepository {
 
   // Low-level snapshot insertion utilized heavily by the Background Jobs
   
-  async upsertDashboardSnapshot(shopId: string, date: Date, data: any) {
-    // Normalize date to midnight UTC for unique grouping
-    const normalizedDate = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  /** `dateKey` is the shop's business date as UTC midnight (`purchaseBusinessDates`); it is stored as given. */
+  async upsertDashboardSnapshot(shopId: string, dateKey: Date, data: any) {
+    const normalizedDate = new Date(Date.UTC(dateKey.getUTCFullYear(), dateKey.getUTCMonth(), dateKey.getUTCDate()));
     
     return this.prisma.purchaseAnalyticsSnapshot.upsert({
       where: {

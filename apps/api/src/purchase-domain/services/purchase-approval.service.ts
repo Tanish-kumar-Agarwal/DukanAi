@@ -55,12 +55,12 @@ export class PurchaseApprovalService {
     if (!po) throw new NotFoundException({ message: 'Purchase order not found', code: 'PURCHASE_ORDER_NOT_FOUND' });
 
     if (action === 'APPROVE') {
-      // Separation of duties: whoever created or submitted the order cannot approve it.
+      // Separation of duties: whoever created, edited (DRAFT_UPDATED, release audit S22) or submitted the order cannot approve it.
       const requested = await tx.purchaseOrderAudit.findFirst({
-        where: { purchaseOrderId, shopId, actorId, action: { in: ['CREATED', 'SUBMITTED'] } },
+        where: { purchaseOrderId, shopId, actorId, action: { in: ['CREATED', 'DRAFT_UPDATED', 'SUBMITTED'] } },
         select: { id: true },
       });
-      if (requested) throw new ForbiddenException({ message: 'The person who created or submitted a purchase order cannot approve it.', code: 'SEPARATION_OF_DUTIES' });
+      if (requested) throw new ForbiddenException({ message: 'The person who created, edited or submitted a purchase order cannot approve it.', code: 'SEPARATION_OF_DUTIES' });
     }
 
     const pendingApproval = await tx.purchaseOrderApproval.findFirst({

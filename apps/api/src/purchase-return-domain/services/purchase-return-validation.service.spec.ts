@@ -43,4 +43,30 @@ describe('PurchaseReturnValidationService (roadmap 4.2)', () => {
     await expect(service.validateReturnLines(tx, 'shop-1', [{ grnLineId: 'grn-line-1', productId: 'p-1', returnQuantity: 1 }], { goodsReceiptId: 'grn-other' })).rejects.toMatchObject({ response: { code: 'PURCHASE_RETURN_LINE_MISMATCH' } });
     await expect(service.validateReturnLines(tx, 'shop-1', [{ grnLineId: 'grn-line-1', productId: 'p-2', returnQuantity: 1 }])).rejects.toMatchObject({ response: { code: 'PURCHASE_RETURN_LINE_MISMATCH' } });
   });
+
+  describe('the receipt is the authority of the line (release audit S7 / S8)', () => {
+    const receiptLine = (receipt: { status: string; supplierId: string; warehouseId: string }, variantId: string | null = 'v-1') => ({
+      ...grnLine,
+      variantId,
+      goodsReceipt: { ...receipt, isDeleted: false },
+    });
+    const txWith = (line: unknown) =>
+      ({ goodsReceiptLine: { findFirst: jest.fn().mockResolvedValue(line) }, purchaseReturnLine: { aggregate } }) as unknown as Prisma.TransactionClient;
+    const accepted = { status: 'ACCEPTED', supplierId: 'sup-1', warehouseId: 'wh-2' };
+
+    it('takes the variant and the warehouse from the receipt line', async () => {
+      const result = await service.validateReturnLines(txWith(receiptLine(accepted)), 'shop-1', [{ grnLineId: 'grn-line-1', productId: 'p-1', returnQuantity: 1 }], { supplierId: 'sup-1' });
+      expect(result.get('grn-line-1')).toMatchObject({ variantId: 'v-1', warehouseId: 'wh-2', goodsReceiptId: 'grn-1' });
+    });
+
+    it('refuses a client variant or warehouse that differs from the receipt', async () => {
+      await expect(service.validateReturnLines(txWith(receiptLine(accepted)), 'shop-1', [{ grnLineId: 'grn-line-1', productId: 'p-1', variantId: 'v-other', returnQuantity: 1 }])).rejects.toMatchObject({ response: { code: 'PURCHASE_RETURN_LINE_MISMATCH' } });
+      await expect(service.validateReturnLines(txWith(receiptLine(accepted)), 'shop-1', [{ grnLineId: 'grn-line-1', productId: 'p-1', returnQuantity: 1 }], { warehouseId: 'wh-other' })).rejects.toMatchObject({ response: { code: 'PURCHASE_RETURN_LINE_MISMATCH' } });
+    });
+
+    it('refuses a receipt that was never accepted, and one of another supplier', async () => {
+      await expect(service.validateReturnLines(txWith(receiptLine({ ...accepted, status: 'QUALITY_INSPECTION' })), 'shop-1', [{ grnLineId: 'grn-line-1', productId: 'p-1', returnQuantity: 1 }])).rejects.toMatchObject({ response: { code: 'PURCHASE_RETURN_RECEIPT_NOT_ACCEPTED' } });
+      await expect(service.validateReturnLines(txWith(receiptLine(accepted)), 'shop-1', [{ grnLineId: 'grn-line-1', productId: 'p-1', returnQuantity: 1 }], { supplierId: 'sup-other' })).rejects.toMatchObject({ response: { code: 'PURCHASE_RETURN_SUPPLIER_MISMATCH' } });
+    });
+  });
 });

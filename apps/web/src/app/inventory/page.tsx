@@ -13,12 +13,34 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { inventoryApi, type BatchItem } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
 import { LowStockPanel } from '@/components/inventory/LowStockPanel';
+import { PaginationControls } from '@/components/customers/PaginationControls';
 
 function formatBatchDate(date: string | null, options: Intl.DateTimeFormatOptions) {
   return date ? new Date(date).toLocaleDateString('en-IN', options) : 'Not recorded';
 }
 
+/** A batch's state as the table shows it: no stock left, past its expiry, within 30 days of it, or safe. */
+type ExpiryStatus = 'Depleted' | 'Expired' | 'Expiring Soon' | 'Safe';
+
+function expiryStatus(batch: BatchItem, today: Date, horizon: Date): ExpiryStatus {
+  if (batch.quantity === 0) return 'Depleted';
+  const expDate = batch.expDate ? new Date(batch.expDate) : null;
+  if (expDate && expDate <= today) return 'Expired';
+  if (expDate && expDate <= horizon) return 'Expiring Soon';
+  return 'Safe';
+}
+
+/** The Filters menu: none ticked shows every batch, ticked ones narrow the list (and its search) to those states. */
+const EXPIRY_FILTERS: ReadonlyArray<{ status: ExpiryStatus; label: string }> = [
+  { status: 'Expired', label: 'Show Expired' },
+  { status: 'Expiring Soon', label: 'Expiring < 30 Days' },
+  { status: 'Safe', label: 'Safe' },
+  { status: 'Depleted', label: 'Depleted (no stock)' },
+];
+
 const LOW_STOCK_TAB = 'Low Stock';
+/** Rows per table page; the tiles and the search cover every batch (audit W9). */
+const PAGE_SIZE = 50;
 /** Only the tabs with a module behind them (roadmap 6.7): stock moves are recorded from Products › Update Stock. */
 const MAIN_TABS = ['Batches & Expiry', LOW_STOCK_TAB];
 
@@ -32,14 +54,19 @@ function InventoryPageContent() {
   const searchParams = useSearchParams();
   const tabParam = searchParams.get('tab');
   const [batches, setBatches] = useState<BatchItem[]>([]);
+  // Every batch is read page by page (`X-Total-Count`); a bound that stopped the read is said on screen.
+  const [batchTotal, setBatchTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [skip, setSkip] = useState(0);
 
   useEffect(() => {
     const loadBatches = async () => {
       try {
         setLoadError(null);
-        setBatches(await inventoryApi.listBatches());
+        const result = await inventoryApi.listBatches();
+        setBatches(result.items);
+        setBatchTotal(result.total);
       } catch (err) {
         setLoadError(describeApiError(err, 'Loading inventory batches (GET /batches)'));
       } finally {
@@ -49,6 +76,20 @@ function InventoryPageContent() {
     void loadBatches();
   }, []);
   const [searchTerm, setSearchTerm] = useState('');
+  const [expiryFilter, setExpiryFilter] = useState<ReadonlySet<ExpiryStatus>>(() => new Set());
+  // A new search or filter starts on the first page.
+  useEffect(() => {
+    setSkip(0);
+  }, [searchTerm, expiryFilter]);
+
+  const toggleExpiryFilter = (status: ExpiryStatus) => {
+    setExpiryFilter((current) => {
+      const next = new Set(current);
+      if (next.has(status)) next.delete(status);
+      else next.add(status);
+      return next;
+    });
+  };
   
   // Modals & Panels
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
@@ -97,12 +138,14 @@ function InventoryPageContent() {
   const expiredCount = batches.filter(b => b.expDate && new Date(b.expDate) <= today && b.quantity > 0).length;
   const zeroStockBatches = batches.filter(b => b.quantity === 0).length;
 
-  // Filter Logic
-  const processedBatches = batches.filter(b => 
-    b.product.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    b.batchNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    b.sku.toLowerCase().includes(searchTerm.toLowerCase())
+  // Filter Logic: the search and the expiry filters apply to every batch read, then the table pages the result.
+  const processedBatches = batches.filter(b =>
+    (b.product.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      b.batchNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      b.sku.toLowerCase().includes(searchTerm.toLowerCase())) &&
+    (expiryFilter.size === 0 || expiryFilter.has(expiryStatus(b, today, thirtyDaysFromNow)))
   );
+  const pageBatches = processedBatches.slice(skip, skip + PAGE_SIZE);
 
   const handleAction = (action: string, batch: BatchItem, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -171,7 +214,8 @@ function InventoryPageContent() {
           </div>
           <div>
             <p className="text-xs text-gray-500 font-medium">Monthly Wastage</p>
-            <h3 className="text-xl font-bold text-gray-800 tracking-tight">₹0</h3>
+            {/* No module records wastage as a figure yet: say so rather than show an invented ₹0 (roadmap 6.1). */}
+            <h3 className="text-xl font-bold text-gray-800 tracking-tight" title="Wastage is not recorded as a separate figure yet">Not tracked</h3>
           </div>
         </Card>
       </div>
@@ -212,7 +256,7 @@ function InventoryPageContent() {
                 className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors w-full sm:w-auto justify-center"
               >
                 <Filter size={16} />
-                Filters <ChevronDown size={14} />
+                Filters{expiryFilter.size > 0 ? ` (${expiryFilter.size})` : ''} <ChevronDown size={14} />
               </button>
 
               <AnimatePresence>
@@ -227,10 +271,23 @@ function InventoryPageContent() {
                       <div>
                         <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Expiry Status</h4>
                         <div className="flex flex-col gap-2">
-                          <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="rounded text-[#8B5CF6]"/> Show Expired</label>
-                          <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="rounded text-[#8B5CF6]"/> Expiring &lt; 30 Days</label>
-                          <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="rounded text-[#8B5CF6]"/> Safe</label>
+                          {EXPIRY_FILTERS.map(({ status, label }) => (
+                            <label key={status} className="flex items-center gap-2 text-sm">
+                              <input
+                                type="checkbox"
+                                checked={expiryFilter.has(status)}
+                                onChange={() => toggleExpiryFilter(status)}
+                                className="rounded text-[#8B5CF6]"
+                              />
+                              {label}
+                            </label>
+                          ))}
                         </div>
+                        {expiryFilter.size > 0 && (
+                          <button type="button" onClick={() => setExpiryFilter(new Set())} className="mt-3 text-xs font-bold text-[#8B5CF6] hover:underline">
+                            Clear filters
+                          </button>
+                        )}
                       </div>
                     </div>
                   </motion.div>
@@ -253,25 +310,17 @@ function InventoryPageContent() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {processedBatches.map((batch) => {
-                  const expDate = batch.expDate ? new Date(batch.expDate) : null;
-                  const isExpired = Boolean(expDate && expDate <= today && batch.quantity > 0);
-                  const isExpiringSoon = Boolean(!isExpired && expDate && expDate <= thirtyDaysFromNow && batch.quantity > 0);
-                  const isEmpty = batch.quantity === 0;
-
-                  let statusText = 'Safe';
-                  let statusClass = 'bg-green-50 text-green-600';
-                  
-                  if (isEmpty) {
-                    statusText = 'Depleted';
-                    statusClass = 'bg-gray-100 text-gray-600';
-                  } else if (isExpired) {
-                    statusText = 'Expired';
-                    statusClass = 'bg-red-50 text-red-600';
-                  } else if (isExpiringSoon) {
-                    statusText = 'Expiring Soon';
-                    statusClass = 'bg-orange-50 text-orange-600';
-                  }
+                {pageBatches.map((batch) => {
+                  // The same rule as the filters (an empty batch is Depleted whatever its date).
+                  const statusText = expiryStatus(batch, today, thirtyDaysFromNow);
+                  const isExpired = statusText === 'Expired';
+                  const isExpiringSoon = statusText === 'Expiring Soon';
+                  const statusClass = {
+                    Depleted: 'bg-gray-100 text-gray-600',
+                    Expired: 'bg-red-50 text-red-600',
+                    'Expiring Soon': 'bg-orange-50 text-orange-600',
+                    Safe: 'bg-green-50 text-green-600',
+                  }[statusText];
 
                   return (
                     <tr 
@@ -333,13 +382,23 @@ function InventoryPageContent() {
                 {processedBatches.length === 0 && (
                   <tr>
                     <td colSpan={6} className="px-6 py-16 text-center text-sm text-gray-500">
-                      No inventory batches yet. Add stock to a product to begin tracking batch and expiry data.
+                      {batches.length === 0
+                        ? 'No inventory batches yet. Add stock to a product to begin tracking batch and expiry data.'
+                        : 'No batches match the search or the expiry filters.'}
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
+          {batchTotal > batches.length && (
+            <p role="status" className="px-5 pt-3 text-xs font-medium text-orange-600">
+              Showing the first {batches.length.toLocaleString('en-IN')} of {batchTotal.toLocaleString('en-IN')} batches: the tiles and the search cover only these.
+            </p>
+          )}
+          {processedBatches.length > PAGE_SIZE && (
+            <PaginationControls skip={skip} take={PAGE_SIZE} total={processedBatches.length} onChange={setSkip} itemLabel="batches" />
+          )}
         </Card>
       )}
 

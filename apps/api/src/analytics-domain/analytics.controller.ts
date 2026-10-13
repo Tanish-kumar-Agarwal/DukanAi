@@ -9,6 +9,9 @@ import { AnalyticsPageService } from './services/analytics-page.service';
 import { DashboardService, MAX_LOW_STOCK_ITEMS } from './services/dashboard.service';
 import { DashboardInsightsService } from './services/dashboard-insights.service';
 import { CsvSink, ReportExportService } from './services/report-export.service';
+import { FeatureGate } from '../common/features/feature-gate';
+import { FINANCE_ROLES } from '../auth/role-sets';
+import { canSeeFinancials } from '../auth/financial-fields';
 
 const READ_ROLES: Role[] = [Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER, Role.CASHIER, Role.VIEWER];
 const EXPORT_ROLES: Role[] = [Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER];
@@ -58,9 +61,9 @@ export class AnalyticsController {
     private readonly exports: ReportExportService,
   ) {}
 
-  /** Reports & Analytics page payload for a business-day range (today | week | month | year). */
+  /** Reports & Analytics page payload for a business-day range (today | week | month | year): profit and expenses, FINANCE_ROLES only. */
   @Get('analytics')
-  @Roles(...READ_ROLES)
+  @Roles(...FINANCE_ROLES)
   getAnalyticsPage(@CurrentShop() shopId: string, @Query('range') range?: string) {
     return this.analyticsPage.getAnalytics(shopId, range);
   }
@@ -76,7 +79,7 @@ export class AnalyticsController {
   @Get('summary')
   @Roles(...READ_ROLES)
   getDashboardSummary(@CurrentShop() shopId: string, @CurrentUser() user: SafeUserDto) {
-    return this.dashboard.getSummary(shopId, user.id);
+    return this.dashboard.getSummary(shopId, user.id, { financials: canSeeFinancials(user.role) });
   }
 
   /** Stock alerts: counts plus the most urgent products (out of stock first); `limit` 1..500, default 100. */
@@ -90,13 +93,14 @@ export class AnalyticsController {
   /** AI insights card: today's sales vs. forecast, restock suggestions, top product. */
   @Get('insights')
   @Roles(...READ_ROLES)
-  getInsights(@CurrentShop() shopId: string) {
-    return this.insights.getInsights(shopId);
+  @FeatureGate('dashboard_insights', { reads: true })
+  getInsights(@CurrentShop() shopId: string, @CurrentUser() user: SafeUserDto) {
+    return this.insights.getInsights(shopId, new Date(), { financials: canSeeFinancials(user.role) });
   }
 
-  /** Top products by gross profit over the last 30 business days. */
+  /** Top products by gross profit over the last 30 business days (FINANCE_ROLES). */
   @Get('products')
-  @Roles(...READ_ROLES)
+  @Roles(...FINANCE_ROLES)
   getTopProducts(@CurrentShop() shopId: string, @Query('limit') limit?: string) {
     return this.dashboard.getTopProducts(shopId, limit ? parseIntQuery(limit, 0) : undefined);
   }

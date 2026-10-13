@@ -103,7 +103,8 @@ describe('security: authorization and shop isolation', () => {
       const batchB = await run.system(() => prisma.batch.create({ data: { shopId: shopB.shopId, productId: productB, batchNumber: `B-${shopB.suffix}`, type: 'PURCHASE' } }));
       await run.system(() => prisma.batchStock.create({ data: { shopId: shopB.shopId, batchId: batchB.id, inventoryItemId: itemB.id, quantity: 20 } }));
 
-      const res = await (await httpAs(app, shopA, ownerOf(shopA))).post(`/api/batches/${batchB.id}/stock`).send({ inventoryItemId: itemB.id, quantity: -15 });
+      // A positive quantity (a negative one is a 400 before any lookup since the release audit S19): the shop check answers.
+      const res = await (await httpAs(app, shopA, ownerOf(shopA))).post(`/api/batches/${batchB.id}/stock`).send({ inventoryItemId: itemB.id, quantity: 15 });
 
       expect(res.status).toBe(404);
       const stock = await run.system(() => prisma.batchStock.findUniqueOrThrow({ where: { shopId_batchId_inventoryItemId: { shopId: shopB.shopId, batchId: batchB.id, inventoryItemId: itemB.id } } }));

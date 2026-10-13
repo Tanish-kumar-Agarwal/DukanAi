@@ -11,7 +11,14 @@
 # that already exists keeps the text the owner gave it. A tag with a
 # pre-release part (v1.0.0-rc3) is created as a pre-release.
 #
-#   GITHUB_TOKEN=... GITHUB_REPOSITORY=owner/repo [RELEASE_NOTES_FILE=notes.md] \
+# Finding the release (audit 2026-10-11, R6): GET /releases/tags/{tag} never
+# returns a DRAFT, so the certify job did not find the draft the images job
+# had just created and opened a second one. RELEASE_ID (the images job's
+# output) names it directly; without it the releases are listed (drafts
+# included for a token with push access) and matched by tag_name. The id of
+# the release used is written to GITHUB_OUTPUT as `release-id` when set.
+#
+#   GITHUB_TOKEN=... GITHUB_REPOSITORY=owner/repo [RELEASE_ID=123] [RELEASE_NOTES_FILE=notes.md] \
 #     scripts/certify/attach-release.sh v1.2.3 certification-v1.2.3.tar.gz sbom-api.cdx.json ...
 set -euo pipefail
 TAG="${1:?usage: attach-release.sh TAG FILE [FILE...]}"
@@ -36,7 +43,33 @@ content_type() {
   esac
 }
 
-release="$(gh_api "$API/repos/$GITHUB_REPOSITORY/releases/tags/$TAG" 2>/dev/null || true)"
+# The release of the tag, drafts included: by id when given, else the newest
+# listed release whose tag_name is the tag (empty when there is none).
+find_release() {
+  if [ -n "${RELEASE_ID:-}" ]; then
+    gh_api "$API/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" || return 1
+    return 0
+  fi
+  local page=1 list found count
+  while [ "$page" -le 20 ]; do
+    list="$(gh_api "$API/repos/$GITHUB_REPOSITORY/releases?per_page=100&page=$page")" || return 1
+    found="$(printf '%s' "$list" | node -e '
+      let b = ""; process.stdin.on("data", (d) => (b += d)).on("end", () => {
+        const all = JSON.parse(b);
+        const mine = all.filter((r) => r.tag_name === process.argv[1]);
+        if (mine.length > 1) process.stderr.write(`${mine.length} releases carry the tag ${process.argv[1]} (ids ${mine.map((r) => r.id).join(", ")}): using ${mine[0].id}, the newest\n`);
+        process.stdout.write(mine.length ? JSON.stringify(mine[0]) : `#${all.length}`);
+      });' "$TAG")" || return 1
+    case "$found" in
+      '#'*) count="${found#\#}"; [ "$count" -lt 100 ] && return 0; page=$((page + 1)) ;;
+      *) printf '%s' "$found"; return 0 ;;
+    esac
+  done
+}
+
+# A failed lookup stops here: creating a draft on a transient error would
+# leave two releases for the tag.
+release="$(find_release)" || { echo "could not read the releases of $GITHUB_REPOSITORY" >&2; exit 1; }
 if [ -z "$release" ]; then
   echo "no release for $TAG yet: creating a draft"
   notes=""
@@ -54,6 +87,7 @@ if [ -z "$release" ]; then
 fi
 id="$(printf '%s' "$release" | json_field id)"
 [ -n "$id" ] || { echo "could not read the release id" >&2; exit 1; }
+if [ -n "${GITHUB_OUTPUT:-}" ]; then echo "release-id=$id" >> "$GITHUB_OUTPUT"; fi
 upload_url="$(printf '%s' "$release" | json_field upload_url)"
 upload_url="${upload_url%%\{*}"
 

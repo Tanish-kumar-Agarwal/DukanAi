@@ -5,7 +5,7 @@ import { EventsDlqService } from './services/events-dlq.service';
 import { EventsReplayService } from './services/events-replay.service';
 import { EventsStatisticsService } from './services/events-statistics.service';
 import { PurchaseFeatureConfig } from '../config/domains/features/purchase-feature.config';
-import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { FINANCE_ROLES, MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
 import { ReplayAggregateDto } from './dto/replay-aggregate.dto';
 import { LimitOffsetQueryDto, limitOffsetArgs } from '../common/pagination';
@@ -19,11 +19,13 @@ export class PurchaseEventsController {
     private readonly purchaseConfig: PurchaseFeatureConfig
   ) {}
 
+  @Roles(...FINANCE_ROLES)
   @Get('statistics')
   async getStatistics(@CurrentShop() shopId: string) {
     return this.statisticsService.getDashboardMetrics(shopId);
   }
 
+  @Roles(...FINANCE_ROLES)
   @Get('dead-letter')
   async getDeadLetters(@CurrentShop() shopId: string, @Query() query: LimitOffsetQueryDto) {
     const { limit, offset } = limitOffsetArgs(query, this.purchaseConfig.deadLetterPaginationLimit);

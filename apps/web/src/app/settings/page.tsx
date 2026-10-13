@@ -2,11 +2,11 @@
 
 import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useSession } from 'next-auth/react';
+import { signOut, useSession } from 'next-auth/react';
 import { Card } from '@/components/ui/Card';
-import { Store, AlertCircle, ShieldCheck, LogOut, Monitor, Bell, Users } from 'lucide-react';
+import { Store, AlertCircle, ShieldCheck, LogOut, Monitor, Bell, Users, KeyRound } from 'lucide-react';
 import { useToast } from '@/components/ui/Toast';
-import { sessionsApi, shopApi, type SessionView } from '@/lib/api-client';
+import { accountApi, sessionsApi, shopApi, type SessionView } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
 import { signOutEverywhere } from '@/lib/sign-out';
@@ -15,9 +15,10 @@ import { dateTime } from '@/components/pos/format';
 
 /**
  * Settings (roadmap 6.3). "Shop Profile" writes every field `PATCH /shops/me`
- * accepts; the shop's state is what decides IGST versus CGST+SGST on a sale
- * (the API compares it with the customer's state), so it is a picker from
- * the same list the customers page uses. The side menu opens real panels:
+ * accepts; a blank email clears it (audit W3). The shop's state is the place
+ * of supply of a counter sale (CGST + SGST); IGST applies only when a sale
+ * names a place of supply in another state (audit P1-3), so it is a picker
+ * from the same list the customers page uses. The side menu opens real panels:
  * Account & Security lists and ends the caller's own sessions, the two
  * team / notification entries lead to their pages. There is no plan or
  * subscription model, so the former "Billing & Plans" entry is gone.
@@ -75,10 +76,21 @@ function SettingsContent() {
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
 
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+
   useEffect(() => {
+    // Stale-response guard (roadmap 6.5): a load that answers after this one was
+    // abandoned (React's development double mount) must not overwrite what the
+    // user is already typing into the form.
+    let cancelled = false;
     shopApi
       .me()
       .then((data) => {
+        if (cancelled) return;
         setShopName(data.name ?? '');
         setGstin(data.settings?.gstin ?? '');
         setAddress(data.address ?? '');
@@ -88,8 +100,15 @@ function SettingsContent() {
         setPhone(data.phone ?? '');
         setEmail(data.email ?? '');
       })
-      .catch((err) => setLoadError(describeApiError(err, 'Loading shop profile (GET /shops/me)')))
-      .finally(() => setLoading(false));
+      .catch((err) => {
+        if (!cancelled) setLoadError(describeApiError(err, 'Loading shop profile (GET /shops/me)'));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const loadSessions = useCallback(() => {
@@ -130,12 +149,19 @@ function SettingsContent() {
         state,
         pincode: trimmedPincode,
         phone: trimmedPhone,
+        // '' clears the stored address: a new shop has none (audit W3).
         email: email.trim(),
         gstin: trimmedGstin,
       });
       setShopName(saved.name);
       setState(saved.state ?? '');
-      toast(saved.state ? `Shop profile saved. Sales to customers outside ${saved.state} will carry IGST.` : 'Shop profile saved. Set the state so inter-state sales carry IGST.', saved.state ? 'success' : 'warning');
+      setEmail(saved.email ?? '');
+      toast(
+        saved.state
+          ? `Shop profile saved. Counter sales are billed in ${saved.state} (CGST + SGST); IGST applies only when a sale names a place of supply in another state.`
+          : 'Shop profile saved. Set the state: it is the place of supply of every counter sale, and invoices need it.',
+        saved.state ? 'success' : 'warning',
+      );
     } catch (err) {
       toast(describeApiError(err, 'Saving shop profile (PATCH /shops/me)'), 'error');
     } finally {
@@ -153,6 +179,37 @@ function SettingsContent() {
       toast(describeApiError(err, 'Ending a session (DELETE /auth/sessions/:id)'), 'error');
     } finally {
       setRevoking(null);
+    }
+  };
+
+  /**
+   * `POST /auth/change-password`: the API proves the current password, sets
+   * the new one and ends every session of the account (this one too), so a
+   * success signs this browser out and the sign-in page says why.
+   */
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (changingPassword) return;
+    setPasswordError(null);
+    if (newPassword !== confirmPassword) {
+      setPasswordError('The new password and its confirmation do not match.');
+      return;
+    }
+    if (newPassword === currentPassword) {
+      setPasswordError('The new password must differ from the current one.');
+      return;
+    }
+    setChangingPassword(true);
+    try {
+      await accountApi.changePassword(currentPassword, newPassword);
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      toast('Password changed. Every session has ended: sign in again with the new password.', 'success');
+      await signOut({ callbackUrl: '/login?notice=password-changed' });
+    } catch (err) {
+      setPasswordError(describeApiError(err, 'Changing your password (POST /auth/change-password)'));
+      setChangingPassword(false);
     }
   };
 
@@ -226,7 +283,7 @@ function SettingsContent() {
                           <option value="">Not set</option>
                           {INDIAN_STATES.map((name) => <option key={name} value={name}>{name}</option>)}
                         </select>
-                        <p className="text-xs text-gray-500 mt-1">Decides the tax split: a customer in another state is charged IGST instead of CGST + SGST.</p>
+                        <p className="text-xs text-gray-500 mt-1">The place of supply of counter sales (CGST + SGST); IGST only when a sale names another state.</p>
                       </div>
                     </div>
 
@@ -276,9 +333,43 @@ function SettingsContent() {
                 <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
                   <p className="text-xs text-gray-500 mb-1">Role</p>
                   <p className="font-bold text-gray-800">{session?.user?.role ?? (AUTH_DISABLED ? 'OWNER' : '—')}</p>
-                  <p className="text-xs text-gray-500 mt-0.5">Passwords are set at registration or from an invitation; there is no in-app password change yet.</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Change your password below. Forgotten it? Sign out and use “Forgot?” on the sign-in page; the link is emailed to you.</p>
                 </div>
               </div>
+
+              <form onSubmit={handleChangePassword} className="mb-6 rounded-xl border border-gray-100 p-4" aria-labelledby="change-password-heading" data-testid="change-password-form">
+                <h3 id="change-password-heading" className="text-sm font-bold text-gray-800 flex items-center gap-2 mb-1"><KeyRound size={16} /> Change password</h3>
+                <p className="text-xs text-gray-500 mb-3">
+                  {AUTH_DISABLED
+                    ? 'The auth bypass is on: the system user has no password to change.'
+                    : 'At least 12 characters and not a common password. Every signed-in device is signed out afterwards, and the account gets an email.'}
+                </p>
+                {passwordError && (
+                  <div role="alert" className="flex items-center gap-3 rounded-lg border border-red-100 bg-red-50 p-3 text-sm text-red-600 mb-3">
+                    <AlertCircle size={16} className="flex-shrink-0" />
+                    <span>{passwordError}</span>
+                  </div>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div>
+                    <label htmlFor="current-password" className="text-sm font-medium">Current password</label>
+                    <input id="current-password" type="password" autoComplete="current-password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} maxLength={72} required disabled={AUTH_DISABLED || changingPassword} className={inputClass} />
+                  </div>
+                  <div>
+                    <label htmlFor="new-password" className="text-sm font-medium">New password</label>
+                    <input id="new-password" type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Min. 12 characters" minLength={12} maxLength={72} required disabled={AUTH_DISABLED || changingPassword} className={inputClass} />
+                  </div>
+                  <div>
+                    <label htmlFor="confirm-new-password" className="text-sm font-medium">Confirm new password</label>
+                    <input id="confirm-new-password" type="password" autoComplete="new-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} placeholder="Repeat the new password" minLength={12} maxLength={72} required disabled={AUTH_DISABLED || changingPassword} className={inputClass} />
+                  </div>
+                </div>
+                <div className="flex justify-end mt-3">
+                  <button type="submit" disabled={AUTH_DISABLED || changingPassword} aria-busy={changingPassword} className="px-4 py-2 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-xl text-sm font-bold disabled:opacity-60 disabled:cursor-not-allowed">
+                    {changingPassword ? 'Changing…' : 'Change password'}
+                  </button>
+                </div>
+              </form>
 
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Monitor size={16} /> Active sessions</h3>

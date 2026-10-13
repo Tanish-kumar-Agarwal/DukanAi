@@ -9,11 +9,14 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { useToast } from '@/components/ui/Toast';
 import { useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { ocrApi, type OcrDocumentType, type OcrMatchedItem, type OcrScanResult } from '@/lib/api-client';
 import { describeApiError, getApiErrorCode, getApiErrorDetails } from '@/lib/api-error';
 import { OCR_PHOTO_MAX_EDGE, photoForUpload } from '@/lib/photo';
 import { PENDING_SCAN_KEY } from '@/lib/smart-capture';
 import { dataUrlToBlob } from '@/lib/data-url';
+import { csvCell } from '@/lib/csv';
+import { isManagement } from '@/components/customers/permissions';
 
 type ScanState = 'IDLE' | 'UPLOADING' | 'SCANNING' | 'SUCCESS' | 'FAILED';
 
@@ -60,12 +63,11 @@ function lineTotal(item: OcrMatchedItem): number | null {
   return unit === null ? null : +(unit * item.qty).toFixed(2);
 }
 
-function csvCell(value: unknown): string {
-  const text = value === null || value === undefined ? '' : String(value);
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
-/** The read lines as a CSV file the user can keep or import elsewhere: a real download, not a fake save. */
+/**
+ * The read lines as a CSV file the user can keep or import elsewhere: a real
+ * download, not a fake save. Every cell is formula-guarded (audit W14): the
+ * text was read off a photo anyone can hand in.
+ */
 function downloadCsv(items: OcrMatchedItem[], fileName: string): void {
   const rows = [
     ['read_name', 'qty', 'read_price', 'matched_sku', 'matched_name', 'catalogue_price', 'confidence', 'line_total'],
@@ -96,6 +98,9 @@ export default function AiScannerPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const router = useRouter();
+  const { data: session, status: sessionStatus } = useSession();
+  // `POST /ocr/scan-bill` is MANAGEMENT_ROLES: a cashier or viewer would only collect 403s (audit W12).
+  const allowScan = isManagement(session?.user?.role);
 
   const scan = async (file: Blob, name: string) => {
     setFileName(name);
@@ -119,7 +124,9 @@ export default function AiScannerPage() {
   };
 
   // A capture handed over from Smart Capture is scanned once, then forgotten.
+  // The role decides whether it may be scanned, so wait for the session.
   useEffect(() => {
+    if (sessionStatus === 'loading') return;
     let pending: string | null = null;
     try {
       pending = sessionStorage.getItem(PENDING_SCAN_KEY);
@@ -128,18 +135,22 @@ export default function AiScannerPage() {
       pending = null;
     }
     if (!pending) return;
+    if (!allowScan) {
+      toast('Only managers, admins and the owner can scan bills. The photo was not stored: save it from Smart Capture.', 'error');
+      return;
+    }
     try {
       void scan(dataUrlToBlob(pending), 'smart-capture.jpg');
     } catch {
       toast('Could not read the captured photo. Upload it again.', 'error');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [sessionStatus]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
-    if (!file) return;
+    if (!file || !allowScan) return;
     if (!ACCEPTED_TYPES.has(file.type)) {
       toast('Upload a JPEG, PNG or WebP photo of the bill. PDFs are not read.', 'error');
       return;
@@ -188,7 +199,8 @@ export default function AiScannerPage() {
           >
             {/* Upload Zone */}
             <div 
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => { if (allowScan) fileInputRef.current?.click(); }}
+              aria-disabled={!allowScan}
               className="relative overflow-hidden group cursor-pointer bg-white rounded-[24px] border-2 border-dashed border-gray-200 hover:border-[#7C3AED] transition-all duration-500 flex flex-col items-center justify-center p-12 min-h-[400px] shadow-[0_4px_20px_rgba(15,23,42,0.04)] hover:shadow-[0_8px_30px_rgba(124,58,237,0.12)]"
             >
               <input 
@@ -197,6 +209,7 @@ export default function AiScannerPage() {
                 ref={fileInputRef} 
                 onChange={handleFileChange}
                 accept="image/jpeg,image/png,image/webp"
+                disabled={!allowScan}
                 data-testid="scan-input"
               />
               <div className="absolute inset-0 bg-gradient-to-b from-transparent to-purple-50/50 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
@@ -205,7 +218,11 @@ export default function AiScannerPage() {
                 <UploadCloud size={32} />
               </div>
               <h2 className="text-xl font-bold text-gray-800 mb-2 relative z-10">Upload a Bill Photo</h2>
-              <p className="text-sm text-gray-500 text-center max-w-xs relative z-10">A JPEG, PNG or WebP photo of a handwritten bill or supplier invoice, or take a picture with Smart Capture.</p>
+              <p className="text-sm text-gray-500 text-center max-w-xs relative z-10">
+                {allowScan || sessionStatus === 'loading'
+                  ? 'A JPEG, PNG or WebP photo of a handwritten bill or supplier invoice, or take a picture with Smart Capture.'
+                  : 'Only managers, admins and the owner can scan bills. Store the photo from Smart Capture instead.'}
+              </p>
 
               <div className="mt-6 relative z-10" onClick={(e) => e.stopPropagation()}>
                 <label className="text-xs font-bold text-gray-500 uppercase tracking-wider mr-2">Document</label>
@@ -224,7 +241,8 @@ export default function AiScannerPage() {
               <div className="flex gap-4 mt-8 relative z-10">
                 <button 
                   onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-                  className="flex items-center gap-2 px-5 py-2.5 bg-white border border-gray-200 text-gray-700 rounded-xl text-sm font-bold shadow-sm hover:border-gray-300 transition-colors"
+                  disabled={!allowScan}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-white border border-gray-200 text-gray-700 rounded-xl text-sm font-bold shadow-sm hover:border-gray-300 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <FileText size={16} /> Browse Files
                 </button>

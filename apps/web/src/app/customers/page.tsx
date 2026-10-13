@@ -18,7 +18,7 @@ import { RecordPaymentModal } from '@/components/customers/RecordPaymentModal';
 import { PaginationControls } from '@/components/customers/PaginationControls';
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/customers/States';
 import { formatDate, formatMoney } from '@/components/customers/format';
-import { canDeleteCustomers } from '@/components/customers/permissions';
+import { canDeleteCustomers, canWriteCustomers } from '@/components/customers/permissions';
 
 const PAGE_SIZE = 25;
 
@@ -57,6 +57,8 @@ function CustomersPageContent() {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   const allowDelete = canDeleteCustomers(session?.user?.role);
+  // A VIEWER reads customers; every write is POS_ROLES (audit W12).
+  const allowWrite = canWriteCustomers(session?.user?.role);
 
   const fetchPage = useCallback(async () => {
     const seq = ++requestSeq.current;
@@ -102,10 +104,10 @@ function CustomersPageContent() {
   // `/customers?new=1` (dashboard quick action) opens the create modal.
   useEffect(() => {
     if (searchParams.get('new') === '1') {
-      setIsAddOpen(true);
+      if (allowWrite) setIsAddOpen(true);
       router.replace('/customers');
     }
-  }, [searchParams, router]);
+  }, [searchParams, router, allowWrite]);
 
   // Close the row menu on outside click.
   useEffect(() => {
@@ -161,14 +163,16 @@ function CustomersPageContent() {
           <h1 className="text-2xl font-bold text-gray-800">Customers (Udhar)</h1>
           <p className="mt-1 text-sm text-gray-500">Credit customers, balances and repayments.</p>
         </div>
-        <button
-          type="button"
-          onClick={() => setIsAddOpen(true)}
-          className="flex items-center gap-2 rounded-xl bg-[#8B5CF6] px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-purple-500/30 transition-all hover:bg-[#7C3AED]"
-        >
-          <UserPlus size={18} />
-          Add customer
-        </button>
+        {allowWrite && (
+          <button
+            type="button"
+            onClick={() => setIsAddOpen(true)}
+            className="flex items-center gap-2 rounded-xl bg-[#8B5CF6] px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-purple-500/30 transition-all hover:bg-[#7C3AED]"
+          >
+            <UserPlus size={18} />
+            Add customer
+          </button>
+        )}
       </div>
 
       {/* Stats (server numbers only) */}
@@ -243,7 +247,7 @@ function CustomersPageContent() {
               title={debouncedQuery ? 'No customers match your search' : 'No customers yet'}
               hint={debouncedQuery ? 'Try a different name or phone number.' : 'Add your first credit customer to start tracking udhar.'}
               action={
-                !debouncedQuery && (
+                !debouncedQuery && allowWrite && (
                   <button
                     type="button"
                     onClick={() => setIsAddOpen(true)}
@@ -346,12 +350,16 @@ function CustomersPageContent() {
                                 <button role="menuitem" type="button" onClick={() => { setOpenMenuId(null); router.push(`/customers/${customer.id}`); }} className="w-full px-4 py-2.5 text-left text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50">
                                   View details
                                 </button>
-                                <button role="menuitem" type="button" onClick={() => { setOpenMenuId(null); setPaymentTarget(customer); }} className="w-full px-4 py-2.5 text-left text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50">
-                                  Record payment
-                                </button>
-                                <button role="menuitem" type="button" onClick={() => { setOpenMenuId(null); setEditTarget(customer); }} className="w-full px-4 py-2.5 text-left text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50">
-                                  Edit customer
-                                </button>
+                                {allowWrite && (
+                                  <>
+                                    <button role="menuitem" type="button" onClick={() => { setOpenMenuId(null); setPaymentTarget(customer); }} className="w-full px-4 py-2.5 text-left text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50">
+                                      Record payment
+                                    </button>
+                                    <button role="menuitem" type="button" onClick={() => { setOpenMenuId(null); setEditTarget(customer); }} className="w-full px-4 py-2.5 text-left text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50">
+                                      Edit customer
+                                    </button>
+                                  </>
+                                )}
                                 {allowDelete && (
                                   <>
                                     <div className="h-px w-full bg-gray-100" />

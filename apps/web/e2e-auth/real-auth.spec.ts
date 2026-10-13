@@ -140,8 +140,9 @@ test.describe('real sign-in (6.9)', () => {
     await expect(page.getByRole('button', { name: 'Add Product' })).toHaveCount(0);
     await page.goto('/employees');
     await expect(page.getByRole('button', { name: 'Invite Employee' })).toHaveCount(0);
+    // Supplier balances are for owners, admins and managers: the page says so instead of loading.
     await page.goto('/suppliers');
-    await expect(page.getByRole('heading', { name: 'Suppliers & Vendors' })).toBeVisible();
+    await expect(page.getByTestId('finance-only')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Add Supplier' })).toHaveCount(0);
     await page.goto('/settings');
     await expect(page.getByRole('heading', { name: 'Shop Profile' })).toBeVisible();
@@ -153,8 +154,11 @@ test.describe('real sign-in (6.9)', () => {
     expect((await request.patch(`${API_URL}/shops/me`, { ...as, data: { name: 'Nope' } })).status()).toBe(403);
     expect((await request.post(`${API_URL}/invitations/generate`, { ...as, data: { email: 'x@example.com', role: 'CASHIER' } })).status()).toBe(403);
     expect((await request.post(`${API_URL}/suppliers`, { ...as, data: { name: 'Nope', phone: '9999999999' } })).status()).toBe(403);
-    // Reads stay open to every signed-in role.
-    expect((await request.get(`${API_URL}/products`, as)).status()).toBe(200);
+    expect((await request.get(`${API_URL}/suppliers`, as)).status()).toBe(403);
+    // Product reads stay open to every signed-in role, without the cost.
+    const products = await request.get(`${API_URL}/products`, as);
+    expect(products.status()).toBe(200);
+    expect(JSON.stringify(await products.json())).not.toContain('costPrice');
   });
 
   test('ending another session from Account & Security revokes it on the API', async ({ page, request }) => {
@@ -216,6 +220,42 @@ test.describe('real sign-in (6.9)', () => {
     expect((await request.post(`${API_URL}/auth/login`, { data: { email: owner.email, password: PASSWORD } })).status()).toBe(401);
     expect((await request.post(`${API_URL}/auth/reset-password`, { data: { token: rawToken, password: 'Third-Passw0rd!' } })).status()).toBe(400);
     await page.context().clearCookies();
+    await signIn(page, owner.email, newPassword);
+    await page.waitForURL('**/dashboard');
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+  });
+
+  test('Account & Security changes the password: a wrong current one is refused, every session ends, only the new one signs in', async ({ page, request }) => {
+    const owner = await registerOwner(page);
+    const newPassword = 'Ch4nged-Passw0rd!';
+    // Another device that is signed in until the change.
+    const asOther = { headers: { Authorization: `Bearer ${await apiToken(request, owner.email, PASSWORD)}` } };
+    expect((await request.get(`${API_URL}/auth/profile`, asOther)).status()).toBe(200);
+
+    await page.goto('/settings?section=account');
+    const form = page.getByTestId('change-password-form');
+    const submit = async () => {
+      const answer = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/auth/change-password'));
+      await form.getByRole('button', { name: 'Change password' }).click();
+      return answer;
+    };
+
+    await form.getByLabel('Current password').fill('Wrong-Passw0rd!');
+    await form.getByLabel('New password', { exact: true }).fill(newPassword);
+    await form.getByLabel('Confirm new password').fill(newPassword);
+    expect((await submit()).status()).toBe(400);
+    await expect(form.getByRole('alert')).toContainText('The current password is incorrect');
+    expect((await request.get(`${API_URL}/auth/profile`, asOther)).status()).toBe(200);
+
+    await form.getByLabel('Current password').fill(PASSWORD);
+    const changed = await submit();
+    expect(changed.status(), await changed.text()).toBe(200);
+    await page.waitForURL('**/login?notice=password-changed');
+    await expect(page.getByText('Your password was changed and every session was signed out')).toBeVisible();
+
+    // Persisted on the API: the other device is out, the old password is refused, the new one signs in.
+    expect((await request.get(`${API_URL}/auth/profile`, asOther)).status()).toBe(401);
+    expect((await request.post(`${API_URL}/auth/login`, { data: { email: owner.email, password: PASSWORD } })).status()).toBe(401);
     await signIn(page, owner.email, newPassword);
     await page.waitForURL('**/dashboard');
     await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();

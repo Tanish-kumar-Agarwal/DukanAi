@@ -145,6 +145,8 @@ describe('financial reconciliation (roadmap 9.5)', () => {
       'shifts:CLEAN',
       'stock:CLEAN',
       'ledger:CLEAN',
+      'receivables:CLEAN',
+      'payables:CLEAN',
     ]);
     expect(result.checks.flatMap((c) => c.notes)).toEqual([]);
 
@@ -162,6 +164,8 @@ describe('financial reconciliation (roadmap 9.5)', () => {
     });
     expect(summary.tenders).toEqual({ CASH: '574.00', BANK: '226.00', UDHAR: '86.00' });
     expect(await readers.outstanding()).toBe(86);
+    // The customer's balance is its udhar history and the ledger's receivables.
+    expect(check(result.checks, 'receivables').figures).toMatchObject({ receivable: '86.00', advances: '0.00', net: '86.00', ledger: '86.00' });
     const dash = await asOwner(() => dashboard.getSummary(shop.shopId, shop.ownerId));
     expect(summary.netSales).toBe(dash.todaySales!.toFixed(2));
     expect(check(result.checks, 'dashboard').figures).toMatchObject({ netSales: summary.netSales, orders: 5, returnCount: 2, ledgerNetRevenue: summary.netSales });
@@ -181,7 +185,7 @@ describe('financial reconciliation (roadmap 9.5)', () => {
     const http = await httpAs(app, shop, ownerOf(shop));
     const latest = await http.get('/api/reconciliation/latest').expect(200);
     expect(latest.body).toMatchObject({ id: firstRunId, status: 'CLEAN', driftCount: 0 });
-    expect(latest.body.checks).toHaveLength(7);
+    expect(latest.body.checks).toHaveLength(9);
 
     const list = await http.get('/api/reconciliation/runs').expect(200);
     expect(list.headers['x-total-count']).toBe('1');

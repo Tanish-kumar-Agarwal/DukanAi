@@ -8,6 +8,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { canonicalEmail } from '../common/email-address';
 import { PrismaService } from '../prisma/prisma.service';
 import { Role } from '@prisma/client';
 import { CreateInvitationDto } from './dto/create-invitation.dto';
@@ -17,7 +18,7 @@ import * as bcrypt from 'bcrypt';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
 import { UserMapper, safeUserSelect } from '../users/user.mapper';
 import { ADMIN_ROLES, outranks } from '../auth/role-sets';
-import { EmailService } from '../common/email/email.service';
+import { emailSafeText, EmailService } from '../common/email/email.service';
 import { AppConfig } from '../config/domains/app.config';
 import { SecurityConfig } from '../config/domains/security.config';
 import { isProductionEnv } from '../config/validation/env-rules';
@@ -61,7 +62,7 @@ export class InvitationsService {
       throw new ServiceUnavailableException('Invitation email delivery is not configured (SMTP_URL)');
     }
 
-    const email = data.email.trim().toLowerCase();
+    const email = canonicalEmail(data.email);
     const now = new Date();
     const activeInvitationsCount = await this.prisma.invitation.count({
       where: { shopId, isUsed: false, expiresAt: { gt: now } },
@@ -70,9 +71,13 @@ export class InvitationsService {
       throw new BadRequestException('Maximum active invitations limit reached for this shop');
     }
 
-    const existingUser = await this.prisma.user.findUnique({ where: { email }, select: { id: true } });
+    // Only the inviter's own shop is answered for: an address that already has
+    // an account in another shop is invited like any other (acceptance then
+    // fails for its owner), so an invitation cannot be used to learn which
+    // addresses have DukaanAI accounts anywhere (audit T6c).
+    const existingUser = await this.prisma.user.findFirst({ where: { email, shopId, isDeleted: false }, select: { id: true } });
     if (existingUser) {
-      throw new ConflictException('User with this email already exists.');
+      throw new ConflictException({ message: 'This person is already a member of your shop.', code: 'ALREADY_A_MEMBER' });
     }
 
     const existingInvite = await this.prisma.invitation.findFirst({
@@ -98,8 +103,9 @@ export class InvitationsService {
       await this.email.send({
         purpose: 'invitation',
         to: email,
-        subject: `You're invited to ${shop.name} on DukaanAI`,
-        text: this.invitationText(shop.name, data.role, rawToken, expiresAt),
+        // The shop's name is user text: one line, bounded (audit R15).
+        subject: `You're invited to ${emailSafeText(shop.name, 80)} on DukaanAI`,
+        text: this.invitationText(emailSafeText(shop.name), data.role, rawToken, expiresAt),
       });
     } catch {
       // The token exists only in the message that was not delivered: the row

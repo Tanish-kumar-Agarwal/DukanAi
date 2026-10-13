@@ -1,11 +1,11 @@
-import { ConflictException, Injectable, Logger, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { InvoiceItem, LedgerAccount, LedgerEntryType, Prisma, TenderType } from '@prisma/client';
 import * as crypto from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { BillingService } from '../billing.service';
 import { BillingHelpers } from '../billing.helpers';
-import { CancelInvoiceDto, ReturnInvoiceDto } from '../dto/return-invoice.dto';
-import { InvoiceMathEngine, Decimal, deriveInvoicePaymentMode, InvoiceMathError, ReturnCalculationResult } from '../utils/invoice-math.engine';
+import { CancelInvoiceDto, ReturnInvoiceDto, ReturnReason } from '../dto/return-invoice.dto';
+import { InvoiceMathEngine, Decimal, costOfGoodsSlice, deriveInvoicePaymentMode, InvoiceMathError, ReturnCalculationResult } from '../utils/invoice-math.engine';
 import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 import { InventoryLocationService } from '../../inventory-domain/services/inventory-location.service';
 import { InvoiceNumberService } from './invoice-number.service';
@@ -15,7 +15,10 @@ import { BillingFeatureConfig } from '../../config/domains/features/billing-feat
 import { BillingCheckpoints, BillingFlow } from '../billing-checkpoints';
 import { withSerializationRetry } from '../../common/db/serialization-retry';
 import { financialYearLabel, isSameBusinessDay } from '../../common/time/business-day';
+import { businessDaysBetween, gstCreditNoteDeadline, isPastGstCreditNoteDeadline } from '../gst-deadline';
 import { Clock } from '../../common/time/clock';
+import { FeatureFlagsConfig } from '../../config/domains/feature-flags.config';
+import { assertFeatureEnabled } from '../../common/features/feature-catalogue';
 
 type Tx = Prisma.TransactionClient;
 
@@ -29,6 +32,14 @@ interface RestoredStock {
   /** Cost of the goods that physically came back (custom, SERVICE and DIGITAL lines excluded). */
   costOfGoods: Decimal;
 }
+
+/**
+ * Return reasons under which the goods cannot be sold again (audit B7): they
+ * are refunded but not restocked, and their cost stays in cost of goods (the
+ * shop lost them). The reconciliation rebuilds cost of goods from the stock
+ * movements, so it expects exactly that.
+ */
+export const NON_RESALEABLE_REASONS: ReadonlySet<string> = new Set([ReturnReason.DAMAGED, ReturnReason.EXPIRED]);
 
 export interface ReturnResult {
   invoice: InvoiceWithRelations;
@@ -60,6 +71,7 @@ export class InvoiceReversalService {
     private readonly billingConfig: BillingFeatureConfig,
     private readonly checkpoints: BillingCheckpoints,
     private readonly clock: Clock,
+    private readonly features: FeatureFlagsConfig,
   ) {}
 
   private transaction<T>(flow: BillingFlow, fn: (tx: Tx) => Promise<T>): Promise<T> {
@@ -91,35 +103,62 @@ export class InvoiceReversalService {
       where: { idempotencyKey: dto.idempotencyKey, shopId: actor.shopId },
       include: INVOICE_INCLUDE,
     });
-    if (existing) {
-      if (existing.requestHash && existing.requestHash !== requestHash) {
-        throw new UnprocessableEntityException({ message: 'This idempotency key was already used for a different return.', code: 'IDEMPOTENCY_KEY_REUSED' });
-      }
-      return { invoice: existing, stock: [], replayed: true };
-    }
+    if (existing) return this.replayReturn(existing, requestHash);
+    // A paused feature refuses new returns only: the replay above still answers (roadmap 9.23).
+    assertFeatureEnabled(this.features, 'returns');
 
     const timeZone = await this.helpers.shopTimeZone(actor.shopId);
     const locationId = await this.locationService.resolveSaleLocation(this.prisma, actor.shopId);
+    const restock = !(dto.reason && NON_RESALEABLE_REASONS.has(dto.reason));
 
     const outcome = await this.transaction('RETURN', async (tx) => {
         const original = await this.lockOriginal(tx, actor.shopId, dto.invoiceId);
         if (original.type !== 'SALE' || original.status !== 'COMPLETED') {
           throw new ConflictException({ message: 'Only completed sales can be returned.', code: 'INVOICE_NOT_RETURNABLE' });
         }
+        const now = this.clock.now();
+        // CGST s.34(2): no credit note for a supply after 30 November following
+        // the end of its financial year (audit B8). The goods may still come
+        // back, but the refund is settled outside the app: the output tax can
+        // no longer be reduced.
+        if (isPastGstCreditNoteDeadline(original.createdAt, now, timeZone)) {
+          throw new ConflictException({
+            message: `${original.invoiceNumber} is past the GST credit-note deadline (${gstCreditNoteDeadline(original.createdAt, timeZone)}). Refund it outside the app: its output tax can no longer be reduced.`,
+            code: 'RETURN_PAST_GST_DEADLINE',
+            details: { invoiceId: original.id, invoiceNumber: original.invoiceNumber, deadline: gstCreditNoteDeadline(original.createdAt, timeZone) },
+          });
+        }
 
         const lines = this.selectReturnLines(original.items, dto.items);
         // Every earlier return of this sale, read under the invoice lock: the
         // refund is capped so that all returns together never exceed the sale,
-        // and the return that completes the sale takes the exact remainder.
+        // and the return that completes the sale takes the exact remainder. A
+        // line with nothing left to refund (a zero-value line) never holds the
+        // sale open (audit B11).
         const prior = await this.priorReturns(tx, actor.shopId, original.id);
-        const completesInvoice = original.items.every((item) => {
-          const returning = lines.find((l) => l.item.id === item.id)?.quantity ?? new Decimal(0);
-          return new Decimal(item.quantity.toString()).minus(item.returnedQuantity.toString()).minus(returning).lessThanOrEqualTo(0);
-        });
+        const completesInvoice = original.items.every((item) => !this.hasRefundLeft(item, lines.find((l) => l.item.id === item.id)?.quantity ?? new Decimal(0)));
         const math = this.returnMath(lines, { invoiceTotal: original.totalAmount, refundedTotal: prior.refunded, completesInvoice });
         const refundTotal = money(math.finalTotal);
-        const now = this.clock.now();
         const financialYear = financialYearLabel(now, timeZone);
+
+        // A cashier's own authority (audit B6): up to BILLING_CASHIER_MAX_REFUND_AMOUNT
+        // per return, on a sale at most BILLING_CASHIER_RETURN_WINDOW_DAYS business
+        // days old; beyond either a manager takes the return.
+        if (!isManager(actor.role)) {
+          const maxRefund = new Prisma.Decimal(this.billingConfig.cashierMaxRefundAmount);
+          const windowDays = this.billingConfig.cashierReturnWindowDays;
+          const ageDays = businessDaysBetween(original.createdAt, now, timeZone);
+          if (refundTotal.greaterThan(maxRefund) || ageDays > windowDays) {
+            throw new ForbiddenException({
+              message:
+                refundTotal.greaterThan(maxRefund)
+                  ? `Refunds above ${maxRefund.toFixed(2)} need a manager to take this return.`
+                  : `Returns against sales older than ${windowDays} day${windowDays === 1 ? '' : 's'} need a manager to take this return.`,
+              code: 'RETURN_REQUIRES_APPROVAL',
+              details: { maxRefund: maxRefund.toNumber(), refund: refundTotal.toNumber(), windowDays, saleAgeDays: ageDays },
+            });
+          }
+        }
 
         // Shift before customer (canonical lock order). The refund nets against
         // the sale's own shift while it is open; otherwise the actor's drawer.
@@ -135,12 +174,13 @@ export class InvoiceReversalService {
           ? Prisma.Decimal.min(refundTotal, reversibleCredit, Prisma.Decimal.max(customer.outstandingBalance, 0))
           : new Prisma.Decimal(0);
         const physicalRefund = refundTotal.minus(udharReversal);
-        const tender: TenderType = dto.refund?.tender ?? 'CASH';
+        // Unless told otherwise, money goes back the way it came (audit B6).
+        const tender: TenderType = dto.refund?.tender ?? this.defaultRefundTender(original);
         if (physicalRefund.greaterThan(0) && tender === 'CASH' && !shiftId) {
           throw new ConflictException({ message: 'Open a shift before refunding cash.', code: 'SHIFT_REQUIRED' });
         }
 
-        const { number: invoiceNumber } = await this.invoiceNumbers.next(tx, actor.shopId, 'POS_RETURN', `RET-${financialYear}-`);
+        const { number: invoiceNumber } = await this.invoiceNumbers.next(tx, actor.shopId, 'POS_RETURN', financialYear);
         // Product locks before the return lines are inserted (see BillingService).
         await this.engine.lockProducts(tx, actor.shopId, lines.map((l) => l.item.productId).filter((id): id is string => !!id));
         const tenders = physicalRefund.greaterThan(0) ? [{ type: tender as 'CASH' | 'UPI' | 'CARD' | 'BANK_TRANSFER', amount: new Decimal(physicalRefund.toString()) }] : [];
@@ -217,7 +257,10 @@ export class InvoiceReversalService {
         }
 
         await this.checkpoints.reach('BEFORE_INVENTORY', 'RETURN');
-        const { stock, costOfGoods } = await this.restoreStock(tx, actor, locationId, lines, returnInvoice.id, `Return ${invoiceNumber}`, now);
+        // Damaged or expired goods are refunded, not restocked (audit B7).
+        const { stock, costOfGoods } = restock
+          ? await this.restoreStock(tx, actor, locationId, lines, returnInvoice.id, `Return ${invoiceNumber}`, now)
+          : { stock: [] as StockOutcome[], costOfGoods: new Decimal(0) };
         await this.checkpoints.reach('AFTER_INVENTORY', 'RETURN');
 
         await this.checkpoints.reach('BEFORE_CUSTOMER', 'RETURN');
@@ -235,6 +278,7 @@ export class InvoiceReversalService {
                 balanceBefore: customer.outstandingBalance,
                 balanceAfter: after,
                 notes: `Return ${invoiceNumber} against ${original.invoiceNumber}`,
+                createdAt: now,
               },
             });
             await tx.customer.update({ where: { id: customer.id }, data: { outstandingBalance: after, totalPurchases: { decrement: refundTotal } } });
@@ -278,6 +322,7 @@ export class InvoiceReversalService {
               refundTender: physicalRefund.greaterThan(0) ? tender : null,
               creditReversed: udharReversal.toFixed(2),
               reason: dto.reason ?? null,
+              restocked: restock,
               items: lines.map((l) => ({ invoiceItemId: l.item.id, productId: l.item.productId, isCustom: l.item.isCustom, quantity: l.quantity.toFixed(3) })),
             },
           },
@@ -295,10 +340,67 @@ export class InvoiceReversalService {
 
         await this.checkpoints.reach('BEFORE_COMMIT', 'RETURN');
         return { invoice: returnInvoice, stock };
-      });
+      }).catch(async (error: unknown) => {
+      // Two requests with one key both passed the replay check above and the
+      // loser hit the unique key: answer it as the replay (or the reuse) it is,
+      // never as a 409 DB_P2002 (audit B12). The sale path does the same.
+      if (!isIdempotencyRace(error)) throw error;
+      const duplicate = await this.prisma.invoice.findFirst({ where: { idempotencyKey: dto.idempotencyKey, shopId: actor.shopId }, include: INVOICE_INCLUDE });
+      if (!duplicate) throw error;
+      return { ...this.replayReturn(duplicate, requestHash), raced: true as const };
+    });
 
+    if ('raced' in outcome) return { invoice: outcome.invoice, stock: outcome.stock, replayed: true };
     await this.helpers.afterStockChange(actor, outcome.stock);
     return { ...outcome, replayed: false };
+  }
+
+  /** The return already stored under this key: the same request replays, a different one is 422 naming it. */
+  private replayReturn(existing: InvoiceWithRelations, requestHash: string): ReturnResult {
+    if (existing.requestHash && existing.requestHash !== requestHash) {
+      throw new UnprocessableEntityException({
+        message: `This return's request key was already used for ${existing.invoiceNumber}, which differs from this request.`,
+        code: 'IDEMPOTENCY_KEY_REUSED',
+        details: { invoiceId: existing.id, invoiceNumber: existing.invoiceNumber },
+      });
+    }
+    return { invoice: existing, stock: [], replayed: true };
+  }
+
+  /** A sale paid by one tender (no credit, no split) is refunded by it; anything else in cash. */
+  private defaultRefundTender(original: InvoiceWithRelations): TenderType {
+    const tenders = new Set(original.payments.filter((p) => p.amount.greaterThan(0)).map((p) => p.tender));
+    if (tenders.size === 1 && original.udharAmount.isZero()) return [...tenders][0];
+    return 'CASH';
+  }
+
+  /**
+   * Whether a sale line still has money to refund once `returning` more units
+   * go back (audit B11): the engine's own cumulative math on what would remain.
+   */
+  private hasRefundLeft(item: InvoiceItem, returning: Decimal): boolean {
+    const remaining = new Decimal(item.quantity.toString()).minus(item.returnedQuantity.toString()).minus(returning);
+    if (!remaining.greaterThan(0)) return false;
+    const amounts = this.lineAmounts(item);
+    const rest = InvoiceMathEngine.calculateReturn({
+      lines: [
+        {
+          lineRef: item.id,
+          originalQuantity: item.quantity.toString(),
+          returnedQuantity: new Decimal(item.returnedQuantity.toString()).plus(returning).toString(),
+          quantity: remaining.toString(),
+          unitPrice: item.sellingPrice.toString(),
+          discountAmount: amounts.discountAmount.toString(),
+          taxableAmount: amounts.taxableAmount.toString(),
+          cgstAmount: item.cgstAmount.toString(),
+          sgstAmount: item.sgstAmount.toString(),
+          igstAmount: item.igstAmount.toString(),
+          cessAmount: item.cessAmount.toString(),
+          totalAmount: item.totalAmount.toString(),
+        },
+      ],
+    });
+    return rest.grandTotal.greaterThan(0);
   }
 
   // ---------------------------------------------------------------------------
@@ -317,6 +419,8 @@ export class InvoiceReversalService {
         if (original.status === 'CANCELLED') {
           return { invoice: original, stock: [] as StockOutcome[], alreadyCancelled: true };
         }
+        // Paused (roadmap 9.23): an invoice already cancelled is still answered above.
+        assertFeatureEnabled(this.features, 'cancellations');
         if (original.status !== 'COMPLETED') {
           throw new ConflictException({ message: 'Invoice is not in a cancellable state.', code: 'INVOICE_NOT_CANCELLABLE' });
         }
@@ -388,6 +492,7 @@ export class InvoiceReversalService {
                 balanceBefore: customer.outstandingBalance,
                 balanceAfter: after,
                 notes: `Cancellation of ${original.invoiceNumber}`,
+                createdAt: now,
               },
             });
             await tx.customer.update({ where: { id: customer.id }, data: { outstandingBalance: after, totalPurchases: { decrement: refundTotal } } });
@@ -591,7 +696,9 @@ export class InvoiceReversalService {
       });
       if (!result.bypassed) {
         stock.push({ productId, quantity: line.quantity.toNumber(), balanceAfter: result.balanceAfter.toNumber(), productStockAfter: result.productStockAfter.toNumber() });
-        costOfGoods = costOfGoods.plus(new Decimal(line.item.costPrice.toString()).mul(line.quantity));
+        // The cumulative slice after the line's earlier returns: a line's
+        // returns add up to exactly the cost its sale booked (audit B16).
+        costOfGoods = costOfGoods.plus(costOfGoodsSlice(line.item.costPrice.toString(), line.item.returnedQuantity.toString(), line.quantity));
       }
     }
     return { stock, costOfGoods };
@@ -628,4 +735,12 @@ export class InvoiceReversalService {
     }
     return entries;
   }
+}
+
+function isIdempotencyRace(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === 'P2002' &&
+    String((error.meta as { target?: unknown })?.target ?? '').includes('idempotencyKey')
+  );
 }

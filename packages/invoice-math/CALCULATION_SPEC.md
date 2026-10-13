@@ -10,7 +10,8 @@ below is deterministic and uses `Decimal.js` (precision 20, ROUND_HALF_UP).
 1. **Validate and freeze the input.** At least one line, no duplicate
    `productId`, quantity > 0 (3 dp), unit price >= 0, line discount 0-100,
    known GST slab (`ZERO`, `FIVE`, `TWELVE`, `EIGHTEEN`, `TWENTYEIGHT`) or an
-   explicit numeric `gstRate`. Unknown slabs are rejected, never defaulted.
+   explicit numeric `gstRate`, cess 0-100 (`ERR_INVALID_CESS`). Unknown slabs
+   and out-of-range cess are rejected, never defaulted.
 2. **Line subtotal** = `unitPrice × quantity` (2 dp).
 3. **Item discount** = `lineSubtotal × discountPercent / 100` (2 dp).
    `netSubtotal = lineSubtotal − itemDiscount`.
@@ -58,6 +59,12 @@ whatever the split, the returns of a line add up to `A`, and the return that
 completes the line takes its exact remainder. `returnedQuantity + quantity`
 may not exceed `Q` (`ERR_RETURN_QTY_EXCEEDS`).
 
+A return line's `lineSubtotal` is its `taxableAmount + discountAmount` (both
+cumulative slices), not `unitPrice × quantity`: the two can differ by a
+paisa, and only the sum keeps `subtotal − discount = taxable` on the return
+document's own rows (8 × 169.72 with a 9 % line discount, 3 returned: 509.17
+− 45.83 = 463.34, where 3 × 169.72 = 509.16 did not add up).
+
 Totals are sums of the line values. A return document is **never rounded to
 the rupee on its own** (that is how four returns of a ₹0.50 unit refunded ₹4
 on a ₹2 sale). With a `settlement` the document total is settled against the
@@ -67,6 +74,49 @@ this document) `finalTotal = invoiceTotal − refundedTotal` exactly. So
 Σ refunds of a sale == its `finalTotal`, the sale's round-off is refunded
 once, by the last return, and a sale that was already over-refunded (legacy
 data) refunds nothing more. `roundOff = finalTotal − grandTotal`.
+
+## Prices, MRP and discount limits
+
+The selling price is **before GST** (exclusive pricing). The MRP a product
+carries is tax-inclusive (Legal Metrology), so the API never sells a unit
+above it:
+
+- `inclusiveUnitPrice(price, gstRate, cessPercent = 0)` is what `calculate`
+  bills for ONE undiscounted unit at `price`: `price + CGST + SGST + CESS`
+  intra-state and `price + IGST + CESS` inter-state, each tax component
+  rounded half-up to the paisa, and the higher of the two (the same product
+  can be billed either way; e.g. 10.05 at 18 % is 11.85 intra-state and
+  11.86 inter-state, 0.50 at 18 % is 0.60 and 0.59). `gstRate` is a slab
+  name or a percent. The products API refuses an MRP below it and stores it
+  for a blank MRP; the checkout refuses a line whose product's MRP (when
+  above 0) is below it (`PRICE_ABOVE_MRP`). It is a per-unit rule at paise
+  precision: a line of many units of a sub-paisa-rounded price can carry a
+  fraction of a paisa per unit more than `quantity × MRP`, as any rounded
+  per-line tax does.
+- `exclusiveUnitPrice(inclusivePrice, gstRate, cessPercent = 0)` is the
+  inverse the product form uses when the owner types a GST-inclusive shelf
+  price: the largest price in paise whose `inclusiveUnitPrice` is at most
+  `inclusivePrice`, so one unit never bills above the typed price (₹10 at
+  18 % stores ₹8.47, which bills ₹9.99; ₹118 stores ₹100.00 exactly), and
+  `inclusiveUnitPrice(exclusiveUnitPrice(x)) ≤ x` for every price and slab.
+- `discountLimitAmounts(result, limitPercent)` is what a percentage limit
+  yields on a calculated invoice under the engine's own rounding: `invoice`
+  = `round2((subtotal − totalItemDiscount) × limit / 100)` (an invoice
+  PERCENTAGE discount at the limit) and `effective` = the larger of
+  `round2(subtotal × limit / 100)` and `Σ round2(lineSubtotal × limit /
+  100)` (the limit applied once, or on every line). The API's cashier
+  discount authority compares amounts with these, never a re-derived
+  percentage (10 % of 10.05 is 1.01, which is 10.05 % of the line).
+
+## Cost of goods
+
+`costOfGoodsSlice(unitCost, before, quantity)` =
+`round2(unitCost × (before + quantity)) − round2(unitCost × before)`. A sale
+books every stocked line at `costOfGoodsSlice(cost, 0, quantity)` (rounded per
+line), a return at `costOfGoodsSlice(cost, returnedBefore, quantity)`: the
+returns of a line add up to exactly what its sale booked, whatever the split
+(rounding each return on its own drifted: 33.33 × 2.345 kg = 78.16 sold,
+0.001 + 0.001 + 2.343 kg returned = 0.03 + 0.03 + 78.09 = 78.15).
 
 ## Allocation notes
 

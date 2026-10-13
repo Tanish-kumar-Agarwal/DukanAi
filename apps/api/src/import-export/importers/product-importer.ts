@@ -4,7 +4,8 @@ import { CategoriesService } from '../../categories/categories.service';
 import { CreateProductDto, UpdateProductDto } from '../../products/dto/create-product.dto';
 import { normalizeBarcode, ProductsService } from '../../products/products.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { ParsedFile, ProductImportValue, STOCKLESS_TYPES, validateProductRow } from '../import-rows';
+import { mrpBelowMessage, ParsedFile, ProductImportValue, STOCKLESS_TYPES, validateProductRow } from '../import-rows';
+import { inclusiveUnitPrice } from '../../billing/utils/invoice-math.engine';
 import { fold, ImportActor, Importer, invalid, PlannedRow, refuse, refuseRepeats } from './import-plan';
 
 const PRODUCT_SELECT = {
@@ -117,6 +118,11 @@ export class ProductImporter implements Importer {
     const changes = [`new product ${value.sku}`];
     if (category) changes.push(category.id ? `category "${category.name}"` : `category "${category.name}" (new)`);
     if (!value.gstRate) issues.push({ field: 'gstRate', message: 'No GST slab given: 18% applies. Check it before billing.', severity: 'warning' });
+    // MRP includes GST (audit P1-2): checked against the slab that will apply.
+    const inclusive = inclusiveUnitPrice(value.sellingPrice, value.gstRate ?? 'EIGHTEEN', value.cessRate ?? 0).toNumber();
+    if (value.mrp !== undefined && value.mrp < inclusive) {
+      return { rowNumber, raw, issues: [...issues, { field: 'mrp', message: mrpBelowMessage(value.mrp, inclusive), severity: 'error' }], changes: [] };
+    }
     const dto: CreateProductDto = {
       name: value.name,
       sku: value.sku,
@@ -125,8 +131,9 @@ export class ProductImporter implements Importer {
       type: value.type,
       costPrice: value.costPrice,
       sellingPrice: value.sellingPrice,
-      // The products page rules (roadmap 6.2): MRP and wholesale default to the selling price.
-      mrp: value.mrp ?? value.sellingPrice,
+      // The products API rules: a blank MRP is the selling price plus GST
+      // (audit P1-2), a blank wholesale price the selling price (roadmap 6.2).
+      mrp: value.mrp,
       wholesalePrice: value.wholesalePrice ?? value.sellingPrice,
       gstRate: value.gstRate,
       cessRate: value.cessRate,
@@ -191,15 +198,30 @@ export class ProductImporter implements Importer {
     const categoryChanges = category && (!category.id || category.id !== existing.categoryId);
     if (category && categoryChanges) changes.push(`category → "${category.name}"${category.id ? '' : ' (new)'}`);
 
-    // Nothing sells above its MRP (roadmap 6.2), whichever of the two the file leaves blank.
+    // Nothing sells above its MRP, which includes GST (roadmap 6.2, audit
+    // P1-2), whichever of the price, the slab, the cess or the MRP the file
+    // leaves blank. A row that changes none of them leaves an older product
+    // as it is, with a warning when the POS will refuse it.
     const mrp = value.mrp !== undefined ? new Prisma.Decimal(value.mrp) : existing.mrp;
-    if (new Prisma.Decimal(value.sellingPrice).greaterThan(mrp)) {
-      return {
-        rowNumber,
-        raw,
-        issues: [...issues, { field: 'mrp', message: `The selling price ${value.sellingPrice.toFixed(2)} is above the product's MRP ${mrp.toFixed(2)}; give the MRP in the file.`, severity: 'error' }],
-        changes: [],
-      };
+    const inclusive = inclusiveUnitPrice(value.sellingPrice, value.gstRate ?? existing.gstRate, value.cessRate ?? existing.cessRate.toString());
+    const pricingTouched = changes.some((c) => /^(sellingPrice|mrp|gstRate|cessRate) /.test(c));
+    if (inclusive.greaterThan(mrp.toString())) {
+      if (pricingTouched) {
+        return {
+          rowNumber,
+          raw,
+          issues: [
+            ...issues,
+            {
+              field: 'mrp',
+              message: `The selling price ${value.sellingPrice.toFixed(2)} plus GST is ${inclusive.toFixed(2)}, above the product's MRP ${mrp.toFixed(2)}; give the MRP in the file.`,
+              severity: 'error',
+            },
+          ],
+          changes: [],
+        };
+      }
+      issues.push({ field: 'mrp', message: `The product sells at ${inclusive.toFixed(2)} with GST, above its MRP ${mrp.toFixed(2)}: the POS refuses it until the MRP or the price is corrected.`, severity: 'warning' });
     }
     if (!existing.isActive) issues.push({ message: 'The product is inactive in the shop; the import updates it and leaves it inactive.', severity: 'warning' });
 

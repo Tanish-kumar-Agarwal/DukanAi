@@ -22,6 +22,13 @@
 #                   (docs/RUNBOOKS.md, DukaanAiCredentialFlood); the default
 #                   0.0.0.0/32 matches no client
 #
+# Idle upstream connections are dropped by Caddy before the upstream would
+# close them (audit 2026-10-11, R21): a connection the upstream closes while
+# Caddy reuses it is a 502 for that request. The API idles out after
+# HTTP_KEEP_ALIVE_TIMEOUT_MS (65 s), the web server after KEEP_ALIVE_TIMEOUT
+# (65000 in every compose file and the Kubernetes Deployment; Node's default
+# would be 5 s), so Caddy keeps an idle connection for at most 55 s.
+#
 # Caddy's own X-Forwarded-For handling: an X-Forwarded-For sent by the
 # client is discarded (no `trusted_proxies` is configured), so the value the
 # API sees is always the address Caddy accepted the connection from.
@@ -46,6 +53,7 @@
 	reverse_proxy web:3000 {
 		transport http {
 			dial_timeout 10s
+			keepalive 55s
 			response_header_timeout {$EDGE_UPSTREAM_TIMEOUT:60s}
 		}
 	}
@@ -60,6 +68,7 @@
 	reverse_proxy api:3002 {
 		transport http {
 			dial_timeout 10s
+			keepalive 55s
 			response_header_timeout {$EDGE_UPSTREAM_TIMEOUT:60s}
 		}
 	}

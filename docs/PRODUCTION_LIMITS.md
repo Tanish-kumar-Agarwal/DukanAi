@@ -147,10 +147,13 @@ these values; above them the sale needs a MANAGER or above
 |---|---:|---|---|
 | `BILLING_CASHIER_MAX_DISCOUNT_PERCENT` | 10 | largest line, invoice or combined effective discount a CASHIER may apply | pending (date, name) |
 | `BILLING_CASHIER_MAX_CUSTOM_LINE_AMOUNT` | 500 | largest free-priced line, in rupees, a CASHIER may bill; 0 forbids custom lines for cashiers | pending (date, name) |
+| `BILLING_CASHIER_MAX_CUSTOM_TOTAL_AMOUNT` | 1000 | largest sum of a CASHIER's free-priced lines on one bill, in rupees (`CUSTOM_LINE_REQUIRES_APPROVAL`) | pending (date, name) |
+| `BILLING_CASHIER_MAX_REFUND_AMOUNT` | 2000 | largest refund, in rupees per return, a CASHIER may give (`RETURN_REQUIRES_APPROVAL`, 403) | pending (date, name) |
+| `BILLING_CASHIER_RETURN_WINDOW_DAYS` | 7 | oldest sale, in business days, a CASHIER may take a return against (`RETURN_REQUIRES_APPROVAL`) | pending (date, name) |
 | Credit limit changes | MANAGER+ | `creditLimit` on a customer is refused from a CASHIER (`CREDIT_LIMIT_REQUIRES_MANAGER`), audited | by design |
 | Cancellation window | business day | an invoice is cancelled on its business day only, by MANAGER+ (contract §4) | by design |
 
-The two numeric values are the defaults the repository shipped with; the
+The numeric values are the defaults the repository shipped with; the
 owner confirms or changes them in the production `.env` before go-live and
 dates the row. `test/integration/pos-resilience.integration-spec.ts` proves
 the refusal codes at whatever values are configured.

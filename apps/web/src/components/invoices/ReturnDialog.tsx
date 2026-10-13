@@ -6,7 +6,7 @@ import { Modal } from '@/components/ui/Modal';
 import { billingApi } from '@/lib/api-client';
 import { generateUuid, allowsDecimalQuantity } from '@/store/pos';
 import type { InvoiceDetail, TenderType } from '@/types';
-import { extractApiError, isRetryableFailure } from '@/components/pos/api-errors';
+import { detailString, extractApiError, isRetryableFailure } from '@/components/pos/api-errors';
 import { calculateReturnPreview } from '@/components/pos/engine';
 import { money, qty } from '@/components/pos/format';
 import { CustomItemBadge } from '@/components/invoices/InvoiceBadges';
@@ -20,9 +20,9 @@ interface ReturnDialogProps {
 
 const REASONS = [
   { value: 'CUSTOMER_CHANGED_MIND', label: 'Customer changed mind' },
-  { value: 'DAMAGED', label: 'Damaged / defective' },
+  { value: 'DAMAGED', label: 'Damaged / defective (not restocked)' },
   { value: 'WRONG_ITEM', label: 'Wrong item billed' },
-  { value: 'EXPIRED', label: 'Expired' },
+  { value: 'EXPIRED', label: 'Expired (not restocked)' },
   { value: 'OTHER', label: 'Other' },
 ];
 
@@ -33,6 +33,12 @@ const fieldClass =
 
 export function returnableQuantity(item: { quantity: number; returnedQuantity: number }): number {
   return Math.max(0, Number((item.quantity - item.returnedQuantity).toFixed(3)));
+}
+
+/** Money goes back the way it came: a sale paid by one tender (no credit) is refunded by it, anything else in cash (the API's default, audit B6). */
+export function defaultRefundTender(invoice: Pick<InvoiceDetail, 'payments' | 'udharAmount'>): TenderType {
+  const tenders = new Set(invoice.payments.filter((p) => p.amount > 0).map((p) => p.tender));
+  return tenders.size === 1 && !(invoice.udharAmount > 0) ? [...tenders][0] : 'CASH';
 }
 
 export function ReturnDialog({ isOpen, invoice, onClose, onReturned }: ReturnDialogProps) {
@@ -47,14 +53,15 @@ export function ReturnDialog({ isOpen, invoice, onClose, onReturned }: ReturnDia
 
   useEffect(() => {
     if (!isOpen) return;
+    // Nothing is pre-selected: the cashier enters what actually comes back.
     const initial: Record<string, string> = {};
     invoice.items.forEach((item) => {
-      initial[item.id] = String(returnableQuantity(item));
+      initial[item.id] = '0';
     });
     setQuantities(initial);
     setReason(REASONS[0].value);
     setNotes('');
-    setTender('CASH');
+    setTender(defaultRefundTender(invoice));
     setReference('');
     setError(null);
     keyRef.current = generateUuid();
@@ -100,8 +107,20 @@ export function ReturnDialog({ isOpen, invoice, onClose, onReturned }: ReturnDia
     } catch (err) {
       const info = extractApiError(err, 'Creating return (POST /billing/returns)');
       if (info.code === 'IDEMPOTENCY_KEY_REUSED') {
-        keyRef.current = generateUuid();
-        setError({ message: 'The request key was already used. A new key was generated — press Retry.', retryable: true });
+        // An earlier attempt of this dialog (its answer lost) already recorded a
+        // return: open that one, never refund a second time (audit P1-4).
+        const savedId = detailString(info.details, 'invoiceId');
+        const savedNumber = detailString(info.details, 'invoiceNumber') ?? 'an earlier return';
+        try {
+          if (!savedId) throw new Error('no return id');
+          onReturned(await billingApi.getInvoice(savedId));
+        } catch {
+          setError({ message: `This return was already recorded as ${savedNumber} by an earlier attempt; nothing was refunded again. Close this dialog and reload the invoice to see it.`, retryable: false });
+        }
+      } else if (info.code === 'RETURN_REQUIRES_APPROVAL') {
+        setError({ message: `${info.message} A cashier takes returns up to a set refund and sale age; ask a manager to take this one.`, retryable: false });
+      } else if (info.code === 'RETURN_PAST_GST_DEADLINE') {
+        setError({ message: info.message, retryable: false });
       } else if (info.code === 'SHIFT_REQUIRED') {
         setError({ message: 'A cash refund needs an open shift. Open a shift from the POS (or refund by UPI/card/bank) and try again.', retryable: false });
       } else if (info.code === 'RETURN_QTY_EXCEEDS') {

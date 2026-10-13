@@ -9,11 +9,14 @@
  *
  *     <STORAGE_ROOT>/<shopId>/Customers/<customerId>/...
  *
- * The old layout carried no shop, so a folder name (a customer's name) is the
- * only key. The script therefore runs for ONE shop at a time (`--shop`), looks
- * the name up inside that shop only, and refuses an ambiguous name (two live
- * customers of the shop with that name) or an unknown one instead of guessing:
- * the operator resolves those by hand. Nothing moves unless `--yes` is given;
+ * The old layout carried no shop, so a folder name (the customer's name as
+ * `sanitizeCustomerName` wrote it: "Ramesh Kumar" became "Ramesh_Kumar") is
+ * the only key. The script therefore runs for ONE shop at a time (`--shop`),
+ * matches a folder to the live customer of that shop whose sanitised name is
+ * the folder name (`src/storage/legacy-folder-match.ts`), and refuses an
+ * ambiguous folder (two customers of the shop map to it, or a customer of
+ * ANOTHER shop does: the folder may hold that shop's documents) or an unknown
+ * one instead of guessing: the operator resolves those by hand. Nothing moves unless `--yes` is given;
  * the default run reports what would happen. Existing destinations are never
  * overwritten. The old global `System` folder (customer_index.json and friends)
  * is left in place and reported; remove it once every shop has been migrated.
@@ -33,6 +36,7 @@ import * as path from 'node:path';
 import * as dotenv from 'dotenv';
 import * as fs from 'fs-extra';
 import { PrismaClient } from '@prisma/client';
+import { LegacyCandidate, legacyNamePattern, matchLegacyFolder } from '../src/storage/legacy-folder-match';
 
 interface Move {
   customerName: string;
@@ -98,27 +102,28 @@ async function main(): Promise<number> {
     for (const entry of entries) {
       const customerName = entry.name;
       const from = path.join(legacyCustomers, customerName);
-      // Scoped to the shop: a customer of another shop with the same name is
-      // not a match, and never receives this shop's documents.
-      const candidates = await prisma.customer.findMany({
-        where: { shopId: shop.id, name: customerName, isDeleted: false },
-        select: { id: true },
-        orderBy: { id: 'asc' },
-      });
-      if (candidates.length === 0) {
-        unresolved.push({ folder: customerName, reason: 'no live customer of this shop has that name' });
+      // Every live customer, of any shop, whose name could sanitise to the
+      // folder name (a LIKE superset; matchLegacyFolder compares exactly).
+      // Other shops are read on purpose: a folder another shop's customer maps
+      // to is not handed to this shop.
+      const candidates = await prisma.$queryRaw<LegacyCandidate[]>`
+        SELECT id, shopId, name FROM Customer WHERE isDeleted = 0 AND name LIKE ${legacyNamePattern(customerName)} ORDER BY id
+      `;
+      const match = matchLegacyFolder(customerName, shop.id, candidates);
+      if (match.kind === 'none') {
+        unresolved.push({ folder: customerName, reason: 'no live customer of this shop has a name that maps to this folder' });
         continue;
       }
-      if (candidates.length > 1) {
-        unresolved.push({ folder: customerName, reason: `${candidates.length} customers of this shop share that name; move it by hand` });
+      if (match.kind === 'ambiguous') {
+        unresolved.push({ folder: customerName, reason: match.reason });
         continue;
       }
-      const to = path.join(root, shop.id, 'Customers', candidates[0].id);
+      const to = path.join(root, shop.id, 'Customers', match.customerId);
       if (await fs.pathExists(to)) {
         unresolved.push({ folder: customerName, reason: `destination ${path.relative(root, to)} already exists; never overwritten` });
         continue;
       }
-      moves.push({ customerName, customerId: candidates[0].id, from, to });
+      moves.push({ customerName, customerId: match.customerId, from, to });
     }
 
     for (const move of moves) {

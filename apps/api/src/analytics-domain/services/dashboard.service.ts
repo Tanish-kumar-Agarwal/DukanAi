@@ -8,6 +8,7 @@ import { InvoiceTotals, RevenueEngine } from '../engines/revenue-engine';
 import { ProfitMarginEngine, TopProduct } from '../engines/profit-margin-engine';
 import { ForecastEngine, NetRevenueForecast } from '../engines/forecast-engine';
 import { toDecimal, toInt, toMoney } from '../engines/invoice-sql';
+import { customerBalances } from '../engines/customer-balances';
 import { AnalyticsCacheService } from './analytics-cache.service';
 import { ShopTimezoneService } from './shop-timezone.service';
 
@@ -85,19 +86,26 @@ export interface LowStockList {
   items: LowStockItem[];
 }
 
+/** Sections only FINANCE_ROLES receive: profit and stock at cost. */
+export const FINANCIAL_SUMMARY_SECTIONS: readonly DashboardSummarySection[] = ['todayProfit', 'inventoryValue'];
+
 /**
  * Figures of a section listed in `failedSections` are `null` (and lists are
- * empty); every other figure is authoritative.
+ * empty); every other figure is authoritative. A section listed in
+ * `restrictedSections` was not computed for this caller (a CASHIER or VIEWER:
+ * `FINANCIAL_SUMMARY_SECTIONS`), and `FinancialFieldsInterceptor` leaves its
+ * figures out of the answer.
  */
 export interface DashboardSummary {
   businessDate: string;
   timezone: string;
   failedSections: DashboardSummarySection[];
+  restrictedSections: DashboardSummarySection[];
   todayGrossSales: number | null;
   todayReturns: number | null;
   /** Net: gross sales minus returns. */
   todaySales: number | null;
-  /** Gross profit: taxable value minus cost of goods, sales minus returns. */
+  /** Gross profit: taxable value minus the cost of goods the ledger booked (stocked lines only), sales minus returns. */
   todayProfit: number | null;
   todayOrders: number | null;
   todayReturnCount: number | null;
@@ -106,7 +114,10 @@ export interface DashboardSummary {
   totalOrders: number | null;
   totalCustomers: number | null;
   totalProducts: number | null;
+  /** Credit customers owe: the sum of the positive balances (an advance never offsets another customer's due). */
   outstandingUdhar: number | null;
+  /** Money customers paid ahead: the sum of the negative balances, as a positive figure. */
+  customerAdvances: number | null;
   /** Active, stock-tracked products (not SERVICE/DIGITAL) with 0 < stock <= reorder point. */
   lowStockCount: number | null;
   /** Active, stock-tracked products with stock <= 0. */
@@ -167,20 +178,24 @@ export class DashboardService {
     private readonly clock: Clock,
   ) {}
 
-  async getSummary(shopId: string, userId: string): Promise<DashboardSummary> {
+  /** `financials: false` (a caller outside FINANCE_ROLES) skips `FINANCIAL_SUMMARY_SECTIONS`. */
+  async getSummary(shopId: string, userId: string, options: { financials?: boolean } = {}): Promise<DashboardSummary> {
     const timeZone = await this.shopTimezone.resolve(shopId);
     const now = this.clock.now();
     const start = startOfBusinessDay(now, timeZone);
     const end = endOfBusinessDay(now, timeZone);
+    const restricted = options.financials === false ? [...FINANCIAL_SUMMARY_SECTIONS] : [];
 
     const failed: DashboardSummarySection[] = [];
-    const section = <T>(name: DashboardSummarySection, work: () => Promise<T>): Promise<T | null> =>
+    const section = <T>(name: DashboardSummarySection, work: () => Promise<T>): Promise<T | null> => {
+      if (restricted.includes(name)) return Promise.resolve(null);
       // Promise.resolve().then: a synchronous throw is isolated like a rejection.
-      Promise.resolve().then(work).catch((error: unknown) => {
+      return Promise.resolve().then(work).catch((error: unknown) => {
         failed.push(name);
         this.logger.error(`Dashboard summary section "${name}" failed for shop ${shopId}: ${(error as Error)?.message ?? error}`);
         return null;
       });
+    };
 
     const [
       today,
@@ -200,9 +215,7 @@ export class DashboardService {
       section('todayProfit', () => this.revenueEngine.profit(shopId, start, end)),
       section('customers', () => this.prisma.customer.count({ where: { shopId, isDeleted: false } })),
       section('products', () => this.prisma.product.count({ where: { shopId, isDeleted: false } })),
-      section('udhar', () =>
-        this.prisma.customer.aggregate({ where: { shopId, isDeleted: false }, _sum: { outstandingBalance: true } }),
-      ),
+      section('udhar', () => customerBalances(this.prisma, shopId)),
       section('recentInvoices', () =>
         this.prisma.invoice.findMany({
           where: { shopId, isDeleted: false, status: { in: [InvoiceStatus.COMPLETED, InvoiceStatus.CANCELLED] } },
@@ -233,7 +246,7 @@ export class DashboardService {
 
     // Nothing could be read (e.g. the database is down): that is an outage,
     // not a partial dashboard.
-    if (failed.length === SUMMARY_SECTIONS.length) {
+    if (failed.length === SUMMARY_SECTIONS.length - restricted.length) {
       throw new ServiceUnavailableException({
         message: 'Dashboard data is temporarily unavailable.',
         code: 'DASHBOARD_UNAVAILABLE',
@@ -246,6 +259,7 @@ export class DashboardService {
       businessDate: businessDateString(now, timeZone),
       timezone: timeZone,
       failedSections: SUMMARY_SECTIONS.filter((name) => failed.includes(name)),
+      restrictedSections: SUMMARY_SECTIONS.filter((name) => restricted.includes(name)),
       todayGrossSales: today ? toMoney(today.grossSales) : null,
       todayReturns: today ? toMoney(today.returns) : null,
       todaySales: today ? toMoney(today.netSales) : null,
@@ -256,7 +270,8 @@ export class DashboardService {
       totalOrders: allTime ? allTime.orders : null,
       totalCustomers: customerCount,
       totalProducts: productCount,
-      outstandingUdhar: udharAgg ? toMoney(udharAgg._sum.outstandingBalance ?? new Prisma.Decimal(0)) : null,
+      outstandingUdhar: udharAgg ? toMoney(udharAgg.outstanding) : null,
+      customerAdvances: udharAgg ? toMoney(udharAgg.advances) : null,
       lowStockCount: stock ? stock.lowStockCount : null,
       outOfStockCount: stock ? stock.outOfStockCount : null,
       lowStockItems: stock ? stock.items : [],

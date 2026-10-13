@@ -3,7 +3,18 @@
 # has all three, the Oracle Linux image lacks mysqlbinlog), GNU tar and
 # coreutils for the documents archive, and rclone for the encrypted off-site
 # copy. Built from the repository root: docker build -f deploy/db-ops/Dockerfile .
-FROM mysql:8.0-debian
+#
+# MySQL 8.0 reached end of life in April 2026 and the official images stopped
+# at 8.0.46 (the docker-library 8.0 Debian variant is gone); MySQL 8.4 LTS has
+# no Debian image, only Oracle Linux, whose minimal server package is the one
+# that lacked mysqlbinlog for 8.0. The move to 8.4 clients is planned in
+# docs/DEPLOYMENT.md ("MySQL versions"). Against an 8.4 server these 8.0
+# clients still dump and restore, but mysqldump 8.0 reads the binary-log
+# position with SHOW MASTER STATUS, which 8.4 removed: verify a backup's
+# position line there, or set BACKUP_COORDINATES=skip. Pinned to the patch
+# release; Dependabot proposes updates. The compose files run the container
+# as uid 1000 (audit 2026-10-11, R25), Kubernetes too.
+FROM mysql:8.0.46-debian
 # The release the image belongs to (roadmap 9.21), passed by the release workflow.
 ARG APP_RELEASE=
 ARG APP_REVISION=
@@ -22,6 +33,11 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends rclone ca-certificates \
   && rm -f /usr/local/bin/gosu \
   && rm -rf /var/lib/apt/lists/*
+# The jobs run as uid 1000 (compose `user:`, Kubernetes runAsUser): a fresh
+# named volume mounted at /backups or /restore takes this ownership from the
+# image (an older root-owned backup volume is handed over by the compose
+# service backup-volume-init).
+RUN mkdir -p /backups /restore && chown 1000:1000 /backups /restore
 # The repository's scripts are baked in so the image runs on its own (the
 # Kubernetes backup sidecar, deploy/k8s); compose mounts the checkout's
 # scripts/ over /scripts for development.

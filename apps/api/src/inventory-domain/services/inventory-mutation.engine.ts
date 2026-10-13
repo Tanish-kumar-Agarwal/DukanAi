@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma, StockMovementType, InventoryChangeType } from '@prisma/client';
 import { v4 as uuidv4 } from 'uuid';
+import { InventoryLocationService } from './inventory-location.service';
 import {
   InsufficientStockError,
   InventoryError,
@@ -104,9 +105,27 @@ const CHANGE_TYPE: Record<MutationType, (direction: 1 | -1) => InventoryChangeTy
  * immutable `StockLedgerEntry`, the `InventoryLog` and a `ProductEventLog`
  * row. Nothing else in the codebase may write these columns.
  */
+/**
+ * `performedBy` values that name no user: background work (receipts and
+ * returns whose document has no creator, reservation sweeps). The movement's
+ * InventoryLog row is a User foreign key, so it is recorded under the shop
+ * owner instead, as the stock reconciliation does (release audit #27).
+ */
+const SYSTEM_ACTOR = /^system/i;
+
 @Injectable()
 export class InventoryMutationEngine {
   private readonly logger = new Logger(InventoryMutationEngine.name);
+
+  constructor(private readonly locations: InventoryLocationService) {}
+
+  /** The User a movement is recorded under: the actor, or the shop owner for system work (never the literal 'SYSTEM'). */
+  private async recorderFor(tx: Prisma.TransactionClient, shopId: string, performedBy: string | null | undefined): Promise<string> {
+    if (performedBy && !SYSTEM_ACTOR.test(performedBy)) return performedBy;
+    const shop = await tx.shop.findUnique({ where: { id: shopId }, select: { ownerId: true } });
+    if (!shop?.ownerId) throw new InventoryError('RECORDER_REQUIRED', `Shop ${shopId} has no owner to record a system stock movement under.`);
+    return shop.ownerId;
+  }
 
   private getDirection(request: InventoryMutationRequest): 1 | -1 {
     if (request.metadata?.direction !== undefined) return request.metadata.direction;
@@ -133,11 +152,14 @@ export class InventoryMutationEngine {
   async lockProducts(tx: Prisma.TransactionClient, shopId: string, productIds: readonly string[]): Promise<void> {
     const ids = Array.from(new Set(productIds)).sort();
     for (const id of ids) {
-      const locked = await tx.$queryRaw<Array<{ id: string; shopId: string }>>`
-        SELECT id, shopId FROM Product WHERE id = ${id} FOR UPDATE
+      // The shop is part of the locking read (release audit T6h): another shop's product is never locked.
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM Product WHERE id = ${id} AND shopId = ${shopId} FOR UPDATE
       `;
-      if (locked.length === 0) throw new InventoryNotFoundError(`Product ${id} not found.`);
-      if (locked[0].shopId !== shopId) throw new TenantViolationError(`Cross-tenant mutation blocked for product ${id}`);
+      if (locked.length > 0) continue;
+      const elsewhere = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM Product WHERE id = ${id}`;
+      if (elsewhere.length > 0) throw new TenantViolationError(`Cross-tenant mutation blocked for product ${id}`);
+      throw new InventoryNotFoundError(`Product ${id} not found.`);
     }
   }
 
@@ -209,7 +231,8 @@ export class InventoryMutationEngine {
     }
 
     // 2. InventoryItem authority (lazy creation with legacy bootstrap)
-    const invItem = await this.ensureItemForRequest(tx, request, product, occurredAt, traceId);
+    const recordedById = await this.recorderFor(tx, request.shopId, request.performedBy);
+    const invItem = await this.ensureItemForRequest(tx, { ...request, performedBy: recordedById }, product, occurredAt, traceId);
     const direction = this.getDirection(request);
     const isReservation =
       request.mutationType === MutationType.RESERVATION || request.mutationType === MutationType.RESERVATION_RELEASE;
@@ -339,7 +362,7 @@ export class InventoryMutationEngine {
           quantityChange: signedQty,
           quantityAfter: balanceAfter,
           invoiceId: request.mutationType === MutationType.SALE || request.mutationType === MutationType.RETURN ? request.referenceId : null,
-          recordedById: request.performedBy,
+          recordedById,
           notes: request.reason || request.mutationType,
         },
       });
@@ -410,7 +433,8 @@ export class InventoryMutationEngine {
     await this.lockProducts(tx, params.shopId, [params.productId]);
     const product = await tx.product.findUnique({ where: { id: params.productId }, select: { currentStock: true, name: true, isDeleted: true } });
     if (!product || product.isDeleted) throw new InventoryNotFoundError(`Product ${params.productId} not found.`);
-    return this.ensureItem(tx, params, product, uuidv4());
+    const performedBy = await this.recorderFor(tx, params.shopId, params.performedBy);
+    return this.ensureItem(tx, { ...params, performedBy }, product, uuidv4());
   }
 
   private async ensureItem(
@@ -435,15 +459,27 @@ export class InventoryMutationEngine {
 
     // Legacy bootstrap applies to the product-level row only (variantId null):
     // whatever `Product.currentStock` holds beyond the sum of the live item
-    // rows is stock that predates the ledger, and the new row opens with it
-    // (roadmap 3.7, audit P2-28: a product with rows at another location used
-    // to lose its legacy stock, and reconciliation then zeroed it).
+    // rows is stock that predates the ledger. It is stock the POS sold from,
+    // so it opens the row at the shop's sale location and nowhere else
+    // (release audit S23: it used to land wherever the first movement
+    // happened, a receipt into a back warehouse included, and could then
+    // never be sold). A first row elsewhere opens at 0 and makes sure the
+    // sale-location row exists with the legacy stock, so the reconciliation
+    // (Σ onHand = currentStock) never zeroes it either (audit P2-28).
     const ledgerSum = await tx.inventoryItem.aggregate({
       where: { shopId: params.shopId, productId: params.productId, isDeleted: false },
       _sum: { onHand: true },
     });
     const gap = product.currentStock.minus(ledgerSum._sum.onHand ?? new Prisma.Decimal(0));
-    const bootstrapQty = variantId === null && gap.greaterThan(0) ? gap : new Prisma.Decimal(0);
+    let bootstrapQty = new Prisma.Decimal(0);
+    if (variantId === null && gap.greaterThan(0)) {
+      const saleLocationId = await this.locations.resolveSaleLocation(tx, params.shopId);
+      if (saleLocationId === params.locationId) {
+        bootstrapQty = gap;
+      } else {
+        await this.ensureItem(tx, { ...params, locationId: saleLocationId, variantId: null }, product, traceId);
+      }
+    }
 
     const created = await tx.inventoryItem.create({
       data: {
@@ -461,6 +497,7 @@ export class InventoryMutationEngine {
     });
 
     if (bootstrapQty.greaterThan(0)) {
+      const recordedById = await this.recorderFor(tx, params.shopId, params.performedBy);
       this.logger.log(`[${traceId}] Bootstrapped inventory item for ${product.name} from legacy currentStock=${bootstrapQty.toString()}`);
       await tx.stockLedgerEntry.create({
         data: {
@@ -471,7 +508,7 @@ export class InventoryMutationEngine {
           balanceAfter: bootstrapQty,
           referenceId: params.productId,
           referenceType: 'LEGACY_STOCK_BOOTSTRAP',
-          createdBy: params.performedBy ?? 'SYSTEM',
+          createdBy: recordedById,
         },
       });
       await tx.inventoryLog.create({
@@ -482,7 +519,7 @@ export class InventoryMutationEngine {
           quantityBefore: 0,
           quantityChange: bootstrapQty,
           quantityAfter: bootstrapQty,
-          recordedById: params.performedBy ?? 'SYSTEM',
+          recordedById,
           notes: 'Opening balance migrated from Product.currentStock',
         },
       });

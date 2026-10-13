@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AdjustmentStatus, LedgerAccount, LedgerEntryType, Prisma } from '@prisma/client';
 import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 import { LedgerPostingService } from '../../ledger/ledger-posting.service';
+import { countVariance } from './count-expectation';
 
 @Injectable()
 export class AdjustmentPostingService {
@@ -33,10 +34,27 @@ export class AdjustmentPostingService {
         where: { id: adjustmentId, shopId, status: AdjustmentStatus.APPROVED },
         data: { status: AdjustmentStatus.POSTED },
       });
-      if (claimed.count === 0) throw new BadRequestException('Adjustment request not found, not approved, or already posted.');
+      if (claimed.count === 0) throw new BadRequestException({ message: 'Adjustment request not found, not approved, or already posted.', code: 'ADJUSTMENT_NOT_APPROVED' });
       const adjustment = await tx.adjustmentRequest.findFirstOrThrow({ where: { id: adjustmentId, shopId }, include: { inventoryItem: true } });
 
-      const delta = new Prisma.Decimal(adjustment.requestedQuantityDelta.toString());
+      let delta = new Prisma.Decimal(adjustment.requestedQuantityDelta.toString());
+      if (adjustment.countItemId) {
+        // A count's adjustment posts counted − (snapshot + movements up to the count), recomputed
+        // under the product lock (release audit S1): a sale that committed after the variance was
+        // recorded but happened before the count is part of the expectation, never posted twice.
+        await this.inventoryMutationEngine.lockProducts(tx, shopId, [adjustment.inventoryItem.productId]);
+        const countItem = await tx.stockCountItem.findFirst({ where: { id: adjustment.countItemId, shopId }, include: { session: { select: { startedAt: true, createdAt: true } } } });
+        const recomputed = countItem ? await countVariance(tx, countItem, countItem.session) : null;
+        if (recomputed && !recomputed.equals(delta)) {
+          this.logger.log(`Adjustment ${adjustment.id}: variance at the count is ${recomputed.toString()} (requested ${delta.toString()}).`);
+          delta = recomputed;
+          await tx.adjustmentRequest.update({ where: { id: adjustment.id }, data: { requestedQuantityDelta: delta } });
+        }
+        if (delta.isZero()) {
+          this.logger.log(`Adjustment ${adjustment.id} posts nothing: the count matches the stock at the time of counting.`);
+          return { success: true, delta: '0' };
+        }
+      }
       const absDelta = delta.abs();
 
       // 1. Delegate to Engine for safe ledger entry and dual-write caches
@@ -62,7 +80,7 @@ export class AdjustmentPostingService {
 
       this.logger.log(`Posted Adjustment ${adjustment.id}.`);
 
-      return { success: true };
+      return { success: true, delta: delta.toString() };
     };
     return outerTx ? run(outerTx) : this.prisma.$transaction(run);
   }

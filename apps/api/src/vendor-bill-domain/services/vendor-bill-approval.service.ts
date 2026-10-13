@@ -30,10 +30,11 @@ export class VendorBillApprovalService {
     });
     if (!pendingApproval) throw new BadRequestException({ message: 'No pending approvals for this vendor bill', code: 'VENDOR_BILL_NOT_PENDING' });
 
-    if (action === 'APPROVE') {
-      const bill = await tx.vendorBill.findFirst({ where: { id, shopId }, select: { createdBy: true } });
-      const createdAudit = await tx.vendorBillAudit.findFirst({ where: { vendorBillId: id, shopId, actorId, action: { in: ['CREATED', 'SUBMITTED'] } }, select: { id: true } });
-      if (bill?.createdBy === actorId || createdAudit) throw new ForbiddenException({ message: 'The person who created or submitted a vendor bill cannot approve it.', code: 'SEPARATION_OF_DUTIES' });
+    // Separation of duties for either decision: the creator or submitter withdraws a bill with cancel instead.
+    const bill = await tx.vendorBill.findFirst({ where: { id, shopId }, select: { createdBy: true } });
+    const createdAudit = await tx.vendorBillAudit.findFirst({ where: { vendorBillId: id, shopId, actorId, action: { in: ['CREATED', 'SUBMITTED'] } }, select: { id: true } });
+    if (bill?.createdBy === actorId || createdAudit) {
+      throw new ForbiddenException({ message: `The person who created or submitted a vendor bill cannot ${action === 'APPROVE' ? 'approve' : 'reject'} it.`, code: 'SEPARATION_OF_DUTIES' });
     }
 
     const nextStatus = action === 'APPROVE' ? 'APPROVED' : 'REJECTED';

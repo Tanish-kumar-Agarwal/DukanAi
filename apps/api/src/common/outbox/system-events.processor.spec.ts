@@ -28,7 +28,7 @@ describe('SystemEventsProcessor', () => {
     $transaction: jest.fn(),
     outboxEvent: { updateMany: jest.fn() },
   };
-  const cache = { del: jest.fn() };
+  const cache = { mdel: jest.fn() };
   const gateway = { broadcastLowStockAlert: jest.fn() };
   const tenantContext = new TenantContextService();
   let processor: SystemEventsProcessor;
@@ -37,7 +37,7 @@ describe('SystemEventsProcessor', () => {
     jest.clearAllMocks();
     prisma.$transaction.mockImplementation(async (fn: AnyFn) => fn(tx));
     prisma.outboxEvent.updateMany.mockResolvedValue({ count: 1 });
-    cache.del.mockResolvedValue(true);
+    cache.mdel.mockResolvedValue(true);
     tx.auditLog.findFirst.mockResolvedValue(null);
     tx.auditLog.create.mockResolvedValue({ id: 'audit-1' });
     tx.notification.findMany.mockResolvedValue([]);
@@ -76,11 +76,11 @@ describe('SystemEventsProcessor', () => {
     await expect(processor.process(job)).rejects.toBeInstanceOf(UnrecoverableError);
 
     expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({
-      where: { id: 'evt-1' },
+      where: { id: 'evt-1', status: { in: ['CLAIMED', 'PROCESSING'] } },
       data: expect.objectContaining({ status: 'FAILED', error: expect.stringContaining('no shopId'), retryCount: { increment: 1 } }),
     });
     expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(cache.del).not.toHaveBeenCalled();
+    expect(cache.mdel).not.toHaveBeenCalled();
   });
 
   it('falls back to payload.shopId when the job-level shopId is absent', async () => {
@@ -92,10 +92,10 @@ describe('SystemEventsProcessor', () => {
     });
 
     await expect(processor.process(job)).resolves.toEqual({ status: 'processed' });
-    expect(cache.del.mock.calls.map((c) => c[0])).toEqual(analyticsCacheKeys('shop-9'));
+    expect(cache.mdel.mock.calls).toEqual([[analyticsCacheKeys('shop-9')]]);
     // Roadmap 4.7: the worker, not the relay, settles the row.
     expect(prisma.outboxEvent.updateMany).toHaveBeenCalledTimes(1);
-    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({ where: { id: 'evt-9' }, data: expect.objectContaining({ status: 'DONE', error: null }) });
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({ where: { id: 'evt-9', status: { in: ['CLAIMED', 'PROCESSING'] } }, data: expect.objectContaining({ status: 'DONE', error: null }) });
   });
 
   it('INVOICE_CREATED with a low-stock product creates one LOW_STOCK notification, invalidates the four cache keys and broadcasts', async () => {
@@ -116,13 +116,12 @@ describe('SystemEventsProcessor', () => {
 
     expect(shopIdSeenInsideTransaction).toBe('shop-1');
 
-    expect(cache.del).toHaveBeenCalledTimes(4);
-    expect(cache.del.mock.calls.map((c) => c[0])).toEqual([
+    expect(cache.mdel.mock.calls).toEqual([[[
       'shop:shop-1:analytics:dashboard',
       'shop:shop-1:analytics:kpis',
       'shop:shop-1:analytics:summary',
       'shop:shop-1:analytics:allTime',
-    ]);
+    ]]]);
 
     expect(tx.notification.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -147,6 +146,8 @@ describe('SystemEventsProcessor', () => {
 
     expect(tx.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
+        // The marker's key is the event's (audit R10): the insert itself is the idempotency guard.
+        id: 'sysevt.evt-1',
         shopId: 'shop-1',
         userId: 'user-1',
         action: 'SYSTEM_EVENT_PROCESSED',
@@ -156,7 +157,7 @@ describe('SystemEventsProcessor', () => {
     });
     // Roadmap 4.7: a handled event is marked DONE by the worker after its transaction commits.
     expect(prisma.outboxEvent.updateMany).toHaveBeenCalledTimes(1);
-    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({ where: { id: 'evt-1' }, data: expect.objectContaining({ status: 'DONE', error: null }) });
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({ where: { id: 'evt-1', status: { in: ['CLAIMED', 'PROCESSING'] } }, data: expect.objectContaining({ status: 'DONE', error: null }) });
   });
 
   it('does not duplicate an unread LOW_STOCK notification and does not notify above the reorder point', async () => {
@@ -219,7 +220,7 @@ describe('SystemEventsProcessor', () => {
 
     await expect(processor.process(invoiceCreated())).resolves.toEqual({ status: 'skipped-duplicate' });
 
-    expect(cache.del).not.toHaveBeenCalled();
+    expect(cache.mdel).not.toHaveBeenCalled();
     expect(tx.product.findMany).not.toHaveBeenCalled();
     expect(tx.auditLog.create).not.toHaveBeenCalled();
   });
@@ -247,21 +248,21 @@ describe('SystemEventsProcessor', () => {
       }),
     });
     expect(tx.notification.create.mock.calls[0][0].data.message).toContain('Ramesh Kumar');
-    expect(cache.del).toHaveBeenCalledTimes(4);
+    expect(cache.mdel).toHaveBeenCalledTimes(1);
   });
 
   it('marks unknown job names processed without side effects', async () => {
     const job = makeJob('SOMETHING_ELSE', { eventId: 'evt-3', shopId: 'shop-1', userId: 'user-1', payload: {} }, 'evt-3');
     await expect(processor.process(job)).resolves.toEqual({ status: 'ignored-unknown' });
     expect(tx.auditLog.create).toHaveBeenCalledTimes(1);
-    expect(cache.del).not.toHaveBeenCalled();
+    expect(cache.mdel).not.toHaveBeenCalled();
   });
 
-  it('marks the row FAILED on a permanent error and only bumps retryCount on a transient one', async () => {
+  it('marks the row FAILED on a permanent error and only records a transient one (the claim keeps its retryCount)', async () => {
     const invalid = makeJob('INVOICE_CREATED', { eventId: 'evt-4', shopId: 'shop-1', userId: 'user-1', payload: { items: [] } }, 'evt-4');
     await expect(processor.process(invalid)).rejects.toBeInstanceOf(UnrecoverableError);
     expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({
-      where: { id: 'evt-4' },
+      where: { id: 'evt-4', status: { in: ['CLAIMED', 'PROCESSING'] } },
       data: expect.objectContaining({ status: 'FAILED', error: expect.stringContaining('invoiceId'), retryCount: { increment: 1 } }),
     });
 
@@ -270,8 +271,8 @@ describe('SystemEventsProcessor', () => {
 
     await expect(processor.process(invoiceCreated())).rejects.toThrow('Connection reset by peer');
     expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({
-      where: { id: 'evt-1' },
-      data: { retryCount: { increment: 1 } },
+      where: { id: 'evt-1', status: { in: ['CLAIMED', 'PROCESSING'] } },
+      data: { error: 'Connection reset by peer' },
     });
   });
 
@@ -289,8 +290,35 @@ describe('SystemEventsProcessor', () => {
 
     await expect(processor.process(lastAttempt)).rejects.toThrow('Connection reset by peer');
     expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({
-      where: { id: 'evt-1' },
+      where: { id: 'evt-1', status: { in: ['CLAIMED', 'PROCESSING'] } },
       data: expect.objectContaining({ status: 'FAILED', retryCount: { increment: 1 } }),
     });
+  });
+
+  it('a second worker on the same event finds the marker key taken and does nothing (audit R10)', async () => {
+    tx.auditLog.create.mockRejectedValueOnce(new Prisma.PrismaClientKnownRequestError('Unique constraint failed on the constraint: `PRIMARY`', { code: 'P2002', clientVersion: 'test' }));
+    tx.product.findMany.mockResolvedValue([{ id: 'prod-1', name: 'Rice', currentStock: new Prisma.Decimal('1'), reorderPoint: new Prisma.Decimal('10') }]);
+    await expect(processor.process(invoiceCreated())).resolves.toEqual({ status: 'skipped-duplicate' });
+    expect(tx.product.findMany).not.toHaveBeenCalled();
+    expect(tx.notification.createMany).not.toHaveBeenCalled();
+    expect(cache.mdel).not.toHaveBeenCalled();
+    expect(gateway.broadcastLowStockAlert).not.toHaveBeenCalled();
+  });
+
+  it('settles only the claim its job id names: a newer claim of the row is left alone (audit R10)', async () => {
+    tx.product.findMany.mockResolvedValue([]);
+    prisma.outboxEvent.updateMany.mockResolvedValue({ count: 0 }); // the reaper handed the row back meanwhile
+    const job = makeJob('INVOICE_RETURNED', { eventId: 'evt-5', shopId: 'shop-1', userId: 'user-1', payload: { invoiceId: 'inv-5', items: [] } }, 'evt-5.2');
+    await expect(processor.process(job)).resolves.toEqual({ status: 'processed' });
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({ where: { id: 'evt-5', status: { in: ['CLAIMED', 'PROCESSING'] }, retryCount: 2 }, data: expect.objectContaining({ status: 'DONE' }) });
+  });
+
+  it('a cache that never answers does not hold the job beyond the invalidation budget (post-commit)', async () => {
+    tx.product.findMany.mockResolvedValue([]);
+    cache.mdel.mockImplementation(() => new Promise(() => undefined));
+    const started = Date.now();
+    await expect(processor.process(invoiceCreated())).resolves.toEqual({ status: 'processed' });
+    expect(Date.now() - started).toBeLessThan(2_500);
+    expect(prisma.outboxEvent.updateMany).toHaveBeenCalledWith({ where: { id: 'evt-1', status: { in: ['CLAIMED', 'PROCESSING'] } }, data: expect.objectContaining({ status: 'DONE' }) });
   });
 });

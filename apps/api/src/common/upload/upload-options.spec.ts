@@ -35,6 +35,14 @@ describe('upload options (roadmap 5.1)', () => {
     await expect(filter('image/png', 'noext')).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it('the filter refuses a file name longer than the stored column (191 characters) before any byte is stored', async () => {
+    await expect(filter('image/png', `${'a'.repeat(187)}.png`)).resolves.toBe(true); // exactly 191
+    await expect(filter('image/png', `${'a'.repeat(188)}.png`)).rejects.toMatchObject({ response: { code: 'UPLOAD_FILE_NAME_TOO_LONG' } });
+    // Code points, as MySQL counts characters: 190 Devanagari letters + ".png" is too long, 150 fit.
+    await expect(filter('image/png', `${'क'.repeat(190)}.png`)).rejects.toMatchObject({ response: { code: 'UPLOAD_FILE_NAME_TOO_LONG' } });
+    await expect(filter('image/png', `${'क'.repeat(150)}.png`)).resolves.toBe(true);
+  });
+
   it('limits every part of the request and stores to the temp directory under a random name', async () => {
     const options = buildUploadOptions(policy, path.join(dir, 'tmp'));
     expect(options.limits).toMatchObject({ fileSize: 1024, files: 1, fields: 2, parts: 3 });

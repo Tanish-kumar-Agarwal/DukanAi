@@ -38,7 +38,7 @@ function modal(page: Page, title: string | RegExp) {
 
 async function createProduct(request: APIRequestContext, name: string, extra: Record<string, unknown> = {}): Promise<ApiProduct> {
   const res = await request.post(`${API_URL}/products`, {
-    data: { name, costPrice: 40, sellingPrice: 100, mrp: 100, wholesalePrice: 100, unit: 'PCS', gstRate: 'FIVE', ...extra },
+    data: { name, costPrice: 40, sellingPrice: 100, mrp: 105, wholesalePrice: 100, unit: 'PCS', gstRate: 'FIVE', ...extra },
   });
   expect(res.status(), await res.text()).toBe(201);
   return (await res.json()) as ApiProduct;
@@ -114,6 +114,9 @@ test.describe('products page (6.2)', () => {
     await page.getByRole('button', { name: 'Add Product' }).click();
     const dialog = modal(page, 'Add New Product');
     await expect(dialog).toBeVisible();
+    // The selling price is before GST; a blank MRP is the price plus GST (audit P1-2).
+    await expect(dialog.getByText('Selling Price before GST (₹) *')).toBeVisible();
+    await expect(dialog.getByPlaceholder('Defaults to selling price + GST')).toBeVisible();
     // Field order: name, SKU (left blank), category, selling price, cost price, initial stock, MRP.
     const inputs = dialog.locator('input');
     await inputs.nth(0).fill(name);
@@ -129,8 +132,9 @@ test.describe('products page (6.2)', () => {
     const response = await post;
     expect(response.status(), await response.text()).toBe(201);
     const sent = response.request().postDataJSON() as Record<string, unknown>;
-    expect(sent).toMatchObject({ name, sellingPrice: 150, costPrice: 90, mrp: 150, gstRate: 'TWELVE', unit: 'KG' });
+    expect(sent).toMatchObject({ name, sellingPrice: 150, costPrice: 90, gstRate: 'TWELVE', unit: 'KG' });
     expect(sent).not.toHaveProperty('sku');
+    expect(sent).not.toHaveProperty('mrp');
     const created = (await response.json()) as ApiProduct;
     expect(created.sku).toMatch(/^SKU-\d{6}$/);
     await expect(page.getByText(`${name} added (SKU ${created.sku})`)).toBeVisible();
@@ -144,6 +148,52 @@ test.describe('products page (6.2)', () => {
     const stored = (await (await request.get(`${API_URL}/products/${created.id}`)).json()) as ApiProduct & { currentStock: string | number };
     expect(Number(stored.currentStock)).toBe(7);
     expect(Number(stored.costPrice)).toBe(90);
+    expect(Number(stored.mrp)).toBe(168); // 150 + 12% GST
+  });
+
+  test('a shelf price typed with "includes GST" is stored before GST, never billed above it, and the choice is remembered', async ({ page, request }) => {
+    const name = unique('Shelf priced item');
+    await page.goto('/products');
+    await page.getByRole('button', { name: 'Add Product' }).click();
+    const dialog = modal(page, 'Add New Product');
+    const preview = dialog.getByTestId('price-preview');
+    const inputs = dialog.locator('input');
+    await inputs.nth(0).fill(name);
+    await inputs.nth(3).fill('8.47');
+    await inputs.nth(4).fill('5');
+    await dialog.getByLabel('GST Rate').selectOption('EIGHTEEN');
+    // Before GST (the default): the form says what the customer pays.
+    await expect(preview).toHaveText('Customer pays ₹9.99 incl. GST · stored as ₹8.47 before GST');
+
+    // Ticking the box converts the field to the inclusive price; the stored price does not move.
+    await dialog.getByLabel('The selling price I type includes GST').check();
+    await expect(dialog.getByText('Selling Price incl. GST (₹) *')).toBeVisible();
+    await expect(inputs.nth(3)).toHaveValue('9.99');
+    // The shelf price: ₹10 at 18 % is stored as ₹8.47 (₹10.00 would need ₹8.4746), billing ₹9.99, never above ₹10.
+    await inputs.nth(3).fill('10');
+    await expect(preview).toHaveText('Customer pays ₹9.99 incl. GST · stored as ₹8.47 before GST');
+    await dialog.locator('input').last().fill('10');
+
+    const post = page.waitForResponse((r) => r.request().method() === 'POST' && isProductList(r.url()));
+    await dialog.getByRole('button', { name: 'Save Product' }).click();
+    const response = await post;
+    expect(response.status(), await response.text()).toBe(201);
+    expect(response.request().postDataJSON()).toMatchObject({ name, sellingPrice: 8.47, mrp: 10, gstRate: 'EIGHTEEN' });
+    const created = (await response.json()) as ApiProduct;
+    const stored = (await (await request.get(`${API_URL}/products/${created.id}`)).json()) as ApiProduct;
+    expect(Number(stored.sellingPrice)).toBe(8.47);
+    expect(Number(stored.mrp)).toBe(10);
+
+    // Remembered in this browser: the edit form opens in the same basis, showing the inclusive price.
+    await page.reload();
+    await searchProducts(page, name);
+    await openProductActions(page, created);
+    await page.getByRole('button', { name: 'Edit Product', exact: true }).click();
+    const edit = modal(page, `Edit Product: ${name}`);
+    await expect(edit.getByLabel('The selling price I type includes GST')).toBeChecked();
+    await expect(edit.locator('input').nth(3)).toHaveValue('9.99');
+    await edit.getByLabel('The selling price I type includes GST').uncheck();
+    await expect(edit.locator('input').nth(3)).toHaveValue('8.47');
   });
 
   test('editing a product persists through the API and a reload', async ({ page, request }) => {
@@ -161,16 +211,22 @@ test.describe('products page (6.2)', () => {
     await dialog.locator('input').nth(0).fill(newName);
     await dialog.locator('input').nth(3).fill('120');
     await dialog.locator('input').nth(4).fill('70');
-    // The MRP (last input) still holds 100: the form refuses an MRP below the new selling price until it is raised.
+    // The MRP (last input) still holds 105: the form refuses an MRP below the new selling price plus GST until it is raised.
     await dialog.getByRole('button', { name: 'Save Changes' }).click();
-    await expect(page.getByText('The MRP cannot be below the selling price.')).toBeVisible();
-    await dialog.locator('input').last().fill('125');
+    await expect(page.getByText('The MRP (₹105.00) is below the selling price plus GST (₹126.00). The MRP includes all taxes: raise it, or lower the selling price.')).toBeVisible();
     await dialog.getByLabel('GST Rate').selectOption('EIGHTEEN');
+    await dialog.locator('input').last().fill('140');
+    await dialog.getByRole('button', { name: 'Save Changes' }).click();
+    await expect(page.getByText('The MRP (₹140.00) is below the selling price plus GST (₹141.60). The MRP includes all taxes: raise it, or lower the selling price.')).toBeVisible();
+    await dialog.locator('input').last().fill('145');
     await dialog.getByLabel('Unit').selectOption('LTR');
 
     const patch = page.waitForResponse((r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname.endsWith(`/products/${product.id}`));
     await dialog.getByRole('button', { name: 'Save Changes' }).click();
-    expect((await patch).status()).toBe(200);
+    const patched = await patch;
+    expect(patched.status()).toBe(200);
+    // Audit W13: an edit never sends a wholesale price the form does not hold.
+    expect(patched.request().postDataJSON()).not.toHaveProperty('wholesalePrice');
     await expect(page.getByText(`${newName} updated`)).toBeVisible();
 
     await page.reload();
@@ -180,6 +236,7 @@ test.describe('products page (6.2)', () => {
     expect(stored).toMatchObject({ name: newName, gstRate: 'EIGHTEEN', unit: 'LTR' });
     expect(Number(stored.sellingPrice)).toBe(120);
     expect(Number(stored.costPrice)).toBe(70);
+    expect(Number((stored as ApiProduct & { wholesalePrice: string | number }).wholesalePrice)).toBe(100);
   });
 
   test('deleting asks first, then removes the product on the server', async ({ page, request }) => {
@@ -215,7 +272,7 @@ test.describe('products page (6.2)', () => {
 });
 
 test.describe('settings page (6.3)', () => {
-  test('the shop profile fields persist and the shop state decides IGST', async ({ page, request }) => {
+  test('the shop profile fields persist and the shop state, against a place of supply, decides IGST', async ({ page, request }) => {
     const email = `shop-${Date.now().toString(36)}@example.com`;
     await page.goto('/settings');
     await expect(page.getByRole('heading', { name: 'Shop Profile' })).toBeVisible();
@@ -230,7 +287,7 @@ test.describe('settings page (6.3)', () => {
     const response = await patch;
     expect(response.status(), await response.text()).toBe(200);
     expect(response.request().postDataJSON()).toMatchObject({ city: 'Bengaluru', state: 'Karnataka', pincode: '560001', phone: '9876543210', email });
-    await expect(page.getByText('Sales to customers outside Karnataka will carry IGST', { exact: false })).toBeVisible();
+    await expect(page.getByText('Counter sales are billed in Karnataka (CGST + SGST); IGST applies only when a sale names a place of supply in another state.')).toBeVisible();
 
     await page.reload();
     await expect(page.getByLabel('City')).toHaveValue('Bengaluru');
@@ -241,19 +298,45 @@ test.describe('settings page (6.3)', () => {
     const me = (await (await request.get(`${API_URL}/shops/me`)).json()) as { city: string; state: string; pincode: string; phone: string; email: string };
     expect(me).toMatchObject({ city: 'Bengaluru', state: 'Karnataka', pincode: '560001', phone: '9876543210', email });
 
-    // The saved state is what the checkout math uses: a Delhi customer is charged IGST, a Karnataka one CGST + SGST.
+    // The saved state is the place of supply of a counter sale (audit P1-3): a Delhi customer at the counter is
+    // charged CGST + SGST like a local one; only an explicit place of supply in another state (a delivery) is IGST.
     const product = await createProduct(request, unique('Taxed item'));
     const phone = () => String(7_000_000_000 + Math.floor(Math.random() * 999_999_999));
     const delhi = await (await request.post(`${API_URL}/customers`, { data: { name: unique('Delhi buyer'), phone: phone(), state: 'Delhi' } })).json();
     const local = await (await request.post(`${API_URL}/customers`, { data: { name: unique('Local buyer'), phone: phone(), state: 'Karnataka' } })).json();
-    const calc = async (customerId: string) => (await request.post(`${API_URL}/billing/calculate`, { data: { items: [{ productId: product.id, quantity: 1 }], customerId } })).json();
-    expect(await calc(delhi.id)).toMatchObject({ isInterState: true, shopState: 'Karnataka', customerState: 'Delhi' });
+    const calc = async (customerId: string, placeOfSupply?: string) =>
+      (await request.post(`${API_URL}/billing/calculate`, { data: { items: [{ productId: product.id, quantity: 1 }], customerId, placeOfSupply } })).json();
+    expect(await calc(delhi.id)).toMatchObject({ isInterState: false, shopState: 'Karnataka', customerState: 'Delhi' });
     expect(await calc(local.id)).toMatchObject({ isInterState: false });
+    expect(await calc(delhi.id, 'Delhi')).toMatchObject({ isInterState: true, shopState: 'Karnataka', placeOfSupply: 'Delhi' });
 
     // A 6-digit PIN is enforced before anything is sent.
     await page.getByLabel('PIN Code').fill('12');
     await page.getByRole('button', { name: 'Save Changes' }).click();
     await expect(page.getByText('The PIN code must be 6 digits.')).toBeVisible();
+  });
+
+  test('a blank email saves the profile and clears the stored address (audit W3)', async ({ page, request }) => {
+    // A shop with an address first, then the owner empties the field.
+    expect((await request.patch(`${API_URL}/shops/me`, { data: { email: `shop-${Date.now().toString(36)}@example.com`, state: 'Karnataka' } })).status()).toBe(200);
+    await page.goto('/settings');
+    await expect(page.getByLabel('Email')).not.toHaveValue('');
+    await page.getByLabel('Email').fill('');
+    await page.getByLabel('GSTIN').fill('29ABCDE1234F1Z5');
+
+    const patch = page.waitForResponse((r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname.endsWith('/shops/me'));
+    await page.getByRole('button', { name: 'Save Changes' }).click();
+    const response = await patch;
+    expect(response.status(), await response.text()).toBe(200);
+    expect(response.request().postDataJSON()).toMatchObject({ email: '', gstin: '29ABCDE1234F1Z5', state: 'Karnataka' });
+    await expect(page.getByText('Shop profile saved.', { exact: false })).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByLabel('Email')).toHaveValue('');
+    await expect(page.getByLabel('GSTIN')).toHaveValue('29ABCDE1234F1Z5');
+    const me = (await (await request.get(`${API_URL}/shops/me`)).json()) as { email: string | null; settings: { gstin: string | null } };
+    expect(me.email).toBeNull();
+    expect(me.settings.gstin).toBe('29ABCDE1234F1Z5');
   });
 
   test('the side menu opens real panels and pages', async ({ page }) => {

@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { signIn, useSession } from 'next-auth/react';
 import { motion } from 'framer-motion';
-import { ShoppingBag, Lock, Mail, ArrowRight, AlertCircle } from 'lucide-react';
+import { ShoppingBag, Lock, Mail, ArrowRight, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useToast } from '@/components/ui/Toast';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
 import { sanitizeCallbackUrl } from '@/lib/safe-callback-url';
@@ -30,6 +30,8 @@ function LoginPageContent() {
   // parsed against this origin so the parameter cannot redirect off-site
   // (`//evil`, `/\evil` and absolute URLs all fall back, roadmap 6.4).
   const callbackUrl = sanitizeCallbackUrl(searchParams.get('callbackUrl'), typeof window === 'undefined' ? '' : window.location.origin);
+  // Settings › Change password signs every session out and lands here.
+  const passwordChanged = searchParams.get('notice') === 'password-changed';
 
   // If already authenticated (or auth is bypassed), redirect away from login
   useEffect(() => {
@@ -133,9 +135,17 @@ function LoginPageContent() {
             </p>
           </div>
 
+          {passwordChanged && !error && (
+            <div role="status" className="flex items-center gap-2.5 p-3 mb-6 bg-green-50 border border-green-200 rounded-xl text-sm font-medium text-green-700">
+              <CheckCircle2 size={16} className="shrink-0" />
+              <span>Your password was changed and every session was signed out. Sign in with the new password.</span>
+            </div>
+          )}
+
           {/* --- Error banner --- */}
           {error && (
             <motion.div
+              role="alert"
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               className="flex items-center gap-2.5 p-3 mb-6 bg-red-50 border border-red-200 rounded-xl text-sm font-medium text-red-700"
@@ -185,7 +195,7 @@ function LoginPageContent() {
           {/* --- Email / password form --- */}
           <form onSubmit={handleCredentialsLogin} className="space-y-5">
             <div>
-              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
+              <label htmlFor="login-email" className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
                 Email Address
               </label>
               <div className="relative">
@@ -194,6 +204,7 @@ function LoginPageContent() {
                   className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
                 />
                 <input
+                  id="login-email"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -207,7 +218,7 @@ function LoginPageContent() {
 
             <div>
               <div className="flex justify-between items-center mb-2">
-                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide">
+                <label htmlFor="login-password" className="block text-xs font-bold text-gray-700 uppercase tracking-wide">
                   Password
                 </label>
                 <Link
@@ -223,6 +234,7 @@ function LoginPageContent() {
                   className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
                 />
                 <input
+                  id="login-password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}

@@ -24,7 +24,7 @@ true of the repository.
 | Edge | Caddy, automatic certificates (`EDGE_TLS_LINE` blank) | same |
 | SMTP | the production relay with a staging sender (`EMAIL_FROM`) | production sender |
 | Sentry | `SENTRY_ENVIRONMENT=staging`, same project | `production` |
-| Metrics | `METRICS_TOKEN` set; Grafana on the host, port 3001 behind the firewall | same |
+| Metrics | `METRICS_TOKEN` set (Prometheus sends it); the monitoring consoles published on 127.0.0.1 only, reached through an SSH tunnel ("Monitoring access" below) | same |
 | Alerts | `ALERT_*` set; staging alerts go to the team channel only (`ALERT_PAGERDUTY_ROUTING_KEY` blank) | critical alerts page |
 | Uptime | the external checker watches both hosts (docs/OBSERVABILITY.md, "Uptime checks") | same |
 | Data | throwaway: the smoke registers a fresh shop on every run; wipe by recreating the database | real |
@@ -50,14 +50,18 @@ identifiers, who holds the secrets, the DNS record owner, the date.
 
 ## Promotion
 
-1. A commit on `main` (or a `v*` tag) triggers the release workflow; it
-   pushes `ghcr.io/<owner>/dukaanai-{api,web,db-ops}:sha-<commit>` (and
-   `:v<version>`). The CI run of the same commit must be green. A release
+1. A commit on `main` (or a `v*` tag) whose CI run passed triggers the
+   release workflow (it waits for CI and never builds a commit CI failed;
+   audit 2026-10-11, R8). A main commit is pushed as
+   `ghcr.io/<owner>/dukaanai-{api,web,db-ops}:sha-<commit>` (and `:main`);
+   a version tag as `:v<version>` only (its build never re-pushes
+   `:sha-<commit>`, audit R7). A release
    is a `v*` tag: its `certify` job (roadmap 9.12) must be green as well,
    and its evidence bundle (`certification-<tag>`, also attached to the
    tag's draft release) is read before the tag goes anywhere; a red
    certification is not promoted.
-2. On the staging host: set `IMAGE_TAG=sha-<commit>` in `.env`, then
+2. On the staging host: set `IMAGE_TAG` in `.env` (`v<version>` for a
+   release, `sha-<commit>` for a main build), then
 
    ```
    docker compose -f docker-compose.prod.yml pull
@@ -79,6 +83,45 @@ identifiers, who holds the secrets, the DNS record owner, the date.
    (`apps/api/prisma/MIGRATIONS.md` for the database side). A release
    candidate with a migration rehearses that rollback on staging before it
    goes to production.
+
+### Deploying by digest
+
+A tag is a name the registry lets anyone with push rights move; a digest is
+the content. The release job's summary lists the digest of every image it
+pushed (`ghcr.io/<owner>/dukaanai-api@sha256:...`), and the certification
+bundle records the digests it certified. To run exactly those bits, put the
+digest where the tag goes. The three images have three digests and
+`IMAGE_TAG` is one value, so compose takes a small override file kept next
+to `.env` (outside the repository):
+
+```yaml
+# digests.yml: docker compose -f docker-compose.prod.yml -f digests.yml ...
+services:
+  migrate: { image: ghcr.io/<owner>/dukaanai-api@sha256:<api digest> }
+  api: { image: ghcr.io/<owner>/dukaanai-api@sha256:<api digest> }
+  web: { image: ghcr.io/<owner>/dukaanai-web@sha256:<web digest> }
+  backup-agent: { image: ghcr.io/<owner>/dukaanai-db-ops@sha256:<db-ops digest> }
+  backup-volume-init: { image: ghcr.io/<owner>/dukaanai-db-ops@sha256:<db-ops digest> }
+  db-ops: { image: ghcr.io/<owner>/dukaanai-db-ops@sha256:<db-ops digest> }
+```
+
+In Kubernetes, replace `newTag` with `digest: sha256:<digest>` for each
+image in `deploy/k8s/common/kustomization.yaml`. `docker compose -f
+docker-compose.prod.yml images` (or `kubectl get pods -o
+jsonpath='{..imageID}'`) on staging and production must show the same
+digests: that is the "same image digests" row of the evidence below.
+
+### Monitoring access
+
+The monitoring stack publishes Prometheus, Alertmanager, the blackbox
+exporter, Loki and Grafana on 127.0.0.1 only (audit 2026-10-11, P1-15). A
+host firewall is not enough: Docker's published ports are written into
+iptables ahead of ufw and firewalld, so a port on 0.0.0.0 is open to the
+internet whatever ufw says. Operators reach them through SSH:
+`ssh -N -L 3001:127.0.0.1:3001 -L 9090:127.0.0.1:9090 -L 9093:127.0.0.1:9093 ops@<host>`
+(`docs/DEPLOYMENT.md`, "Monitoring access"). Grafana's admin password is
+`GRAFANA_ADMIN_PASSWORD` in `.env`; the production file refuses to start
+without one and Grafana refuses `admin` or the template's placeholder.
 
 A release (a `v*` tag, roadmap 9.21) follows `RELEASE.md` end to end: the
 release commit, the tag, certification, these steps with `IMAGE_TAG=v<version>`,

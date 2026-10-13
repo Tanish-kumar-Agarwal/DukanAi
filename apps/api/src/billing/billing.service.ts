@@ -14,7 +14,16 @@ import { CreateInvoiceDto, InvoiceItemDto, PaymentTenderDto } from './dto/create
 import { CalculateInvoiceDto } from './dto/calculate-invoice.dto';
 import { InventoryCacheService } from '../inventory/inventory-cache.service';
 import { BillingHelpers } from './billing.helpers';
-import { InvoiceMathEngine, InvoiceMathError, Decimal, InvoiceMathInput, InvoiceCalculationResultV1 } from './utils/invoice-math.engine';
+import {
+  InvoiceMathEngine,
+  InvoiceMathError,
+  Decimal,
+  InvoiceMathInput,
+  InvoiceCalculationResultV1,
+  costOfGoodsSlice,
+  discountLimitAmounts,
+  inclusiveUnitPrice,
+} from './utils/invoice-math.engine';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { BillingFeatureConfig } from '../config/domains/features/billing-feature.config';
 import { InventoryMutationEngine, MutationType } from '../inventory-domain/services/inventory-mutation.engine';
@@ -28,6 +37,10 @@ import { checkoutDurationSeconds } from '../common/observability/metrics';
 import { isSerializationFailure } from '../common/db/serialization-retry';
 import { financialYearLabel, safeTimeZone } from '../common/time/business-day';
 import { Clock } from '../common/time/clock';
+import { FeatureFlagsConfig } from '../config/domains/feature-flags.config';
+import { assertFeatureEnabled } from '../common/features/feature-catalogue';
+import { comparableState } from '../common/india/is-indian-state';
+import { MONEY_MAX_NUMBER } from './dto/create-invoice.dto';
 
 type Tx = Prisma.TransactionClient;
 
@@ -122,6 +135,7 @@ export class BillingService {
     private readonly ledger: LedgerPostingService,
     private readonly checkpoints: BillingCheckpoints,
     private readonly clock: Clock,
+    private readonly features: FeatureFlagsConfig,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -131,7 +145,8 @@ export class BillingService {
   async calculateInvoice(dto: CalculateInvoiceDto, actor: BillingActor) {
     const lines = this.normaliseLines(dto.items);
     const products = await this.loadProducts(actor.shopId, productIds(lines));
-    const { isInterState, shopState, customerState } = await this.resolveInterState(actor.shopId, dto.customerId);
+    this.assertWithinMrp(lines, products);
+    const { isInterState, shopState, customerState, placeOfSupply } = await this.resolveInterState(actor.shopId, dto.customerId, dto.placeOfSupply);
 
     const payments = dto.payments ? this.toPaymentInput(dto.payments, dto.udharAmount) : undefined;
     const result = this.runEngine({
@@ -142,9 +157,9 @@ export class BillingService {
       discountReason: dto.discountReason,
       payment: payments,
     });
-    this.enforceDiscountAuthority(actor, lines, result);
+    this.enforceDiscountAuthority(actor, lines, result, appliedInvoiceDiscount(dto, result).percentage);
 
-    return { ...result, isInterState, shopState, customerState };
+    return { ...result, isInterState, shopState, customerState, placeOfSupply };
   }
 
   // ---------------------------------------------------------------------------
@@ -169,27 +184,21 @@ export class BillingService {
     const paymentInput = this.toPaymentInput(dto.payments ?? this.legacyPayments(dto), dto.udharAmount ?? (dto.payments ? 0 : this.legacyUdhar(dto)));
     const requestHash = this.hashRequest({ lines, dto, paymentInput });
 
-    // 1. Idempotent replay (same key + same payload) or reuse rejection.
+    // 1. Idempotent replay (same key + same bill) or reuse rejection.
     const existing = await this.prisma.invoice.findFirst({
       where: { idempotencyKey: dto.idempotencyKey, shopId: actor.shopId },
       include: INVOICE_INCLUDE,
     });
-    if (existing) {
-      if (existing.requestHash && existing.requestHash !== requestHash) {
-        throw new UnprocessableEntityException({
-          message: 'This idempotency key was already used for a different request.',
-          code: 'IDEMPOTENCY_KEY_REUSED',
-          details: { invoiceId: existing.id, invoiceNumber: existing.invoiceNumber },
-        });
-      }
-      return { invoice: existing, stock: [], shiftId: existing.shiftId, replayed: true };
-    }
+    if (existing) return this.replayOrReject(existing, requestHash, { lines, dto, paymentInput });
 
     // 2. Products and pure validation (engine limits, discounts, settlement,
     //    authority) before any stock check or lock: invalid input is rejected
     //    deterministically whatever the stock position.
     const products = await this.loadProducts(actor.shopId, productIds(lines));
-    const { isInterState } = await this.resolveInterState(actor.shopId, dto.customerId);
+    this.assertWithinMrp(lines, products);
+    const { isInterState } = await this.resolveInterState(actor.shopId, dto.customerId, dto.placeOfSupply);
+    // A paused feature refuses new work only: the replay above still answers (roadmap 9.23).
+    if (paymentInput.udharAmount.greaterThan(0)) assertFeatureEnabled(this.features, 'credit_sales');
     if (paymentInput.udharAmount.greaterThan(0) && !dto.customerId) {
       throw new BadRequestException({ message: 'A customer must be selected for credit (udhar) billing.', code: 'CUSTOMER_REQUIRED' });
     }
@@ -201,7 +210,8 @@ export class BillingService {
       discountReason: dto.discountReason,
       payment: paymentInput,
     });
-    this.enforceDiscountAuthority(actor, lines, math);
+    const requestedInvoicePercent = appliedInvoiceDiscount(dto, math).percentage;
+    this.enforceDiscountAuthority(actor, lines, math, requestedInvoicePercent);
 
     // 3. Location and availability (fail fast before any lock).
     const locationId = await this.locationService.resolveSaleLocation(this.prisma, actor.shopId);
@@ -248,6 +258,7 @@ export class BillingService {
               // tender amounts would no longer match and the engine rejects it).
               const txProducts = await this.loadProducts(actor.shopId, productIds(lines), tx);
               txProducts.forEach((p, id) => products.set(id, p));
+              this.assertWithinMrp(lines, products);
               math = this.runEngine({
                 items: lines.map((l) => this.toMathItem(l, products, isInterState)),
                 discountAmount: dto.discountAmount,
@@ -256,7 +267,7 @@ export class BillingService {
                 discountReason: dto.discountReason,
                 payment: paymentInput,
               });
-              this.enforceDiscountAuthority(actor, lines, math);
+              this.enforceDiscountAuthority(actor, lines, math, requestedInvoicePercent);
               const payment = math.payment!;
 
               // a. Shift (explicit or the cashier's open one), locked for the whole transaction.
@@ -268,6 +279,15 @@ export class BillingService {
                 customer = await this.lockCustomer(tx, actor.shopId, dto.customerId);
                 if (payment.udharAmount.greaterThan(0)) {
                   const projected = customer.outstandingBalance.plus(money(payment.udharAmount));
+                  // Customer.outstandingBalance is Decimal(10,2): even a manager's
+                  // override cannot carry it past what the column holds (audit B14).
+                  if (projected.greaterThan(MONEY_MAX_NUMBER)) {
+                    throw new ConflictException({
+                      message: `${customer.name}'s balance would exceed ${MONEY_MAX_NUMBER.toFixed(2)}, the largest balance a customer can carry. Take part of this bill in another tender.`,
+                      code: 'OUTSTANDING_BALANCE_TOO_LARGE',
+                      details: { currentBalance: customer.outstandingBalance.toNumber(), requestedAmount: payment.udharAmount.toNumber(), maxBalance: MONEY_MAX_NUMBER },
+                    });
+                  }
                   if (projected.greaterThan(customer.creditLimit) && !isManager(actor.role)) {
                     throw new ConflictException({
                       message: `Credit limit exceeded for ${customer.name}.`,
@@ -284,7 +304,7 @@ export class BillingService {
               }
 
               // c. Gapless number.
-              const { number: invoiceNumber } = await this.invoiceNumbers.next(tx, actor.shopId, 'POS_INVOICE', `INV-${financialYear}-`);
+              const { number: invoiceNumber } = await this.invoiceNumbers.next(tx, actor.shopId, 'POS_INVOICE', financialYear);
 
               // d. Product rows (ascending id) BEFORE the invoice lines are inserted:
               //    inserting a line takes a shared lock on its product, and upgrading
@@ -295,6 +315,7 @@ export class BillingService {
               // e. Invoice + lines.
               await this.checkpoints.reach('BEFORE_INVOICE', 'SALE');
               const discountApplied = math.invoiceDiscount.greaterThan(0) || math.totalItemDiscount.greaterThan(0);
+              const invoiceDiscount = appliedInvoiceDiscount(dto, math);
               const created = await tx.invoice.create({
                 data: {
                   invoiceNumber,
@@ -309,8 +330,11 @@ export class BillingService {
                   type: 'SALE',
                   subtotal: money(math.subtotal),
                   discountAmount: money(math.totalDiscount),
-                  discountPercentage: dto.discountPercentage !== undefined ? new Prisma.Decimal(dto.discountPercentage) : null,
-                  discountType: math.invoiceDiscount.greaterThan(0) ? (dto.discountType ?? 'FIXED_AMOUNT') : null,
+                  // Exactly what the engine applied (audit B15): the invoice-level
+                  // type and, for a percentage, its percent; nothing for a
+                  // percentage that was sent with a fixed amount or not applied.
+                  discountPercentage: invoiceDiscount.percentage !== undefined ? new Prisma.Decimal(invoiceDiscount.percentage) : null,
+                  discountType: invoiceDiscount.type,
                   discountReason: math.invoiceDiscount.greaterThan(0) ? dto.discountReason ?? null : null,
                   approvedBy: discountApplied ? actor.userId : null,
                   approvalTimestamp: discountApplied ? now : null,
@@ -383,7 +407,8 @@ export class BillingService {
                       balanceAfter: result.balanceAfter.toNumber(),
                       productStockAfter: result.productStockAfter.toNumber(),
                     });
-                    costOfGoods = costOfGoods.plus(new Decimal(product.costPrice.toString()).mul(line.quantity));
+                    // Rounded per line (a cumulative slice from 0): each line's returns add up to exactly this (audit B16).
+                    costOfGoods = costOfGoods.plus(costOfGoodsSlice(product.costPrice.toString(), 0, line.quantity));
                   }
                 } catch (e) {
                   if (e instanceof OptimisticLockConflictError) throw new Error(OCC_RETRY_MARKER);
@@ -412,6 +437,7 @@ export class BillingService {
                       balanceBefore: before,
                       balanceAfter: after,
                       notes: `Credit sale ${invoiceNumber}`,
+                      createdAt: now,
                     },
                   });
                   await tx.customer.update({
@@ -524,8 +550,11 @@ export class BillingService {
               include: INVOICE_INCLUDE,
             });
             if (duplicate) {
+              // The concurrent request that won the key is a replay only when it
+              // was the same bill (audit B12); otherwise this one is a reuse.
+              const replay = this.replayOrReject(duplicate, requestHash, { lines, dto, paymentInput });
               await this.restoreRedis(decrementedInRedis);
-              return { invoice: duplicate, stock: [], shiftId: duplicate.shiftId, replayed: true };
+              return replay;
             }
           }
           const occConflict = error instanceof Error && error.message === OCC_RETRY_MARKER;
@@ -648,7 +677,15 @@ export class BillingService {
     return map;
   }
 
-  async resolveInterState(shopId: string, customerId?: string | null) {
+  /**
+   * Place of supply (audit P1-3, contract §2). Goods sold over the counter
+   * are supplied where the shop is (IGST Act s.10(1)(c)): intra-state, CGST +
+   * SGST, whatever state the customer's profile names. IGST applies only when
+   * the request names an explicit `placeOfSupply` (a delivery, a registered
+   * buyer) that differs from the shop's state. A shop without a state can
+   * never bill IGST. The customer is still checked (404) and its state echoed.
+   */
+  async resolveInterState(shopId: string, customerId?: string | null, placeOfSupply?: string | null) {
     const shop = await this.prisma.shop.findUnique({ where: { id: shopId }, select: { state: true } });
     const shopState = shop?.state ?? null;
     let customerState: string | null = null;
@@ -657,8 +694,35 @@ export class BillingService {
       if (!customer) throw new NotFoundException({ message: 'Customer not found.', code: 'CUSTOMER_NOT_FOUND' });
       customerState = customer.state ?? null;
     }
-    const isInterState = !!(shopState && customerState && normaliseState(shopState) !== normaliseState(customerState));
-    return { isInterState, shopState, customerState };
+    const supplyState = comparableState(placeOfSupply);
+    const homeState = comparableState(shopState);
+    const isInterState = !!(supplyState && homeState && supplyState !== homeState);
+    return { isInterState, shopState, customerState, placeOfSupply: placeOfSupply ?? null };
+  }
+
+  /**
+   * Legal Metrology (audit P1-2): MRP is tax-inclusive and the selling price
+   * is before GST, so a catalogue line is refused when one unit, GST and cess
+   * included (`inclusiveUnitPrice`), would sell above the product's MRP. An
+   * MRP of 0 means none is printed. 409 PRICE_ABOVE_MRP names the product:
+   * a manager corrects its price or MRP (the products API no longer accepts
+   * such a pair, so this catches older rows and imports).
+   */
+  assertWithinMrp(lines: NormalisedLine[], products: Map<string, ProductRow>): void {
+    for (const line of lines) {
+      if (!line.productId) continue;
+      const product = products.get(line.productId)!;
+      const mrp = new Decimal(product.mrp.toString());
+      if (!mrp.greaterThan(0)) continue;
+      const inclusive = inclusiveUnitPrice(product.sellingPrice.toString(), product.gstRate, product.cessRate.toString());
+      if (inclusive.greaterThan(mrp)) {
+        throw new ConflictException({
+          message: `"${product.name}" would sell at ${inclusive.toFixed(2)} including GST, above its MRP of ${mrp.toFixed(2)}. Ask a manager to correct the product's selling price or MRP.`,
+          code: 'PRICE_ABOVE_MRP',
+          details: { productId: product.id, productName: product.name, mrp: mrp.toNumber(), inclusivePrice: inclusive.toNumber(), sellingPrice: Number(product.sellingPrice) },
+        });
+      }
+    }
   }
 
   toMathItem(line: NormalisedLine, products: Map<string, ProductRow>, isInterState: boolean) {
@@ -707,7 +771,8 @@ export class BillingService {
         unit: line.custom.unit,
         costPrice: new Prisma.Decimal(0),
         sellingPrice: new Prisma.Decimal(line.custom.unitPrice),
-        mrp: new Prisma.Decimal(line.custom.unitPrice),
+        // A custom line has no printed MRP: record what one unit sells at, tax included.
+        mrp: money(inclusiveUnitPrice(line.custom.unitPrice, line.custom.gstRate, 0)),
         gstRate: line.custom.gstRate,
         ...amounts,
       };
@@ -750,19 +815,27 @@ export class BillingService {
    * `cashierMaxDiscountPercent` (line or invoice level, percent of the
    * eligible amount); anything above needs a manager to bill the invoice.
    * The billing actor is stamped as `approvedBy` on the invoice.
+   *
+   * Percentages the cashier typed (line discounts, an invoice PERCENTAGE) are
+   * compared as typed; amounts are compared with what the limit itself yields
+   * under the engine's rounding (`discountLimitAmounts`), never as a
+   * re-derived percentage: 10% of ₹10.05 rounds to ₹1.01, which a percentage
+   * comparison read as 10.05% and refused (audit B4).
    */
-  enforceDiscountAuthority(actor: BillingActor, lines: NormalisedLine[], math: InvoiceCalculationResultV1): void {
+  enforceDiscountAuthority(actor: BillingActor, lines: NormalisedLine[], math: InvoiceCalculationResultV1, requestedInvoicePercent?: number): void {
     if (isManager(actor.role)) return;
     const limit = new Decimal(this.billingConfig.cashierMaxDiscountPercent);
     // Custom lines count too: their discountPercent is in `lines`, and their
-    // free-form price is capped per line (roadmap 3.6, audit P2-23).
+    // free-form price is capped (roadmap 3.6, audit P2-23, B5).
     const maxLine = lines.reduce((acc, l) => Decimal.max(acc, new Decimal(l.discountPercent)), new Decimal(0));
-    const netSubtotal = math.subtotal.minus(math.totalItemDiscount);
-    const invoicePct = netSubtotal.greaterThan(0) ? math.invoiceDiscount.div(netSubtotal).mul(100) : new Decimal(0);
+    const allowance = discountLimitAmounts(math, limit);
+    const invoicePercentOver = math.invoiceDiscount.greaterThan(0) && requestedInvoicePercent !== undefined && new Decimal(requestedInvoicePercent).greaterThan(limit);
     // Line and invoice discounts compound: 10% + 10% is a 19% discount on the goods.
-    const effectivePct = math.subtotal.greaterThan(0) ? math.totalDiscount.div(math.subtotal).mul(100) : new Decimal(0);
-    const requested = Decimal.max(maxLine, invoicePct, effectivePct);
-    if (requested.greaterThan(limit)) {
+    if (maxLine.greaterThan(limit) || invoicePercentOver || math.invoiceDiscount.greaterThan(allowance.invoice) || math.totalDiscount.greaterThan(allowance.effective)) {
+      const netSubtotal = math.subtotal.minus(math.totalItemDiscount);
+      const invoicePct = netSubtotal.greaterThan(0) ? math.invoiceDiscount.div(netSubtotal).mul(100) : new Decimal(0);
+      const effectivePct = math.subtotal.greaterThan(0) ? math.totalDiscount.div(math.subtotal).mul(100) : new Decimal(0);
+      const requested = Decimal.max(maxLine, invoicePct, effectivePct, requestedInvoicePercent ?? 0);
       throw new ForbiddenException({
         message: `Discounts above ${limit.toFixed(2)}% need a manager to bill this invoice.`,
         code: 'DISCOUNT_REQUIRES_APPROVAL',
@@ -770,6 +843,8 @@ export class BillingService {
       });
     }
     const customCap = new Decimal(this.billingConfig.cashierMaxCustomLineAmount);
+    const customTotalCap = new Decimal(this.billingConfig.cashierMaxCustomTotalAmount);
+    let customTotal = new Decimal(0);
     for (const line of math.lines) {
       const source = lines.find((l) => l.key === line.productId);
       if (!source?.custom) continue;
@@ -780,6 +855,17 @@ export class BillingService {
           details: { maxAmount: customCap.toNumber(), lineAmount: line.lineSubtotal.toNumber(), name: source.custom.name },
         });
       }
+      customTotal = customTotal.plus(line.lineSubtotal);
+    }
+    // The per-line cap alone let any number of ₹500 lines through (audit B5).
+    if (customTotal.greaterThan(customTotalCap)) {
+      throw new ForbiddenException({
+        message: customTotalCap.isZero()
+          ? 'Custom items need a manager to bill this invoice.'
+          : `Custom items totalling more than ${customTotalCap.toFixed(2)} on one bill need a manager to bill this invoice.`,
+        code: 'CUSTOM_LINE_REQUIRES_APPROVAL',
+        details: { maxTotal: customTotalCap.toNumber(), customTotal: customTotal.toNumber() },
+      });
     }
   }
 
@@ -796,17 +882,52 @@ export class BillingService {
     return dto.udharAmount ?? 0;
   }
 
-  private hashRequest(payload: { lines: NormalisedLine[]; dto: CreateInvoiceDto; paymentInput: ReturnType<BillingService['toPaymentInput']> }): string {
+  /**
+   * What makes two checkout requests the same bill: the lines, the customer,
+   * the discount, the place of supply and how much each tender and the
+   * credit settle. The cash handed over (`tenderedAmount`) is not part of it
+   * (audit P1-4): it only decides the change, and a cashier who retries a
+   * lost answer after typing a different note is retrying the same bill,
+   * which must replay, never be billed twice. `legacy` is the hash the API
+   * stored before that change (with the cash tendered), so a retry that
+   * spans the upgrade still replays.
+   */
+  private hashRequest(payload: { lines: NormalisedLine[]; dto: CreateInvoiceDto; paymentInput: ReturnType<BillingService['toPaymentInput']> }, legacy = false): string {
     const canonical = {
       lines: payload.lines.map((l) => ({ key: l.key, productId: l.productId, custom: l.custom, quantity: l.quantity, discountPercent: l.discountPercent })),
       customerId: payload.dto.customerId ?? null,
       discountAmount: payload.dto.discountAmount ?? null,
       discountPercentage: payload.dto.discountPercentage ?? null,
       discountType: payload.dto.discountType ?? null,
-      tenders: payload.paymentInput.tenders.map((t) => ({ type: t.type, amount: Number(t.amount), tendered: t.tenderedAmount ?? null })),
+      tenders: payload.paymentInput.tenders.map((t) =>
+        legacy ? { type: t.type, amount: Number(t.amount), tendered: t.tenderedAmount ?? null } : { type: t.type, amount: Number(t.amount) },
+      ),
       udhar: payload.paymentInput.udharAmount.toFixed(2),
+      // Only when sent, so a request without one hashes as it always did.
+      ...(!legacy && payload.dto.placeOfSupply ? { placeOfSupply: payload.dto.placeOfSupply } : {}),
     };
     return crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
+  }
+
+  /**
+   * An invoice already holds this idempotency key: the same bill replays (200
+   * with the stored invoice), a different one is 422 IDEMPOTENCY_KEY_REUSED
+   * naming the saved invoice, so the POS can show what was already billed
+   * instead of billing again (audit P1-4).
+   */
+  private replayOrReject(
+    existing: InvoiceWithRelations,
+    requestHash: string,
+    payload: { lines: NormalisedLine[]; dto: CreateInvoiceDto; paymentInput: ReturnType<BillingService['toPaymentInput']> },
+  ): CreateInvoiceResult {
+    if (existing.requestHash && existing.requestHash !== requestHash && existing.requestHash !== this.hashRequest(payload, true)) {
+      throw new UnprocessableEntityException({
+        message: `This bill's request key was already used for invoice ${existing.invoiceNumber}, which differs from this request.`,
+        code: 'IDEMPOTENCY_KEY_REUSED',
+        details: { invoiceId: existing.id, invoiceNumber: existing.invoiceNumber },
+      });
+    }
+    return { invoice: existing, stock: [], shiftId: existing.shiftId, replayed: true };
   }
 
   /**
@@ -929,8 +1050,20 @@ function stockedLines(lines: NormalisedLine[], products: Map<string, ProductRow>
   return lines.filter((l) => l.productId && STOCKED_TYPES.has(products.get(l.productId)!.type));
 }
 
-function normaliseState(state: string): string {
-  return state.trim().toLowerCase().replace(/\s+/g, ' ');
+/**
+ * The invoice-level discount as the engine applied it (audit B15): its type
+ * (PERCENTAGE when typed so, or when a bare percentage came without an amount,
+ * the engine's backward-compatible reading) and, for a percentage, the
+ * percent. Nothing when no invoice-level discount was applied.
+ */
+export function appliedInvoiceDiscount(
+  dto: Pick<CreateInvoiceDto, 'discountType' | 'discountAmount' | 'discountPercentage'>,
+  math: Pick<InvoiceCalculationResultV1, 'invoiceDiscount'>,
+): { type: 'FIXED_AMOUNT' | 'PERCENTAGE' | null; percentage?: number } {
+  if (!math.invoiceDiscount.greaterThan(0)) return { type: null };
+  const type = (dto.discountType ?? '').toUpperCase();
+  const percentage = type === 'PERCENTAGE' || (type === '' && (dto.discountAmount === undefined || dto.discountAmount === null) && dto.discountPercentage !== undefined && dto.discountPercentage !== null);
+  return percentage ? { type: 'PERCENTAGE', percentage: dto.discountPercentage } : { type: 'FIXED_AMOUNT' };
 }
 
 export { safeTimeZone };

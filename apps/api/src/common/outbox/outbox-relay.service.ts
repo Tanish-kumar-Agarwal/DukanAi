@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
-import { CronJob } from 'cron';
+import { createCronJob } from '../cron/cron-job';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { CronConfig } from '../../config/domains/cron.config';
@@ -33,9 +33,13 @@ export class OutboxRelayService implements OnApplicationBootstrap {
       this.logger.warn('EventsOutboxRelayService schedule not registered: CRON_ENABLED=false');
       return;
     }
-    const job = new CronJob(this.cronConfig.eventsOutboxRelayCron, () => {
-      void this.relayEvents();
-    });
+    const job = createCronJob(
+      this.cronConfig.eventsOutboxRelayCron,
+      () => {
+        void this.relayEvents();
+      },
+      this.cronConfig,
+    );
     this.schedulerRegistry.addCronJob('EventsOutboxRelayService', job);
     job.start();
   }

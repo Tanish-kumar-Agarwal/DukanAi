@@ -128,7 +128,7 @@ export class PurchaseRepository {
     });
 
     if (!po || po.shopId !== shopId || po.isDeleted) {
-      throw new NotFoundException(`Purchase Order ${id} not found.`);
+      throw new NotFoundException({ message: `Purchase Order ${id} not found.`, code: 'PURCHASE_ORDER_NOT_FOUND' });
     }
 
     await this.cacheManager.set(cacheKey, po, this.cacheConfig.purchaseTtlMs); // 1 minute cache
@@ -146,7 +146,7 @@ export class PurchaseRepository {
   }
 
   async submitPurchaseOrder(shopId: string, id: string, actorId: string, comments?: string) {
-    return procurementTransaction(this.prisma, async (tx) => {
+    const result = await procurementTransaction(this.prisma, async (tx) => {
       const po = await this.approval.submitForApproval(tx, shopId, id, actorId, comments);
 
       // The workflow engine's budget check reads totalAmount and department from this payload.
@@ -158,13 +158,14 @@ export class PurchaseRepository {
         actorId,
       });
 
-      await this.cacheManager.del(`po:${shopId}:${id}`);
       return po;
     });
+    await this.invalidate(shopId, id);
+    return result;
   }
 
   async approvePurchaseOrder(shopId: string, id: string, actorId: string, _ipAddress?: string, comments?: string, signature?: string) {
-    return procurementTransaction(this.prisma, async (tx) => {
+    const result = await procurementTransaction(this.prisma, async (tx) => {
       const po = await this.approval.processApproval(tx, shopId, id, actorId, 'APPROVE', comments, signature);
 
       // Store immutable pricing snapshot upon approval
@@ -179,13 +180,14 @@ export class PurchaseRepository {
         actorId,
       });
 
-      await this.cacheManager.del(`po:${shopId}:${id}`);
       return po;
     });
+    await this.invalidate(shopId, id);
+    return result;
   }
 
   async rejectPurchaseOrder(shopId: string, id: string, actorId: string, comments?: string) {
-    return procurementTransaction(this.prisma, async (tx) => {
+    const result = await procurementTransaction(this.prisma, async (tx) => {
       const po = await this.approval.processApproval(tx, shopId, id, actorId, 'REJECT', comments);
 
       await this.eventPublisher.publish(tx, shopId, {
@@ -196,17 +198,21 @@ export class PurchaseRepository {
         actorId,
       });
 
-      await this.cacheManager.del(`po:${shopId}:${id}`);
       return po;
     });
+    await this.invalidate(shopId, id);
+    return result;
   }
 
   async updateDraft(shopId: string, id: string, payload: UpdatePurchaseDraftDto, actorId: string) {
+    // A draft may change supplier, under the same rule as a new order: the shop's own, live and active
+    // (cross-shop audit 2026-10-12: the field was accepted and silently dropped).
+    if (payload.supplierId !== undefined) await this.validation.validateSupplier(shopId, payload.supplierId);
     if (payload.items) {
       await this.validation.validateItems(shopId, payload.items);
       await this.assertItemReferencesOwned(shopId, payload.items);
     }
-    return procurementTransaction(this.prisma, async (tx) => {
+    const result = await procurementTransaction(this.prisma, async (tx) => {
       const updatedPo = await this.draft.saveDraft(tx, shopId, id, payload, actorId);
 
       await this.eventPublisher.publish(tx, shopId, {
@@ -217,9 +223,15 @@ export class PurchaseRepository {
         actorId,
       });
 
-      await this.cacheManager.del(`po:${shopId}:${id}`);
       return updatedPo;
     });
+    await this.invalidate(shopId, id);
+    return result;
+  }
+
+  /** Drops the cached order after the commit (inside the transaction a concurrent reader could re-cache the old state). */
+  private async invalidate(shopId: string, id: string): Promise<void> {
+    await this.cacheManager.del(`po:${shopId}:${id}`);
   }
 
   /** Every ID an order line names must belong to this shop (roadmap 1.5). */

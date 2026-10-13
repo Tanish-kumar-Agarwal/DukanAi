@@ -9,7 +9,11 @@
 #     and the reconciliation of the day work over HTTPS through the edge
 #     (scripts/smoke-flow.mjs trusting Caddy's local CA);
 #   - /api/metrics does not exist from outside and is served inside the
-#     network;
+#     network, with the bearer token only (METRICS_TOKEN set, as the
+#     production docs say);
+#   - Prometheus scrapes it with that token, expects the production
+#     topology's backups (no binary-log archive) and publishes nothing but
+#     on 127.0.0.1 (audit 2026-10-11, P1-15, R11, R12);
 #   - the API sees the client address: a client that exhausts the login
 #     rate limit is answered 429 while a second client, even one claiming
 #     the first one's address in X-Forwarded-For, is still answered 401;
@@ -26,9 +30,17 @@
 #
 #   bash scripts/compose-smoke-prod.sh            # builds, proves, tears down
 #   KEEP=1 bash scripts/compose-smoke-prod.sh     # leaves the stack running
+#
+# Needs Docker Compose 2.24.4 or newer (an `include` with an override list and
+# the `!reset` tags of the overlays); older versions are refused at once.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
+
+version_at_least() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n 1)" = "$2" ]; }
+compose_version="$(docker compose version --short 2>/dev/null | sed 's/^v//' || true)"
+[ -n "$compose_version" ] || { echo "PROD SMOKE FAILED: docker compose (v2) is required" >&2; exit 1; }
+version_at_least "$compose_version" 2.24.4 || { echo "PROD SMOKE FAILED: Docker Compose $compose_version is too old: 2.24.4 or newer is required (docs/DEPLOYMENT.md, Requirements)" >&2; exit 1; }
 
 KEEP="${KEEP:-0}"
 HTTP_PORT="${EDGE_HTTP_PORT:-80}"
@@ -58,7 +70,7 @@ cleanup() {
   if [ "$KEEP" = "1" ]; then printf '\nKEEP=1: stack left running (%s, %s); env in %s\n' "$WEB_ORIGIN" "$API" "$WORK"; return; fi
   step "docker compose down -v (project $PROJECT)"
   docker rm -f smoke-client-a >/dev/null 2>&1 || true
-  "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  "${COMPOSE[@]}" --profile '*' down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -86,7 +98,7 @@ openssl x509 -req -sha256 -days 2 -in "$WORK/certs/server.csr" -CA "$WORK/certs/
 chmod 755 "$WORK" "$WORK/certs"; chmod 644 "$WORK"/certs/*
 
 step "the operator's .env for docker-compose.prod.yml (external TLS DATABASE_URL, REDIS_URL, hosts, secrets)"
-DB_PW="$(gen 12)"; DB_ROOT_PW="$(gen 12)"
+DB_PW="$(gen 12)"; DB_ROOT_PW="$(gen 12)"; METRICS_TOKEN="$(gen 24)"
 cat > "$WORK/.env" <<ENV
 IMAGE_REGISTRY=dukaanai-smoke
 IMAGE_TAG=smoke
@@ -104,6 +116,8 @@ EDGE_HTTP_PORT=${HTTP_PORT}
 EDGE_HTTPS_PORT=${HTTPS_PORT}
 TRUST_PROXY=1
 DB_OPS_DATABASE_URL=mysql://root:${DB_ROOT_PW}@dukaanai-ext-mysql:3306/dukaanai
+METRICS_TOKEN=${METRICS_TOKEN}
+GRAFANA_ADMIN_PASSWORD=$(gen 24)
 SMOKE_DB_PASSWORD=${DB_PW}
 SMOKE_DB_ROOT_PASSWORD=${DB_ROOT_PW}
 SMOKE_CERT_DIR=${WORK}/certs
@@ -146,9 +160,31 @@ code="$("${CURL[@]}" -o /dev/null -w '%{http_code}' "${API}/metrics")"
 [ "$code" = "404" ] || fail "GET /api/metrics through the edge answered $code, expected 404"
 NET="${PROJECT}_default"
 inside() { docker run --rm --network "$NET" -v "$WORK/caddy-root.crt:/ca/root.crt:ro" "$CURL_IMAGE" "$@"; }
-metrics="$(inside -fsS http://api:3002/api/metrics)" || fail "GET http://api:3002/api/metrics from inside the network failed"
+anon="$(inside -sS -o /dev/null -w '%{http_code}' http://api:3002/api/metrics)" || fail "GET http://api:3002/api/metrics from inside the network failed"
+[ "$anon" = "401" ] || fail "the internal scrape without the token answered $anon, expected 401 (METRICS_TOKEN is set)"
+metrics="$(inside -fsS -H "Authorization: Bearer $METRICS_TOKEN" http://api:3002/api/metrics)" || fail "GET http://api:3002/api/metrics with the token from inside the network failed"
 grep -q '^http_requests_total' <<<"$metrics" || fail "the internal scrape carries no http_requests_total"
-printf '  404 from the internet, %s series inside\n' "$(grep -c '^[a-z]' <<<"$metrics")"
+printf '  404 from the internet, 401 inside without the token, %s series with it\n' "$(grep -c '^[a-z]' <<<"$metrics")"
+
+step "monitoring (profile ops): Prometheus scrapes the API with METRICS_TOKEN, expects the production backup kinds, ports on 127.0.0.1 only"
+# Its own host port, so a Prometheus left by another stack (the reference smoke
+# runs one on 9090 in the same CI job) can never block this one from starting.
+export PROMETHEUS_PORT="${SMOKE_PROMETHEUS_PORT:-19090}"
+out="$("${COMPOSE[@]}" --profile ops up -d prometheus 2>&1)" || { printf '%s\n' "$out" >&2; fail "Prometheus did not start"; }
+PROM="http://127.0.0.1:${PROMETHEUS_PORT}"
+promq() { curl -fsS --get "$PROM/api/v1/query" --data-urlencode "query=$1" 2>/dev/null | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>{const r=JSON.parse(b).data.result;process.stdout.write(r.map((x)=>(x.metric.kind||'')+'='+x.value[1]).sort().join(','))})" 2>/dev/null || true; }
+up=""; kinds=""
+for _ in $(seq 1 45); do
+  up="$(promq 'up{job="dukaanai-api"}')"; kinds="$(promq 'dukaanai:backup_expected')"
+  [ "$up" = "=1" ] && [ -n "$kinds" ] && break
+  sleep 2
+done
+[ "$up" = "=1" ] || { "${COMPOSE[@]}" logs --no-color --tail=40 prometheus >&2; fail "Prometheus does not scrape the API with the token (up = '$up')"; }
+[ "$kinds" = "documents=1,dump=1,offsite=1" ] || fail "Prometheus expects the backup kinds '$kinds', expected documents, dump, offsite (production topology: no binary-log archive)"
+ports="$("${COMPOSE[@]}" --profile ops ps --format '{{.Service}} {{.Ports}}' prometheus 2>/dev/null || true)"
+grep -q '127\.0\.0\.1:' <<<"$ports" || fail "Prometheus is not published on 127.0.0.1 ($ports)"
+if grep -Eq '0\.0\.0\.0:|\[::\]:|:::' <<<"$ports"; then fail "Prometheus is published on every interface ($ports)"; fi
+printf '  scrape up with the bearer token; expected backups %s; %s\n' "$kinds" "$ports"
 
 step "the API sees the client address (TRUST_PROXY=1 behind the edge): the login limit is per client, X-Forwarded-For from a client is ignored"
 # Client A: 6 failed logins with distinct unknown accounts inside the short
@@ -192,7 +228,7 @@ grep -q "Backup written: " <<<"$logs" || { printf '%s\n' "$logs"; fail "the back
 grep -q "binary-log position " <<<"$logs" || { printf '%s\n' "$logs"; fail "the dump recorded no binary-log position"; }
 grep -q "Documents backup written" <<<"$logs" || { printf '%s\n' "$logs"; fail "the backup agent wrote no documents archive within 120 s"; }
 grep -q "OFFSITE_REMOTE is not set" <<<"$logs" || { printf '%s\n' "$logs"; fail "the agent did not report the missing off-site remote"; }
-metrics="$(inside -fsS http://api:3002/api/metrics)" || fail "second internal scrape failed"
+metrics="$(inside -fsS -H "Authorization: Bearer $METRICS_TOKEN" http://api:3002/api/metrics)" || fail "second internal scrape failed"
 for kind in dump documents; do
   grep -Eq "^backup_last_success_timestamp_seconds\{kind=\"$kind\"[,}]" <<<"$metrics" || { grep backup_last <<<"$metrics" || true; fail "no backup_last_success_timestamp_seconds series for kind $kind"; }
 done
@@ -205,4 +241,4 @@ api_log="$("${COMPOSE[@]}" logs --no-color api)" || fail "could not read the api
 grep -q "Shutdown requested by SIGTERM" <<<"$api_log" || fail "api log has no shutdown line"
 grep -q "Database connection closed" <<<"$api_log" || fail "api log has no Prisma close line"
 
-printf '\nPROD SMOKE PASSED: the production variant ran against an external TLS-only MySQL with the certificate verified, HTTPS through the edge with HTTP redirected, sign-in and a sale over HTTPS, the scrape endpoint hidden, the rate limit counted per client address with a spoofed X-Forwarded-For ignored, the backup agent dumped the database and the documents, graceful stop verified.\n'
+printf '\nPROD SMOKE PASSED: the production variant ran against an external TLS-only MySQL with the certificate verified, HTTPS through the edge with HTTP redirected, sign-in and a sale over HTTPS, the scrape endpoint hidden and token-protected, Prometheus scraping it with the token on the production topology, the rate limit counted per client address with a spoofed X-Forwarded-For ignored, the backup agent dumped the database and the documents, graceful stop verified.\n'

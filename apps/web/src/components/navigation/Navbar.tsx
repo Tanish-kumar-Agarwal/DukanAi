@@ -12,6 +12,7 @@ import { AUTH_DISABLED } from '@/lib/auth-bypass';
 import { notificationsApi, type NotificationView } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
 import { useVisibilityPolling } from '@/components/dashboard/useVisibilityPolling';
+import { isManagement } from '@/components/customers/permissions';
 
 const NOTIFICATION_POLL_MS = 60 * 1000;
 const DROPDOWN_LIMIT = 5;
@@ -48,6 +49,7 @@ export function Navbar() {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationView[] | null>(null);
+  const [unreadTotal, setUnreadTotal] = useState<number | null>(null);
   const [notificationsError, setNotificationsError] = useState<string | null>(null);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [markingAll, setMarkingAll] = useState(false);
@@ -56,6 +58,8 @@ export function Navbar() {
 
   // Notifications need an authenticated API; guests would only collect 401s.
   const canLoadNotifications = status === 'authenticated' || AUTH_DISABLED;
+  // `PATCH /notifications/read-all` is MANAGEMENT_ROLES: it clears the alerts for the whole shop (audit W12).
+  const canMarkAllRead = isManagement(session?.user?.role);
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -79,9 +83,10 @@ export function Navbar() {
     const seq = ++notificationsSeq.current;
     setNotificationsLoading(true);
     try {
-      const list = await notificationsApi.list();
+      const [list, unread] = await Promise.all([notificationsApi.list(), notificationsApi.unreadCount().catch(() => null)]);
       if (seq !== notificationsSeq.current) return;
       setNotifications(Array.isArray(list) ? list : []);
+      setUnreadTotal(unread && typeof unread.count === 'number' ? unread.count : null);
       setNotificationsError(null);
     } catch (err) {
       if (seq !== notificationsSeq.current) return;
@@ -101,7 +106,8 @@ export function Navbar() {
 
   useVisibilityPolling(() => void loadNotifications(), NOTIFICATION_POLL_MS, canLoadNotifications);
 
-  const unreadCount = (notifications ?? []).filter((n) => !n.isRead).length;
+  // The list is the newest page only; the badge counts every unread notification of the shop.
+  const unreadCount = unreadTotal ?? (notifications ?? []).filter((n) => !n.isRead).length;
   const latest = (notifications ?? []).slice(0, DROPDOWN_LIMIT);
 
   const submitSearch = () => {
@@ -116,12 +122,14 @@ export function Navbar() {
     if (notification.isRead) return;
     // Optimistic: flip locally, then confirm with the API.
     setNotifications((current) => current?.map((n) => (n.id === notification.id ? { ...n, isRead: true } : n)) ?? current);
+    setUnreadTotal((total) => (total === null ? null : Math.max(0, total - 1)));
     try {
       const updated = await notificationsApi.markRead(notification.id);
       setNotifications((current) => current?.map((n) => (n.id === updated.id ? updated : n)) ?? current);
     } catch (err) {
       describeApiError(err, 'Marking notification read (PATCH /notifications/:id/read)');
       setNotifications((current) => current?.map((n) => (n.id === notification.id ? { ...n, isRead: false } : n)) ?? current);
+      setUnreadTotal((total) => (total === null ? null : total + 1));
     }
   };
 
@@ -131,6 +139,7 @@ export function Navbar() {
     try {
       await notificationsApi.markAllRead();
       setNotifications((current) => current?.map((n) => ({ ...n, isRead: true })) ?? current);
+      setUnreadTotal(0);
     } catch (err) {
       setNotificationsError(describeApiError(err, 'Marking notifications read (PATCH /notifications/read-all)'));
     } finally {
@@ -227,14 +236,16 @@ export function Navbar() {
                     <h3 className="font-bold text-gray-800 text-sm">
                       Notifications{unreadCount > 0 && <span className="ml-2 text-xs font-semibold text-[#8B5CF6]">{unreadCount} unread</span>}
                     </h3>
-                    <button
-                      type="button"
-                      onClick={() => void handleMarkAllRead()}
-                      disabled={markingAll || unreadCount === 0}
-                      className="text-[#8B5CF6] text-xs font-semibold hover:underline flex items-center gap-1 disabled:opacity-40 disabled:no-underline"
-                    >
-                      <Check size={12} /> {markingAll ? 'Marking…' : 'Mark all read'}
-                    </button>
+                    {canMarkAllRead && (
+                      <button
+                        type="button"
+                        onClick={() => void handleMarkAllRead()}
+                        disabled={markingAll || unreadCount === 0}
+                        className="text-[#8B5CF6] text-xs font-semibold hover:underline flex items-center gap-1 disabled:opacity-40 disabled:no-underline"
+                      >
+                        <Check size={12} /> {markingAll ? 'Marking…' : 'Mark all read'}
+                      </button>
+                    )}
                   </div>
                   <div className="max-h-[300px] overflow-y-auto">
                     {notifications === null && notificationsLoading && (

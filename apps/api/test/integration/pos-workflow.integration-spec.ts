@@ -137,7 +137,7 @@ describe('EXEC-006C POS workflow (integration)', () => {
       products.soap = (await mk('SOAP', { gstRate: 'TWELVE', sellingPrice: 45.5, costPrice: 30 })).id;
       products.legacy = (await mk('LEGACY', { currentStock: 5 })).id;
       products.hot = (await mk('HOT', {})).id;
-      products.service = (await mk('SERVICE', { type: 'SERVICE', sellingPrice: 200, costPrice: 0 })).id;
+      products.service = (await mk('SERVICE', { type: 'SERVICE', sellingPrice: 200, mrp: 236, costPrice: 0 })).id;
 
       const other = await prisma.shop.create({ data: { name: `Other ${suffix}`, state: 'Kerala' } });
       otherShopId = other.id;
@@ -208,7 +208,7 @@ describe('EXEC-006C POS workflow (integration)', () => {
     cashInvoiceId = result.invoice.id;
 
     expect(result.replayed).toBe(false);
-    expect(result.invoice.invoiceNumber).toMatch(/^INV-\d{4}-\d{2}-\d{6}$/);
+    expect(result.invoice.invoiceNumber).toMatch(/^INV-\d{4}-\d{6}$/);
     expect(result.invoice.status).toBe('COMPLETED');
     expect(num(result.invoice.totalAmount)).toBe(total);
     expect(num(result.invoice.subtotal)).toBe(320);
@@ -379,7 +379,7 @@ describe('EXEC-006C POS workflow (integration)', () => {
     const outstandingBefore = await outstanding();
 
     const partial = await asCashier(() =>
-      reversal.processReturn({ idempotencyKey: randomUUID(), invoiceId: creditInvoiceId, items: [{ invoiceItemId: line.id, quantity: 1 }], reason: 'DAMAGED' as never, refund: { tender: TenderType.CASH } }, actorFor(cashierId, Role.CASHIER)),
+      reversal.processReturn({ idempotencyKey: randomUUID(), invoiceId: creditInvoiceId, items: [{ invoiceItemId: line.id, quantity: 1 }], reason: 'CUSTOMER_CHANGED_MIND' as never, refund: { tender: TenderType.CASH } }, actorFor(cashierId, Role.CASHIER)),
     );
     expect(partial.invoice.type).toBe('SALES_RETURN');
     expect(partial.invoice.invoiceNumber).toMatch(/^RET-/);
@@ -505,20 +505,25 @@ describe('EXEC-006C POS workflow (integration)', () => {
     const cancelledRow = list.items.find((i) => i.id === cashInvoiceId);
     expect(cancelledRow?.status).toBe('CANCELLED');
 
-    // The CSV export carries the same population as the dashboards: COMPLETED
-    // sales and returns only (cancelled and draft rows are excluded), so a
-    // total summed from the file equals the dashboard net revenue.
+    // The CSV export lists the COMPLETED sales and returns plus the cancelled
+    // documents with their status (a cancelled sale still used its GST serial
+    // number, release audit L11); draft rows are never exported. The
+    // COMPLETED rows sum to the dashboard net revenue.
     const range = await asOwner(() => exporter.resolveRange(shopId));
     let csv = '';
     await asOwner(() => exporter.streamInvoicesCsv(shopId, range, (chunk) => { csv += chunk; }));
     const rows = csv.trim().split('\n');
     expect(rows[0]).toContain('invoiceNumber');
-    expect(rows.length - 1).toBe(sales._count._all + (await asSystem(() => prisma.invoice.count({ where: { shopId, type: 'SALES_RETURN', status: 'COMPLETED', isDeleted: false } }))));
+    const cancelledCount = await asSystem(() => prisma.invoice.count({ where: { shopId, status: 'CANCELLED', isDeleted: false, type: { in: ['SALE', 'SALES_RETURN'] }, createdAt: { gte: range.start, lt: range.end } } }));
+    expect(cancelledCount).toBeGreaterThan(0);
+    expect(rows.length - 1).toBe(sales._count._all + cancelledCount + (await asSystem(() => prisma.invoice.count({ where: { shopId, type: 'SALES_RETURN', status: 'COMPLETED', isDeleted: false } }))));
     const header = rows[0].split(',');
     const typeIdx = header.indexOf('type');
+    const statusIdx = header.indexOf('status');
     const totalIdx = header.indexOf('totalAmount');
     const csvNet = rows.slice(1).reduce((acc, row) => {
       const cols = row.split(',');
+      if (cols[statusIdx] !== 'COMPLETED') return acc;
       return acc + (cols[typeIdx] === 'SALE' ? 1 : -1) * Number(cols[totalIdx]);
     }, 0);
     expect(csvNet).toBeCloseTo(net, 2);

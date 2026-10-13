@@ -45,7 +45,7 @@ export class InvoiceQueryService {
     if (query.q) where.invoiceNumber = { contains: query.q.trim() };
 
     const [rows, total] = await Promise.all([
-      this.prisma.invoice.findMany({ where, select: SUMMARY_SELECT, orderBy: { createdAt: 'desc' }, skip, take }),
+      this.prisma.invoice.findMany({ where, select: SUMMARY_SELECT, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], skip, take }),
       this.prisma.invoice.count({ where }),
     ]);
 
@@ -90,7 +90,7 @@ export class InvoiceQueryService {
       include: {
         ...INVOICE_INCLUDE,
         shift: { select: { id: true, status: true, openedAt: true } },
-        returnInvoices: { where: { isDeleted: false }, select: SUMMARY_SELECT, orderBy: { createdAt: 'asc' } },
+        returnInvoices: { where: { isDeleted: false }, select: SUMMARY_SELECT, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
         originalInvoice: { select: SUMMARY_SELECT },
       },
     });

@@ -5,6 +5,7 @@ import { ReservationValidationService } from './reservation-validation.service';
 import { AllocationService } from './allocation.service';
 import { ReservationStatus } from '@prisma/client';
 import { assertOwnedMany } from '../../prisma/tenant-ownership';
+import { assertVariantOfProduct } from '../../inventory-domain/services/inventory-domain.service';
 
 @Injectable()
 export class ReservationService {
@@ -21,7 +22,8 @@ export class ReservationService {
    */
   async createReservation(shopId: string, dto: CreateReservationDto) {
     await assertOwnedMany(this.prisma, 'product', dto.items.map((i) => i.productId), shopId, { isDeleted: false });
-    await assertOwnedMany(this.prisma, 'productVariant', dto.items.map((i) => i.variantId), shopId);
+    // A variant must be one of its line's product (release audit T6e).
+    for (const item of dto.items) await assertVariantOfProduct(this.prisma, shopId, item.productId, item.variantId);
 
     // 1. Pre-flight Validation check (prevent obvious oversells before entering the transaction)
     for (const item of dto.items) {
@@ -62,7 +64,7 @@ export class ReservationService {
 
         // Run the physical Allocation Strategy (FIFO)
         await this.allocation.allocateStockFifo(
-          tx, shopId, item.id, item.productId, item.variantId || null, item.requestedQuantity.toNumber()
+          tx, shopId, item.id, item.productId, item.variantId || null, item.requestedQuantity
         );
         
         // Also update the Product.currentStock cache for Epic 2 backward compatibility

@@ -11,13 +11,22 @@ const DEPLOY = resolve(__dirname, '../../../../../deploy');
 const METRICS_SOURCE = readFileSync(join(__dirname, 'metrics.ts'), 'utf8');
 const REGISTERED = new Set([...METRICS_SOURCE.matchAll(/name:\s*'([a-z_]+)'/g)].map((m) => m[1]));
 const EXTERNAL = new Set(['up', 'probe_success', 'probe_duration_seconds', 'probe_ssl_earliest_cert_expiry', 'probe_http_status_code', 'vector']);
+/**
+ * Series the repository's own recording rules produce: the backup kinds each
+ * topology runs (deploy/prometheus/topology/*.rules.yml, audit 2026-10-11 R12).
+ */
+const TOPOLOGY_DIR = join(DEPLOY, 'prometheus', 'topology');
+const TOPOLOGY_FILES = readdirSync(TOPOLOGY_DIR).filter((file) => file.endsWith('.rules.yml'));
+const recordedIn = (file: string): Set<string> => new Set([...readFileSync(join(TOPOLOGY_DIR, file), 'utf8').matchAll(/record:\s*(\S+)/g)].map((m) => m[1]));
+const RECORDED = new Set(TOPOLOGY_FILES.flatMap((file) => [...recordedIn(file)]));
 // Keywords, and the aggregation operators, which may be written `sum by (le) (...)` with the paren after the grouping.
 const PROMQL_WORDS = new Set(['by', 'on', 'ignoring', 'without', 'group_left', 'group_right', 'and', 'or', 'unless', 'offset', 'bool', 'le', 'time', 'inf', 'nan', 'sum', 'min', 'max', 'avg', 'count', 'topk', 'bottomk', 'stddev', 'stdvar', 'count_values', 'quantile', 'group']);
 const HISTOGRAM_SUFFIX = /_(bucket|count|sum)$/;
 
 function metricsIn(expr: string): string[] {
-  // Drop label matchers, ranges, strings and the label lists of `by (...)` / `without (...)` / `on (...)` / `ignoring (...)`.
-  const noLabels = expr
+  // Drop the recorded series (checked below), label matchers, ranges, strings and the label lists of `by (...)` / `without (...)` / `on (...)` / `ignoring (...)`.
+  const noLabels = [...RECORDED]
+    .reduce((text, name) => text.split(name).join(' '), expr)
     .replace(/\{[^}]*\}/g, '')
     .replace(/\[[^\]]*\]/g, '')
     .replace(/"[^"]*"/g, '')
@@ -74,6 +83,18 @@ describe('monitoring assets name only metrics the API exposes', () => {
     const exprs = [...rules.matchAll(/expr:\s*(\|?)\n?([\s\S]*?)(?=\n\s+for:|\n\s+keep_firing_for:|\n\s+labels:)/g)].map((m) => m[2].replace(/\n/g, ' '));
     expect(exprs.length).toBeGreaterThanOrEqual(15);
     for (const expr of exprs) assertKnown('alerts.yml', expr);
+  });
+
+  it('every recorded series an alert reads is recorded by every topology, and the topologies differ only in their backup kinds', () => {
+    const rules = readFileSync(join(DEPLOY, 'prometheus', 'alerts.yml'), 'utf8');
+    const read = [...RECORDED].filter((name) => rules.includes(name));
+    expect(read).toEqual(['dukaanai:backup_expected']);
+    expect(TOPOLOGY_FILES.sort()).toEqual(['production.rules.yml', 'reference.rules.yml']);
+    for (const file of TOPOLOGY_FILES) for (const name of read) expect({ file, name, recorded: recordedIn(file).has(name) }).toEqual({ file, name, recorded: true });
+    const kinds = (file: string) => [...readFileSync(join(TOPOLOGY_DIR, file), 'utf8').matchAll(/kind:\s*(\S+)/g)].map((m) => m[1]).sort();
+    expect(kinds('reference.rules.yml')).toEqual(['binlog', 'documents', 'dump', 'offsite']);
+    // The production topology has no binary-log archiver (point in time is the managed provider's).
+    expect(kinds('production.rules.yml')).toEqual(['documents', 'dump', 'offsite']);
   });
 
   it('the log dashboard searches by the correlation id the API prints', () => {

@@ -1,19 +1,18 @@
 import { LedgerAccount, LedgerEntryType, Prisma } from '@prisma/client';
-import { GrnIntegrationService } from './grn-integration.service';
+import { GrnIntegrationService, movingAverageCost } from './grn-integration.service';
 import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 import { InventoryLocationService } from '../../inventory-domain/services/inventory-location.service';
-import { LedgerPostingService } from '../../ledger/ledger-posting.service';
 import { SupplierPayablesService } from '../../ledger/supplier-payables.service';
 
 const D = (v: string | number) => new Prisma.Decimal(v);
 
 describe('GrnIntegrationService', () => {
   let service: GrnIntegrationService;
-  let engine: { mutateStock: jest.Mock };
+  let engine: { mutateStock: jest.Mock; lockProducts: jest.Mock };
   let locations: { resolveWarehouseBin: jest.Mock };
   let ledger: { post: jest.Mock };
-  let payables: { addPayable: jest.Mock; reducePayable: jest.Mock };
-  let tx: Record<string, never>;
+  let payables: { postWithPayable: jest.Mock };
+  let tx: { product: { findFirst: jest.Mock; update: jest.Mock } };
 
   const mutationResult = (bypassed: boolean) => ({
     bypassed,
@@ -23,15 +22,15 @@ describe('GrnIntegrationService', () => {
   });
 
   beforeEach(() => {
-    engine = { mutateStock: jest.fn().mockResolvedValue(mutationResult(false)) };
+    engine = { mutateStock: jest.fn().mockResolvedValue(mutationResult(false)), lockProducts: jest.fn().mockResolvedValue(undefined) };
     locations = { resolveWarehouseBin: jest.fn().mockResolvedValue('loc-1') };
     ledger = { post: jest.fn().mockResolvedValue({ posted: true, postingId: 'lp-1' }) };
-    payables = { addPayable: jest.fn().mockResolvedValue(undefined), reducePayable: jest.fn().mockResolvedValue(undefined) };
-    tx = {};
+    // The payables authority locks the supplier, posts and moves the balance; the ledger mock records the posting.
+    payables = { postWithPayable: jest.fn((_tx, _supplierId, posting) => ledger.post(_tx, posting)) };
+    tx = { product: { findFirst: jest.fn().mockResolvedValue({ currentStock: D('0'), costPrice: D('0') }), update: jest.fn().mockResolvedValue({}) } };
     service = new GrnIntegrationService(
       engine as unknown as InventoryMutationEngine,
       locations as unknown as InventoryLocationService,
-      ledger as unknown as LedgerPostingService,
       payables as unknown as SupplierPayablesService,
     );
   });
@@ -65,6 +64,7 @@ describe('GrnIntegrationService', () => {
         idempotencyKey: 'GRN:grn-1:p-1',
       }),
     );
+    expect(engine.lockProducts).toHaveBeenCalledWith(tx, 'shop-1', ['p-1', 'p-2', 'p-3']);
 
     // 3 × 10.50 + 1.5 × 7.33 = 31.50 + 10.995 → 42.50 (2 dp, round half up)
     expect(ledger.post).toHaveBeenCalledTimes(1);
@@ -117,5 +117,30 @@ describe('GrnIntegrationService', () => {
     expect(engine.mutateStock).toHaveBeenCalledTimes(1);
     expect(ledger.post).toHaveBeenCalledTimes(1);
     expect(ledger.post.mock.calls[0][1].source).toEqual({ type: 'GRN', id: 'grn-1' });
+  });
+
+  it('credits the supplier through the payables authority (supplier row locked before the ledger)', async () => {
+    await service.updateInventoryFromGrn(tx as unknown as Prisma.TransactionClient, 'shop-1', {
+      id: 'grn-1', warehouseId: 'wh-1', createdBy: 'user-1', supplierId: 'sup-1',
+      lines: [{ productId: 'p-1', acceptedQuantity: D('10'), unitPrice: D('100') }],
+    });
+    expect(payables.postWithPayable).toHaveBeenCalledTimes(1);
+    const [, supplierId, posting, delta] = payables.postWithPayable.mock.calls[0];
+    expect(supplierId).toBe('sup-1');
+    expect(posting.source).toEqual({ type: 'GRN', id: 'grn-1' });
+    expect(delta.toFixed(2)).toBe('1000.00');
+  });
+
+  it('moves Product.costPrice to the moving average of what was held and what arrived (release audit S12)', async () => {
+    tx.product.findFirst.mockResolvedValue({ currentStock: D('10'), costPrice: D('80') });
+    await run([{ productId: 'p-1', acceptedQuantity: D('10'), unitPrice: D('100') }]);
+    // (10 × 80 + 10 × 100) / 20 = 90
+    expect(tx.product.update).toHaveBeenCalledWith({ where: { id: 'p-1' }, data: { costPrice: D('90') } });
+  });
+
+  it('moving average: stock below zero carries no value, a first receipt sets the cost', () => {
+    expect(movingAverageCost(D('-5'), D('80'), D('10'), D('100')).toFixed(2)).toBe('100.00');
+    expect(movingAverageCost(D('0'), D('0'), D('3'), D('33.33')).toFixed(2)).toBe('33.33');
+    expect(movingAverageCost(D('3'), D('10'), D('0'), D('99')).toFixed(2)).toBe('10.00');
   });
 });

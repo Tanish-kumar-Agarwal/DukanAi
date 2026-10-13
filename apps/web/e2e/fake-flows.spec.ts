@@ -159,7 +159,8 @@ test.describe('suppliers page persists through the API', () => {
     await dialog.getByRole('button', { name: 'Confirm Payment' }).click();
     const response = await post;
     expect(response.status(), await response.text()).toBe(201);
-    expect(response.request().postDataJSON()).toMatchObject({ amount: 120, tender: 'UPI' });
+    // One idempotency key per payment dialog (release audit P1-5): a retry replays, never pays twice.
+    expect(response.request().postDataJSON()).toMatchObject({ amount: 120, tender: 'UPI', idempotencyKey: expect.any(String) });
 
     await expect(page.getByText(`₹120 paid to ${supplier.name}`)).toBeVisible();
     const stored = (await findSupplier(request, supplier.id)) as unknown as { pendingPayables: number };
@@ -239,8 +240,12 @@ test.describe('smart capture stores the bill', () => {
     expect(photoFiles.map((f) => path.extname(f)).sort()).toEqual(['.jpg']);
     expect(fs.readFileSync(photoFiles[0]).subarray(0, 3)).toEqual(Buffer.from([0xff, 0xd8, 0xff]));
 
-    // 2. Named customer, photo + client-side PDF.
-    await page.locator('select').first().selectOption(customer.id);
+    // 2. Named customer (found by searching the API, audit W8), photo + client-side PDF.
+    const searched = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith('/customers') && new URL(r.url()).searchParams.get('q') === customer.name);
+    await page.getByLabel('Select Customer (Optional)').fill(customer.name);
+    expect((await searched).status()).toBe(200);
+    await page.getByRole('option', { name: customer.name }).click();
+    await expect(page.getByLabel('Select Customer (Optional)')).toHaveValue(customer.name);
     await page.getByTestId('gallery-input').setInputFiles({ name: 'bill.jpg', mimeType: 'image/jpeg', buffer: jpeg });
     const pdfPost = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname.includes(`/storage/bills/${customer.id}/`));
     await page.getByRole('button', { name: 'Convert to PDF' }).click();

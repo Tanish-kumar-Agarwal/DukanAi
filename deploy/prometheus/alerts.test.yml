@@ -3,8 +3,11 @@
 #   promtool test rules deploy/prometheus/alerts.test.yml
 # The test clock starts at 0: a series stuck at value 0 is a backup that has
 # not succeeded since the epoch, a series growing with the clock is fresh.
+# The reference topology's backup kinds (dump, binlog, documents, offsite);
+# alerts.production.test.yml runs the backup cases on the production one.
 rule_files:
   - alerts.yml
+  - topology/reference.rules.yml
 
 # 15 s, as in prometheus.yml: the 5xx drill regression below depends on it.
 evaluation_interval: 15s

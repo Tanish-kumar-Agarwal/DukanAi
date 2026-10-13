@@ -36,6 +36,36 @@ export function IsCronExpression(options?: ValidationOptions): PropertyDecorator
 }
 
 /**
+ * Accepts an IANA time zone name the scheduler and `Intl` both know
+ * (`Asia/Kolkata`, `UTC`, `America/New_York`); an abbreviation or an offset
+ * such as `IST` or `+05:30` is refused at boot.
+ */
+export function IsIanaTimeZone(options?: ValidationOptions): PropertyDecorator {
+  return (target, propertyKey) => {
+    registerDecorator({
+      name: 'isIanaTimeZone',
+      target: target.constructor,
+      propertyName: String(propertyKey),
+      options,
+      validator: {
+        validate: (value: unknown) => {
+          // `UTC` or an Area/Location name: Intl also takes abbreviations such as IST, which name no rules.
+          if (typeof value !== 'string' || !/^(UTC|[A-Za-z]+(\/[A-Za-z0-9_+-]+)+)$/.test(value)) return false;
+          try {
+            new Intl.DateTimeFormat('en-US', { timeZone: value });
+            new CronTime('0 0 * * *', value).sendAt();
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        defaultMessage: (args: ValidationArguments) => `${args.property} must be an IANA time zone such as Asia/Kolkata (got ${JSON.stringify(args.value)})`,
+      },
+    });
+  };
+}
+
+/**
  * Background job schedules. Hydrated with `hydrateFromEnv`: an unset or blank
  * variable keeps the default, an invalid expression fails boot.
  * `CRON_ENABLED=false` registers no schedule at all (integration tests rely on
@@ -48,6 +78,17 @@ export class CronConfig {
   @BooleanFromEnv()
   @EnvVariable('CRON_ENABLED')
   enabled: boolean = true;
+
+  /**
+   * The zone every schedule below is read in (`createCronJob`). The image
+   * runs in UTC, so without it "30 1 * * *" fired at 07:00 in India with the
+   * shops open; the default is the shops' own zone.
+   */
+  @IsString()
+  @IsIanaTimeZone()
+  @StringFromEnv()
+  @EnvVariable('CRON_TIMEZONE')
+  timeZone: string = 'Asia/Kolkata';
 
   @IsString()
   @IsCronExpression()
@@ -110,8 +151,7 @@ export class CronConfig {
   /**
    * Nightly financial reconciliation (roadmap 9.5): every shop's previous
    * business day, under a cron lock. Schedule it after the latest shop
-   * timezone has passed midnight (01:30 server time suits Asia/Kolkata on a
-   * UTC or IST server).
+   * timezone has passed midnight (01:30 in `CRON_TIMEZONE`).
    */
   @IsString()
   @IsCronExpression()

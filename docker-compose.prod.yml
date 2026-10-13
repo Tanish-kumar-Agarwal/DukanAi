@@ -3,11 +3,15 @@
 # external managed services, documents live on a persistent disk, and the
 # edge terminates HTTPS. Nothing here publishes a port except the edge.
 #
-#   cp .env.example .env    # set JWT_SECRET, NEXTAUTH_SECRET, DATABASE_URL, REDIS_URL,
-#                           # WEB_HOST / API_HOST (+ WEB_ORIGIN / API_PUBLIC_URL), STORAGE_PATH,
-#                           # IMAGE_TAG (the release to run: sha-<commit> or v<version>)
+#   cp .env.example .env    # set JWT_SECRET, NEXTAUTH_SECRET, METRICS_TOKEN, GRAFANA_ADMIN_PASSWORD,
+#                           # DATABASE_URL, REDIS_URL, WEB_HOST / API_HOST (+ WEB_ORIGIN /
+#                           # API_PUBLIC_URL), STORAGE_PATH, IMAGE_TAG (the release to run)
 #   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml run --rm migrate     # the release step, alone
 #   docker compose -f docker-compose.prod.yml up -d --wait
+#
+# Needs Docker Compose 2.24.4 or newer (`include` with an override list,
+# `!reset` in the overlays; docs/DEPLOYMENT.md, "Requirements").
 #
 # Nothing is built on a server (roadmap 9.9): the images come from the
 # registry the release workflow pushed them to (.github/workflows/release.yml,
@@ -26,15 +30,33 @@
 name: dukaanai-prod
 
 # The monitoring stack (profile "ops": Prometheus, Alertmanager, blackbox
-# probes, Loki, Alloy, Grafana) is the same file the reference stack includes.
+# probes, Loki, Alloy, Grafana) is the same file the reference stack
+# includes, with the production overrides on top: the production backup
+# kinds, the public probes, no default Grafana password
+# (deploy/observability/compose.prod.yml). Its ports are published on
+# 127.0.0.1 only: reach them through an SSH tunnel (docs/DEPLOYMENT.md).
 include:
-  - path: deploy/observability/compose.yml
+  - path:
+      - deploy/observability/compose.yml
+      - deploy/observability/compose.prod.yml
     project_directory: .
+
+# Every container's log rotates (json-file, 5 x 10 MB; audit 2026-10-11,
+# R13). The daemon-wide alternative is /etc/docker/daemon.json
+# (docs/DEPLOYMENT.md, "Container logs").
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
 
 x-database-url: &database-url ${DATABASE_URL:?Set DATABASE_URL in .env (mysql://user:pass@host:3306/db?connection_limit=20&sslaccept=strict)}
 # The CA of a private certificate authority, mounted where DATABASE_URL's
-# sslcert= points (`sslcert=/etc/dukaanai/db-ca.pem`). Unset = the system
-# trust store (a provider certificate signed by a public CA needs nothing).
+# sslcert= points (`sslcert=/etc/dukaanai/db-ca.pem`) in every container that
+# connects to the database: migrate, the API, the backup agent and db-ops
+# (whose MySQL clients verify the server against it; audit R9). Unset = the
+# system trust store (a provider certificate signed by a public CA needs
+# nothing).
 x-db-ca: &db-ca ${DB_CA_FILE:-/dev/null}:/etc/dukaanai/db-ca.pem:ro
 
 services:
@@ -47,6 +69,7 @@ services:
       DATABASE_URL: *database-url
     volumes:
       - *db-ca
+    logging: *logging
     restart: "no"
 
   api:
@@ -72,7 +95,18 @@ services:
       # Google sign-in: the API verifies id tokens against the web's client id.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       LOG_LEVEL: ${LOG_LEVEL:-log}
-      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # Feature pause switches (roadmap 9.23, docs/SUPPORT.md): set one to false in .env, then `up -d api`.
+      FEATURE_CREDIT_SALES_ENABLED: ${FEATURE_CREDIT_SALES_ENABLED:-true}
+      FEATURE_RETURNS_ENABLED: ${FEATURE_RETURNS_ENABLED:-true}
+      FEATURE_CANCELLATIONS_ENABLED: ${FEATURE_CANCELLATIONS_ENABLED:-true}
+      FEATURE_OCR_ENABLED: ${FEATURE_OCR_ENABLED:-true}
+      FEATURE_IMPORTS_ENABLED: ${FEATURE_IMPORTS_ENABLED:-true}
+      FEATURE_DOCUMENTS_ENABLED: ${FEATURE_DOCUMENTS_ENABLED:-true}
+      FEATURE_MEDIA_ENABLED: ${FEATURE_MEDIA_ENABLED:-true}
+      FEATURE_PROCUREMENT_ENABLED: ${FEATURE_PROCUREMENT_ENABLED:-true}
+      FEATURE_DASHBOARD_INSIGHTS_ENABLED: ${FEATURE_DASHBOARD_INSIGHTS_ENABLED:-true}
+      # Production answers /api/metrics only with this bearer token (404 without it, and DukaanAiApiDown fires).
+      METRICS_TOKEN: ${METRICS_TOKEN:?Set METRICS_TOKEN in .env (32+ characters, e.g. `openssl rand -hex 32`); Prometheus sends it}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
       # No APP_RELEASE here: the image says which release it is (roadmap 9.21),
@@ -95,6 +129,7 @@ services:
       retries: 24
       start_period: 30s
     stop_grace_period: 40s
+    logging: *logging
     restart: unless-stopped
 
   web:
@@ -111,6 +146,9 @@ services:
       API_INTERNAL_URL: http://api:3002/api
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      # Idle connections outlive the edge's (Caddy keeps one 55 s; Node's
+      # default would close it after 5 s, a 502 when both race; audit R21).
+      KEEP_ALIVE_TIMEOUT: "65000"
     depends_on:
       api:
         condition: service_healthy
@@ -120,6 +158,7 @@ services:
       timeout: 5s
       retries: 12
       start_period: 15s
+    logging: *logging
     restart: unless-stopped
 
   # The edge (roadmap 9.8): HTTPS for WEB_HOST and API_HOST, HTTP redirected,
@@ -152,6 +191,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
+    logging: *logging
     restart: unless-stopped
 
   # Backups without host cron (roadmap 9.2 to 9.4): `backup-loop` dumps the
@@ -161,11 +201,19 @@ services:
   # MySQL; the dump is the independent copy and the off-site set the one that
   # survives the account. DB_OPS_DATABASE_URL may name a backup user with
   # RELOAD + REPLICATION CLIENT (binary-log position in the dump) or the
-  # application user with BACKUP_COORDINATES=skip.
+  # application user with BACKUP_COORDINATES=skip. Over TLS like the API:
+  # DB_OPS_DATABASE_URL carries the same sslaccept / sslcert= options and the
+  # CA is mounted at /etc/dukaanai/db-ca.pem, where the MySQL clients of
+  # scripts/db verify the server (audit R9). Runs as uid 1000 (the API's
+  # user, so it reads every document the API wrote), never root (audit R25):
+  # backup-volume-init hands it the backup volume first.
   backup-agent:
     image: ${IMAGE_REGISTRY:-ghcr.io/shoryabansalgithub}/dukaanai-db-ops:${IMAGE_TAG:?}
     command: ["backup-loop"]
+    user: "1000:1000"
     environment:
+      # No home directory for uid 1000 in the image: rclone and the MySQL clients look in HOME.
+      HOME: /tmp
       DATABASE_URL: ${DB_OPS_DATABASE_URL:-${DATABASE_URL}}
       BACKUP_COORDINATES: ${BACKUP_COORDINATES:-auto}
       BACKUP_DIR: /backups
@@ -184,10 +232,28 @@ services:
       - ${BACKUPS_PATH:-db-backups}:/backups
       - ${STORAGE_PATH:-api-storage}:/data/storage:ro
       - ${UPLOADS_PATH:-api-uploads}:/data/uploads:ro
+      - *db-ca
     depends_on:
       migrate:
         condition: service_completed_successfully
+      backup-volume-init:
+        condition: service_completed_successfully
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
     restart: unless-stopped
+
+  # Hands the backup volume (a named volume, or the BACKUPS_PATH disk) to the
+  # backup jobs' uid 1000, once: a volume created by an earlier root job is
+  # re-owned, after that it is a no-op. The only db-ops container that runs
+  # as root, and it runs nothing but chown.
+  backup-volume-init:
+    image: ${IMAGE_REGISTRY:-ghcr.io/shoryabansalgithub}/dukaanai-db-ops:${IMAGE_TAG:?}
+    user: "0:0"
+    entrypoint: ["sh", "-c", "[ \"$$(stat -c %u:%g /backups)\" = 1000:1000 ] || chown -R 1000:1000 /backups"]
+    volumes:
+      - ${BACKUPS_PATH:-db-backups}:/backups
+    logging: *logging
+    restart: "no"
 
   # One-shot operations against the same volumes (profile "ops"):
   #   docker compose -f docker-compose.prod.yml --profile ops run --rm db-ops backup|status|list|latest
@@ -196,7 +262,10 @@ services:
   db-ops:
     image: ${IMAGE_REGISTRY:-ghcr.io/shoryabansalgithub}/dukaanai-db-ops:${IMAGE_TAG:?}
     profiles: ["ops"]
+    user: "1000:1000"
     environment:
+      # No home directory for uid 1000 in the image: rclone and the MySQL clients look in HOME.
+      HOME: /tmp
       DATABASE_URL: ${DB_OPS_DATABASE_URL:-${DATABASE_URL}}
       BACKUP_COORDINATES: ${BACKUP_COORDINATES:-auto}
       BACKUP_DIR: /backups
@@ -213,6 +282,12 @@ services:
       - ${BACKUPS_PATH:-db-backups}:/backups
       - ${STORAGE_PATH:-api-storage}:/data/storage:ro
       - ${UPLOADS_PATH:-api-uploads}:/data/uploads:ro
+      - *db-ca
+    depends_on:
+      backup-volume-init:
+        condition: service_completed_successfully
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
     restart: "no"
 
 volumes:

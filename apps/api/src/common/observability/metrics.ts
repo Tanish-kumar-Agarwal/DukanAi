@@ -18,6 +18,19 @@ export const httpRequestsTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+/**
+ * Requests whose connection closed before an answer was sent (audit R13):
+ * the client gave up, or the edge cut it at its upstream timeout. They never
+ * reach `http_requests_total` (no status was sent), so a slow route that the
+ * edge times out looked healthy.
+ */
+export const httpRequestsAbortedTotal = new Counter({
+  name: 'http_requests_aborted_total',
+  help: 'HTTP requests whose connection closed before the answer was sent (client or edge abort), by method and route pattern.',
+  labelNames: ['method', 'route'] as const,
+  registers: [metricsRegistry],
+});
+
 export const httpRequestDurationSeconds = new Histogram({
   name: 'http_request_duration_seconds',
   help: 'HTTP request latency in seconds, by method and route pattern.',
@@ -170,6 +183,14 @@ export const emailMessagesTotal = new Counter({
  * so a graph or an incident can say which build answered. One series per
  * running release.
  */
+/** 1 while a feature is on, 0 while the operator has paused it (roadmap 9.23, `FEATURE_*_ENABLED`). */
+export const featureEnabled = new Gauge({
+  name: 'feature_enabled',
+  help: 'Feature pause switches: 1 = on, 0 = paused by FEATURE_<NAME>_ENABLED=false.',
+  labelNames: ['feature'] as const,
+  registers: [metricsRegistry],
+});
+
 export const buildInfo = new Gauge({
   name: 'build_info',
   help: 'Always 1, labelled with the release the API runs (APP_RELEASE, "unknown" when unset).',

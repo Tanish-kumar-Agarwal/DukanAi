@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { EventRouterService } from '../services/event-router.service';
 import { SchedulerRegistry } from '@nestjs/schedule';
-import { CronJob } from 'cron';
+import { createCronJob } from '../../common/cron/cron-job';
 import { CronConfig } from '../../config/domains/cron.config';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 import { OutboxClaimService } from '../../common/outbox/outbox-claim.service';
@@ -32,9 +32,13 @@ export class OutboxProcessorWorker implements OnApplicationBootstrap {
       this.logger.warn('ProductOutboxProcessorWorker schedule not registered: CRON_ENABLED=false');
       return;
     }
-    const job = new CronJob(this.cronConfig.productOutboxRelayCron, () => {
-      void this.processOutbox();
-    });
+    const job = createCronJob(
+      this.cronConfig.productOutboxRelayCron,
+      () => {
+        void this.processOutbox();
+      },
+      this.cronConfig,
+    );
     this.schedulerRegistry.addCronJob('ProductOutboxProcessorWorker', job);
     job.start();
   }
@@ -55,7 +59,7 @@ export class OutboxProcessorWorker implements OnApplicationBootstrap {
 
       for (const row of rows) {
         try {
-          await this.eventRouter.routeEvent(row.id);
+          await this.eventRouter.routeEvent(row.id, { retryCount: row.retryCount });
         } catch (error) {
           this.logger.error(`Failed to route event ${row.id}: ${(error as Error).message}`);
         }

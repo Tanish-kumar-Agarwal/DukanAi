@@ -19,6 +19,7 @@ import {
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { GstRate, PaymentMode, ProductUnit, TenderType } from '@prisma/client';
+import { IsIndianState } from '../../common/india/is-indian-state';
 
 /** Largest money value the invoice tables store (Prisma Decimal(10,2)). */
 export const MONEY_MAX_NUMBER = 99_999_999.99;
@@ -102,6 +103,15 @@ export class CreateInvoiceDto {
   items: InvoiceItemDto[];
 
   @IsString() @IsOptional() @ApiPropertyOptional() customerId?: string;
+
+  /**
+   * Place of supply when it is not the shop (contract §2, audit P1-3): a
+   * delivery or a registered buyer's state. Omitted, the sale is over the
+   * counter and intra-state (CGST + SGST) whatever state the customer's
+   * profile names; IGST applies only when this differs from the shop's state.
+   */
+  @IsOptional() @IsIndianState() @ApiPropertyOptional({ example: 'Kerala' }) placeOfSupply?: string;
+
   @IsString() @IsOptional() @MaxLength(500) @ApiPropertyOptional() notes?: string;
   @IsString() @IsOptional() @ApiPropertyOptional() shiftId?: string;
 

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AnalyticsDomainModule } from '../analytics-domain/analytics-domain.module';
 import { CronLockModule } from '../common/cron-lock/cron-lock.module';
+import { ReconciliationCheckpoints } from './reconciliation-checkpoints';
 import { ReconciliationController } from './reconciliation.controller';
 import { ReconciliationService } from './reconciliation.service';
 
@@ -8,7 +9,7 @@ import { ReconciliationService } from './reconciliation.service';
 @Module({
   imports: [CronLockModule, AnalyticsDomainModule],
   controllers: [ReconciliationController],
-  providers: [ReconciliationService],
+  providers: [ReconciliationService, ReconciliationCheckpoints],
   exports: [ReconciliationService],
 })
 export class ReconciliationModule {}

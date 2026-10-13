@@ -28,7 +28,7 @@ import { CustomerInvoicesTable } from '@/components/customers/CustomerInvoicesTa
 import { PaginationControls } from '@/components/customers/PaginationControls';
 import { EmptyState, ErrorState, TableSkeleton } from '@/components/customers/States';
 import { formatDate, formatMoney } from '@/components/customers/format';
-import { canDeleteCustomers } from '@/components/customers/permissions';
+import { canDeleteCustomers, canWriteCustomers } from '@/components/customers/permissions';
 
 const TAB_PAGE_SIZE = 20;
 
@@ -145,6 +145,8 @@ export default function CustomerDetailsPage() {
   const [deleting, setDeleting] = useState(false);
 
   const allowDelete = canDeleteCustomers(session?.user?.role);
+  // A VIEWER reads the customer; payments and edits are POS_ROLES (audit W12).
+  const allowWrite = canWriteCustomers(session?.user?.role);
 
   const fetchCustomer = useCallback(async () => {
     if (!customerId) return;
@@ -263,20 +265,24 @@ export default function CustomerDetailsPage() {
         </div>
 
         <div className="flex w-full flex-wrap items-center gap-3 xl:w-auto">
-          <button
-            type="button"
-            onClick={() => setIsPaymentOpen(true)}
-            className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-green-500 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-green-500/30 transition-colors hover:bg-green-600 xl:flex-none"
-          >
-            <CreditCard size={16} /> Record payment
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsEditOpen(true)}
-            className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-purple-200 bg-purple-50 px-4 py-2.5 text-sm font-bold text-[#8B5CF6] transition-colors hover:bg-purple-100 xl:flex-none"
-          >
-            <Pencil size={16} /> Edit
-          </button>
+          {allowWrite && (
+            <>
+              <button
+                type="button"
+                onClick={() => setIsPaymentOpen(true)}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-green-500 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-green-500/30 transition-colors hover:bg-green-600 xl:flex-none"
+              >
+                <CreditCard size={16} /> Record payment
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsEditOpen(true)}
+                className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-purple-200 bg-purple-50 px-4 py-2.5 text-sm font-bold text-[#8B5CF6] transition-colors hover:bg-purple-100 xl:flex-none"
+              >
+                <Pencil size={16} /> Edit
+              </button>
+            </>
+          )}
           {allowDelete && (
             <button
               type="button"

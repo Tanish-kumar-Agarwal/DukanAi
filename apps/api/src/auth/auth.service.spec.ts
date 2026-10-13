@@ -30,7 +30,7 @@ function build() {
     // Interactive transactions run the callback against `tx`; array transactions just resolve.
     $transaction: jest.fn().mockImplementation((arg: unknown) => (typeof arg === 'function' ? (arg as (t: unknown) => unknown)(tx) : Promise.resolve([]))),
   };
-  const sockets = { disconnectUser: jest.fn() };
+  const sockets = { disconnectUser: jest.fn(), disconnectSession: jest.fn() };
   const jwtConfig = { jwtRefreshExpiresIn: '7d', sessionAbsoluteLifetime: '30d', jwtExpiresIn: '15m' };
   const service = new AuthService(usersService as any, jwtService as any, prisma as any, sockets as any, jwtConfig as any);
   return { service, usersService, jwtService, prisma, tx, sockets };

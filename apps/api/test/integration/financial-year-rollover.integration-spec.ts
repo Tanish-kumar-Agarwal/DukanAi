@@ -21,6 +21,7 @@ import { PrismaService } from '../../src/prisma/prisma.service';
 import { ReconciliationService } from '../../src/reconciliation/reconciliation.service';
 import { ShiftsService } from '../../src/shifts/shifts.service';
 import { actorFor, bootApp, createProduct, createShop, num, receiveStock, tenantRunner, TestShop } from './pos-fixtures';
+import { compactFinancialYear } from '../../src/billing/services/invoice-number.service';
 
 jest.setTimeout(300_000);
 const TZ = 'Asia/Kolkata';
@@ -100,16 +101,16 @@ describe('financial-year rollover (roadmap 9.6)', () => {
     const one = await sell('marchOne', 1);
     const two = await sell('marchTwo', 1);
     const three = await sell('marchThree', 2);
-    expect([one.invoiceNumber, two.invoiceNumber, three.invoiceNumber]).toEqual(['INV-2026-27-000001', 'INV-2026-27-000002', 'INV-2026-27-000003']);
+    expect([one.invoiceNumber, two.invoiceNumber, three.invoiceNumber]).toEqual(['INV-2627-000001', 'INV-2627-000002', 'INV-2627-000003']);
     expect([one.financialYear, two.financialYear, three.financialYear]).toEqual(['2026-27', '2026-27', '2026-27']);
     expect(one.createdAt.getTime()).toBe(at.getTime());
 
     const ret = await returnOf('marchOne');
-    expect(ret.invoice.invoiceNumber).toBe('RET-2026-27-000001');
+    expect(ret.invoice.invoiceNumber).toBe('RET-2627-000001');
     expect(ret.invoice.financialYear).toBe('2026-27');
     expect(ret.invoice.createdAt.getTime()).toBe(at.getTime());
-    expect(await sequence('INV-2026-27-')).toBe(3);
-    expect(await sequence('RET-2026-27-')).toBe(1);
+    expect(await sequence('INV-2627-')).toBe(3);
+    expect(await sequence('RET-2627-')).toBe(1);
   });
 
   it('1 April 00:01: the FY tag flips, both sequences restart at 1, the old year keeps its last number', async () => {
@@ -117,33 +118,35 @@ describe('financial-year rollover (roadmap 9.6)', () => {
     expect(financialYearLabel(at, TZ)).toBe('2027-28');
     const one = await sell('aprilOne', 1);
     const two = await sell('aprilTwo', 1);
-    expect([one.invoiceNumber, two.invoiceNumber]).toEqual(['INV-2027-28-000001', 'INV-2027-28-000002']);
+    expect([one.invoiceNumber, two.invoiceNumber]).toEqual(['INV-2728-000001', 'INV-2728-000002']);
     expect([one.financialYear, two.financialYear]).toEqual(['2027-28', '2027-28']);
     expect(one.createdAt.getTime()).toBe(at.getTime());
 
     // A return made in the new year of a sale from the old year numbers in the new year.
     const ret = await returnOf('marchTwo');
-    expect(ret.invoice.invoiceNumber).toBe('RET-2027-28-000001');
+    expect(ret.invoice.invoiceNumber).toBe('RET-2728-000001');
     expect(ret.invoice.financialYear).toBe('2027-28');
     expect(ret.invoice.originalId).toBe(sales.marchTwo.id);
 
     // The old year's sequences are untouched and its numbers exist exactly once.
-    expect(await sequence('INV-2026-27-')).toBe(3);
-    expect(await sequence('RET-2026-27-')).toBe(1);
-    expect(await sequence('INV-2027-28-')).toBe(2);
-    expect(await sequence('RET-2027-28-')).toBe(1);
+    expect(await sequence('INV-2627-')).toBe(3);
+    expect(await sequence('RET-2627-')).toBe(1);
+    expect(await sequence('INV-2728-')).toBe(2);
+    expect(await sequence('RET-2728-')).toBe(1);
     const numbers = await run.system(() => prisma.invoice.findMany({ where: { shopId: shop.shopId }, select: { invoiceNumber: true, financialYear: true }, orderBy: { invoiceNumber: 'asc' } }));
     expect(numbers.map((n) => n.invoiceNumber)).toEqual([
-      'INV-2026-27-000001',
-      'INV-2026-27-000002',
-      'INV-2026-27-000003',
-      'INV-2027-28-000001',
-      'INV-2027-28-000002',
-      'RET-2026-27-000001',
-      'RET-2027-28-000001',
+      'INV-2627-000001',
+      'INV-2627-000002',
+      'INV-2627-000003',
+      'INV-2728-000001',
+      'INV-2728-000002',
+      'RET-2627-000001',
+      'RET-2728-000001',
     ]);
     // Every number carries the FY it was issued in.
-    for (const n of numbers) expect(n.invoiceNumber).toContain(`-${n.financialYear}-`);
+    // (compacted to four digits: `2026-27` -> `-2627-`, CGST Rule 46(b) allows 16 characters, roadmap 9.24)
+    for (const n of numbers) expect(n.invoiceNumber).toContain(`-${compactFinancialYear(n.financialYear)}-`);
+    for (const n of numbers) expect(n.invoiceNumber.length).toBeLessThanOrEqual(16);
     // The unique key is (shop, FY, number): the new year's 000001 does not collide with the old year's.
     expect(numbers.filter((n) => n.invoiceNumber.endsWith('-000001'))).toHaveLength(4);
   });
@@ -154,7 +157,7 @@ describe('financial-year rollover (roadmap 9.6)', () => {
     const cancelled = await asCashier(() => reversal.cancelInvoice(sales.aprilTwo.id, { reason: 'wrong bill' }, cashier()));
     expect(cancelled.invoice.status).toBe('CANCELLED');
     expect(cancelled.invoice.cancelledAt!.getTime()).toBe(clock.now().getTime());
-    expect(cancelled.invoice.invoiceNumber).toBe('INV-2027-28-000002');
+    expect(cancelled.invoice.invoiceNumber).toBe('INV-2728-000002');
   });
 
   it("the dashboard's business day and the invoice list's day filter agree with the FY tags", async () => {
@@ -170,10 +173,10 @@ describe('financial-year rollover (roadmap 9.6)', () => {
 
     const april = await asOwner(() => queries.list({ from: '2027-04-01', to: '2027-04-01' }, actorFor(shop, shop.ownerId, Role.OWNER)));
     expect(april.total).toBe(3);
-    expect(april.items.map((i) => i.invoiceNumber).sort()).toEqual(['INV-2027-28-000001', 'INV-2027-28-000002', 'RET-2027-28-000001']);
+    expect(april.items.map((i) => i.invoiceNumber).sort()).toEqual(['INV-2728-000001', 'INV-2728-000002', 'RET-2728-000001']);
     const march = await asOwner(() => queries.list({ from: '2027-03-31', to: '2027-03-31' }, actorFor(shop, shop.ownerId, Role.OWNER)));
     expect(march.total).toBe(4);
-    expect(march.items.map((i) => i.invoiceNumber).sort()).toEqual(['INV-2026-27-000001', 'INV-2026-27-000002', 'INV-2026-27-000003', 'RET-2026-27-000001']);
+    expect(march.items.map((i) => i.invoiceNumber).sort()).toEqual(['INV-2627-000001', 'INV-2627-000002', 'INV-2627-000003', 'RET-2627-000001']);
     const byDay = await run.system(() => prisma.invoice.findMany({ where: { shopId: shop.shopId }, select: { financialYear: true, createdAt: true } }));
     for (const row of byDay) expect(financialYearLabel(row.createdAt, TZ)).toBe(row.financialYear);
   });

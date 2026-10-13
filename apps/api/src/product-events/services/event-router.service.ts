@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
-import { OutboxClaimService } from '../../common/outbox/outbox-claim.service';
+import { OutboxClaim, OutboxClaimService } from '../../common/outbox/outbox-claim.service';
 
 /**
  * Routes a product outbox event to the shop's subscribed webhooks through the
@@ -23,8 +23,10 @@ export class EventRouterService {
 
   /**
    * Routes an event from the Outbox to all interested external webhooks.
+   * `claim` is the claim the relay just took: the row is settled only while
+   * it is still that claim (audit R10).
    */
-  async routeEvent(outboxEventId: string) {
+  async routeEvent(outboxEventId: string, claim?: OutboxClaim) {
     const event = await this.prisma.outboxEvent.findUnique({ where: { id: outboxEventId } });
     if (!event) return;
 
@@ -47,11 +49,11 @@ export class EventRouterService {
         }));
       if (jobs.length > 0) await this.webhookQueue.addBulk(jobs);
 
-      await this.claims.markDone(outboxEventId);
+      await this.claims.markDone(outboxEventId, claim);
     } catch (err) {
       const message = (err as Error).message;
       this.logger.error(`Failed to route event ${event.id}: ${message}`);
-      await this.claims.scheduleRetry(outboxEventId, message);
+      await this.claims.scheduleRetry(outboxEventId, message, claim);
       throw err;
     }
   }

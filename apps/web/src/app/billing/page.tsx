@@ -2,6 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { AlertTriangle, CreditCard, Keyboard, Pause, PenLine } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
@@ -11,7 +12,7 @@ import type { CreateInvoiceRequest, InvoiceLineRequest } from '@/lib/api-client'
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { useHotkeys } from '@/hooks/useHotkeys';
-import { hydratePosStore, scopePosStoreToShop, usePosScope, usePosStore, type CartLine, type CustomItemInput } from '@/store/pos';
+import { hydratePosStore, scopePosStoreToShop, usePosScope, usePosStore, type CartLine, type CustomItemInput, type LinePriceUpdate } from '@/store/pos';
 import type { CreateInvoiceResponse, GstRate, ProductUnit, SearchResult, Shift, ShopProfile } from '@/types';
 import { ShiftBanner } from '@/components/pos/ShiftBanner';
 import { ProductSearch, isSellable } from '@/components/pos/ProductSearch';
@@ -26,11 +27,22 @@ import { calculateCart, type PaymentSpec } from '@/components/pos/engine';
 import { backgroundRetryDelayMs, detailNumber, detailString, extractApiError, isRetryableFailure } from '@/components/pos/api-errors';
 import { isInterStateSupply } from '@/components/pos/indian-states';
 import { money, qty } from '@/components/pos/format';
+import { canBill } from '@/components/pos/permissions';
+
+/**
+ * The POS bills over the counter: the place of supply is the shop, so a sale
+ * is intra-state whatever state the customer's profile names (audit P1-3).
+ * The API takes an explicit `placeOfSupply` for a delivery; the POS sends none.
+ */
+const PLACE_OF_SUPPLY: string | null = null;
 
 function BillingContent() {
   const { toast } = useToast();
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { data: session } = useSession();
+  // A VIEWER may look at the POS; every billing call would answer 403.
+  const allowBilling = canBill(session?.user?.role);
 
   // ---- Store ---------------------------------------------------------------
   const lines = usePosStore((s) => s.lines);
@@ -54,7 +66,11 @@ function BillingContent() {
   const setCustomer = usePosStore((s) => s.setCustomer);
   const setDiscount = usePosStore((s) => s.setDiscount);
   const setNotes = usePosStore((s) => s.setNotes);
-  const { ensure: ensureKey, rotate: rotateKey, consume: consumeKey } = useIdempotencyKey();
+  const keyAttempted = usePosStore((s) => s.keyAttempted);
+  const markKeyAttempted = usePosStore((s) => s.markKeyAttempted);
+  const settleKeyAttempt = usePosStore((s) => s.settleKeyAttempt);
+  const refreshLinePrices = usePosStore((s) => s.refreshLinePrices);
+  const { ensure: ensureKey, consume: consumeKey } = useIdempotencyKey();
 
   // ---- Page state ----------------------------------------------------------
   const [shop, setShop] = useState<ShopProfile | null>(null);
@@ -142,7 +158,7 @@ function BillingContent() {
   }, [searchParams, addProduct, router, toast]);
 
   // ---- Engine preview (no payment) ----------------------------------------
-  const isInterState = isInterStateSupply(shop?.state, customer?.state);
+  const isInterState = isInterStateSupply(shop?.state, PLACE_OF_SUPPLY);
   const preview = useMemo(() => calculateCart({ lines, discount, isInterState }), [lines, discount, isInterState]);
   const previewTotals = preview.ok ? preview.totals : null;
   const engineError = preview.ok ? null : preview.error;
@@ -238,6 +254,10 @@ function BillingContent() {
   );
 
   const openPayment = useCallback(() => {
+    if (!allowBilling) {
+      toast('Your role can look up prices here but cannot bill. Ask a cashier or a manager.', 'warning');
+      return;
+    }
     if (lines.length === 0) {
       toast('Add something to the cart first', 'warning');
       return;
@@ -248,7 +268,7 @@ function BillingContent() {
     }
     setSubmitError(null);
     setPaymentOpen(true);
-  }, [lines.length, preview, toast]);
+  }, [allowBilling, lines.length, preview, toast]);
 
   const closePayment = useCallback(() => {
     if (submitting) return;
@@ -267,6 +287,48 @@ function BillingContent() {
     if (resumeHeldCart(id)) toast('Cart resumed', 'info');
     setLineErrors({});
     focusSearch();
+  };
+
+  /**
+   * The server refused the cart's prices (a price changed since the line was
+   * added, audit W7): re-read every catalogue line, put the current prices on
+   * the cart and say which changed, instead of an unexplained failure.
+   */
+  const refreshCartPrices = async (): Promise<string> => {
+    const ids = Array.from(new Set(lines.filter((l) => !l.isCustom).map((l) => l.productId)));
+    const updates: LinePriceUpdate[] = [];
+    await Promise.all(
+      ids.map(async (id) => {
+        try {
+          const product = await productsApi.get(id);
+          updates.push({ productId: id, unitPrice: product.sellingPrice ?? product.price, mrp: product.mrp ?? 0, gstRate: product.gstRate ?? '', cessRate: product.cessRate ?? 0 });
+        } catch {
+          // A product that cannot be read keeps its line; the next attempt names it.
+        }
+      }),
+    );
+    const changes = refreshLinePrices(updates);
+    if (changes.length === 0) return '';
+    return `Prices changed since these items were added: ${changes.map((c) => `${c.name} ${money(c.from)} → ${money(c.to)}`).join(', ')}. The cart now shows the current prices; check the total and confirm again.`;
+  };
+
+  /** The bill this key already saved (422 IDEMPOTENCY_KEY_REUSED): show it, never bill the cart again (audit P1-4). */
+  const showSavedBill = async (invoiceId: string | null, invoiceNumber: string | null) => {
+    consumeKey();
+    setPaymentOpen(false);
+    setLineErrors({});
+    clearCart();
+    setShiftRefresh((n) => n + 1);
+    setGridRefresh((n) => n + 1);
+    const label = invoiceNumber ?? 'an earlier invoice';
+    try {
+      if (!invoiceId) throw new Error('no invoice id');
+      const invoice = await billingApi.getInvoice(invoiceId);
+      setReceipt({ invoice, stock: [], shiftId: invoice.shift?.id ?? null });
+      toast(`This bill was already saved as ${invoice.invoiceNumber} by an earlier attempt: nothing was billed again. Its receipt is shown; ring up anything not on it as a new sale.`, 'warning');
+    } catch {
+      toast(`This bill was already saved as ${label} by an earlier attempt: nothing was billed again. Print it from Invoices; ring up anything not on it as a new sale.`, 'warning');
+    }
   };
 
   // ---- Submit --------------------------------------------------------------
@@ -306,6 +368,8 @@ function BillingContent() {
       body.discountReason = discount.reason.trim() || undefined;
     }
 
+    // From here until an answer settles it, this key belongs to this cart (audit P1-4).
+    markKeyAttempted();
     try {
       const result = await billingApi.createInvoice(body);
       consumeKey();
@@ -318,6 +382,9 @@ function BillingContent() {
       toast(`Invoice ${result.invoice.invoiceNumber} saved`, 'success');
     } catch (err) {
       const info = extractApiError(err, 'Creating invoice (POST /billing/invoice)');
+      // An answer that is not a server failure saved nothing under the key: it
+      // is free again. No answer (or a 5xx) leaves the attempt unresolved.
+      if (!isRetryableFailure(info) && info.code !== 'IDEMPOTENCY_KEY_REUSED') settleKeyAttempt();
       switch (info.code) {
         case 'INSUFFICIENT_STOCK': {
           const productId = detailString(info.details, 'productId');
@@ -344,11 +411,28 @@ function BillingContent() {
           break;
         }
         case 'IDEMPOTENCY_KEY_REUSED': {
-          rotateKey();
+          // The key already saved a bill (an earlier attempt whose answer was
+          // lost): show that bill instead of billing the cart a second time.
+          await showSavedBill(detailString(info.details, 'invoiceId'), detailString(info.details, 'invoiceNumber'));
+          break;
+        }
+        case 'PRICE_ABOVE_MRP': {
+          const productId = detailString(info.details, 'productId');
+          const productName = detailString(info.details, 'productName') ?? 'A product';
+          const text = `${productName} would sell at ${money(detailNumber(info.details, 'inclusivePrice'))} with GST, above its MRP of ${money(detailNumber(info.details, 'mrp'))}. It cannot be sold until a manager corrects its price or MRP: remove it from the cart or ask a manager.`;
+          if (productId) setLineErrors((prev) => ({ ...prev, [productId]: text }));
+          const changed = await refreshCartPrices();
+          setSubmitError({ code: info.code, message: changed ? `${text} ${changed}` : text, retryable: false, details: info.details });
+          break;
+        }
+        case 'ERR_PAYMENT_MISMATCH': {
+          const changed = await refreshCartPrices();
           setSubmitError({
             code: info.code,
-            message: 'This request key was already used for a different bill. A new key has been generated — press Retry to submit again.',
-            retryable: true,
+            message:
+              changed ||
+              'The bill total no longer matches the shop\'s current prices or GST rates. The cart has been refreshed; check the total and confirm again.',
+            retryable: false,
           });
           break;
         }
@@ -418,7 +502,7 @@ function BillingContent() {
     },
   });
 
-  const checkoutDisabled = lines.length === 0 || !preview.ok || submitting;
+  const checkoutDisabled = lines.length === 0 || !preview.ok || submitting || !allowBilling;
 
   return (
     <div className="space-y-4 max-w-[1400px] mx-auto">
@@ -499,6 +583,10 @@ function BillingContent() {
               });
             }}
             onClear={() => {
+              if (keyAttempted) {
+                // The cart's last checkout got no answer: it may have been saved.
+                toast('The last attempt to bill this cart got no answer and may have been saved. Check Invoices before billing these items again.', 'warning');
+              }
               clearCart();
               setLineErrors({});
               focusSearch();
@@ -512,7 +600,7 @@ function BillingContent() {
             onDiscountChange={setDiscount}
             isInterState={isInterState}
             shopState={shop?.state ?? null}
-            customerState={customer?.state ?? null}
+            placeOfSupply={PLACE_OF_SUPPLY}
             notes={notes}
             onNotesChange={setNotes}
             hasLines={lines.length > 0}
@@ -523,6 +611,7 @@ function BillingContent() {
               data-testid="pos-charge"
               onClick={openPayment}
               disabled={checkoutDisabled}
+              title={allowBilling ? undefined : 'Your role cannot bill'}
               className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] disabled:bg-purple-300 disabled:cursor-not-allowed py-3.5 text-white font-bold shadow-lg shadow-purple-500/30 transition-colors"
             >
               <CreditCard size={18} />

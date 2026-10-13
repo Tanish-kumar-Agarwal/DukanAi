@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
-import { CronJob } from 'cron';
+import { createCronJob } from '../../common/cron/cron-job';
 import { CronLockService } from '../../common/cron-lock/cron-lock.service';
 import { sweepEveryShop, SweepSummary } from '../../common/sweeps/per-shop-sweep';
 import { CronConfig } from '../../config/domains/cron.config';
@@ -34,9 +34,13 @@ export class BatchExpirySweepScheduler implements OnApplicationBootstrap {
       this.logger.warn(`${BATCH_EXPIRY_SWEEP_JOB} schedule not registered: CRON_ENABLED=false`);
       return;
     }
-    const job = new CronJob(this.cronConfig.batchExpirySweepCron, () => {
-      this.handleCron().catch((error: unknown) => this.logger.error(`${BATCH_EXPIRY_SWEEP_JOB} crashed: ${(error as Error).message}`));
-    });
+    const job = createCronJob(
+      this.cronConfig.batchExpirySweepCron,
+      () => {
+        this.handleCron().catch((error: unknown) => this.logger.error(`${BATCH_EXPIRY_SWEEP_JOB} crashed: ${(error as Error).message}`));
+      },
+      this.cronConfig,
+    );
     this.schedulerRegistry.addCronJob(BATCH_EXPIRY_SWEEP_JOB, job);
     job.start();
   }

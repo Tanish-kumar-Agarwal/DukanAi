@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Param, Body, NotFoundException, BadRequestException, Query } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Param, Body, NotFoundException, BadRequestException, ConflictException, Query } from '@nestjs/common';
 import { ListQueryDto, PagedList, pageArgs } from '../../../common/pagination';
 import { OutboundUrlBlockedError, OutboundUrlGuard } from '../../../common/net/outbound-url-guard';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -42,9 +42,24 @@ export class WebhookController {
     }
     const generated = dto.secret === undefined;
     const secret = dto.secret ?? randomBytes(32).toString('hex');
-    const endpoint = await this.prisma.webhookEndpoint.create({
-      data: { shopId, url: dto.url, secret, events: dto.events || ['*'], description: dto.description },
-      select: ENDPOINT_SELECT,
+    const limit = this.eventsFeatureConfig.webhookMaxEndpointsPerShop;
+    // Every event fans out to every endpoint of the shop: the count is capped
+    // (audit R2), under the shop row's lock so two registrations cannot both
+    // take the last place.
+    const endpoint = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM Shop WHERE id = ${shopId} FOR UPDATE`;
+      const existing = await tx.webhookEndpoint.count({ where: { shopId } });
+      if (existing >= limit) {
+        throw new ConflictException({
+          message: `A shop may register at most ${limit} webhook endpoints; delete one first.`,
+          code: 'WEBHOOK_ENDPOINT_LIMIT',
+          details: { limit },
+        });
+      }
+      return tx.webhookEndpoint.create({
+        data: { shopId, url: dto.url, secret, events: dto.events || ['*'], description: dto.description },
+        select: ENDPOINT_SELECT,
+      });
     });
     return generated ? { ...endpoint, secret } : endpoint;
   }

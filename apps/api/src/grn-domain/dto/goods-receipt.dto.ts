@@ -42,8 +42,10 @@ export class CreateGoodsReceiptDto {
   @IsString()
   supplierId: string;
 
+  /** Omitted: the goods go to the warehouse of the POS sale location (refused when the shop runs other warehouses too). */
+  @IsOptional()
   @IsString()
-  warehouseId: string;
+  warehouseId?: string;
 
   @IsArray()
   @ArrayMinSize(1)

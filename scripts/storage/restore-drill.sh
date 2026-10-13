@@ -33,6 +33,9 @@ done
 
 WORK="$(mktemp -d)"
 started="$(date +%s)"
+# The drill's backup stamps the drill's own status directory (audit F5),
+# never the operator's: it would make a stale production backup look fresh.
+export BACKUP_STATUS_DIR="$WORK/status"
 cleanup() {
   if [ "$KEEP" = 1 ]; then printf '\n--keep: archive and restore left in %s\n' "$WORK"; return; fi
   rm -rf "$WORK"

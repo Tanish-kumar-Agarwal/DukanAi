@@ -312,7 +312,8 @@ export function CloseShiftModal({ isOpen, shift, onClose, onClosed }: CloseShift
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const amount = Number(closingCash);
+    // A blank field is not a count: Number('') is 0 and closed the drawer at ₹0 (audit W5).
+    const amount = closingCash.trim() === '' ? Number.NaN : Number(closingCash);
     if (!Number.isFinite(amount) || amount < 0) {
       setError('Enter the cash counted in the drawer (0 or more).');
       return;

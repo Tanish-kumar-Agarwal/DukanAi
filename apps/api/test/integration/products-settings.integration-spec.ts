@@ -3,7 +3,10 @@
  * with `q`, category and stock filters, a SKU is numbered by the server when
  * the client sends none, edit / delete persist, and the shop profile fields
  * the settings page writes (state, city, pincode, phone, email) decide the
- * IGST / CGST+SGST split of a sale.
+ * IGST / CGST+SGST split of a sale against an explicit place of supply (a
+ * counter sale is intra-state whatever the customer's profile says, audit
+ * P1-3). Audit P1-2 / P1-6: the MRP includes GST, and a SKU-less create
+ * draws past numbers a product already holds.
  */
 import { INestApplication } from '@nestjs/common';
 import { PAGE_HEADERS } from '../../src/common/pagination';
@@ -73,6 +76,45 @@ describe('Products page and settings over HTTP (roadmap 6.2, 6.3)', () => {
       expect(duplicate.status).toBe(400);
     });
 
+    it('P1-6: a product already holding the next generated SKU never wedges the sequence', async () => {
+      const shop = await createShop(app, 'p62sku');
+      const shopOwner = await httpAs(app, shop, ownerOf(shop));
+      const explicit = await createProduct(shopOwner, 'Typed the next number', { sku: 'SKU-000001' });
+      expect(explicit.sku).toBe('SKU-000001');
+      // Taken numbers further on are skipped too, case-insensitively like the unique key.
+      await createProduct(shopOwner, 'Typed a later number', { sku: 'sku-000003' });
+      const generated: string[] = [];
+      for (const name of ['Auto one', 'Auto two', 'Auto three']) {
+        const res = await shopOwner.post('/api/products').send(productBody(name));
+        expect([name, res.status, res.body.code]).toEqual([name, 201, undefined]);
+        generated.push(res.body.sku);
+      }
+      expect(generated).toEqual(['SKU-000002', 'SKU-000004', 'SKU-000005']);
+    });
+
+    it('P1-2: the MRP includes GST; a blank one is the selling price plus GST, a smaller one is refused', async () => {
+      // 100 before GST at 18% sells at 118.00 with tax.
+      const defaulted = await createProduct(owner, `Default MRP ${A.suffix}`, { gstRate: 'EIGHTEEN', mrp: undefined });
+      expect(Number((await owner.get(`/api/products/${defaulted.id}`)).body.mrp)).toBe(118);
+      const withCess = await createProduct(owner, `Cess MRP ${A.suffix}`, { gstRate: 'TWENTYEIGHT', cessRate: 12, sellingPrice: 1000, mrp: undefined });
+      expect(Number((await owner.get(`/api/products/${withCess.id}`)).body.mrp)).toBe(1400);
+
+      const refused = await owner.post('/api/products').send(productBody(`Below MRP ${A.suffix}`, { gstRate: 'EIGHTEEN', mrp: 117.99 }));
+      expect([refused.status, refused.body.code, refused.body.details]).toEqual([400, 'PRICE_ABOVE_MRP', expect.objectContaining({ mrp: 117.99, inclusivePrice: 118 })]);
+      expect((await owner.get(`/api/products?q=${encodeURIComponent(`Below MRP ${A.suffix}`)}`)).body).toEqual([]);
+      expect((await owner.post('/api/products').send(productBody(`At MRP ${A.suffix}`, { gstRate: 'EIGHTEEN', mrp: 118 }))).status).toBe(201);
+
+      // An edit re-checks the pair: a higher price against the stored MRP is refused, a null MRP takes the new default.
+      const raise = await owner.patch(`/api/products/${defaulted.id}`).send({ sellingPrice: 110 });
+      expect([raise.status, raise.body.code]).toEqual([400, 'PRICE_ABOVE_MRP']);
+      expect(Number((await owner.get(`/api/products/${defaulted.id}`)).body.sellingPrice)).toBe(100);
+      const reset = await owner.patch(`/api/products/${defaulted.id}`).send({ sellingPrice: 110, mrp: null });
+      expect(reset.status).toBe(200);
+      expect(Number((await owner.get(`/api/products/${defaulted.id}`)).body.mrp)).toBe(129.8);
+      // A rename alone never re-judges an older product's prices.
+      expect((await owner.patch(`/api/products/${defaulted.id}`).send({ name: `Renamed ${A.suffix}` })).status).toBe(200);
+    });
+
     it('lists a page with headers, q, category and stock filters that match the dashboard definitions', async () => {
       const category = await owner.post('/api/categories').send({ name: `Beverages ${A.suffix}` });
       expect(category.status).toBe(201);
@@ -113,7 +155,7 @@ describe('Products page and settings over HTTP (roadmap 6.2, 6.3)', () => {
 
     it('edits persist and a delete removes the product from the list', async () => {
       const product = await createProduct(owner, `Editable ${A.suffix}`);
-      const patch = await owner.patch(`/api/products/${product.id}`).send({ name: 'Edited name', gstRate: 'EIGHTEEN', unit: 'KG', sellingPrice: 120, mrp: 130, costPrice: 70 });
+      const patch = await owner.patch(`/api/products/${product.id}`).send({ name: 'Edited name', gstRate: 'EIGHTEEN', unit: 'KG', sellingPrice: 120, mrp: 145, costPrice: 70 });
       expect([patch.status, patch.body]).toEqual([200, expect.anything()]);
       const read = await owner.get(`/api/products/${product.id}`);
       expect(read.body).toMatchObject({ name: 'Edited name', gstRate: 'EIGHTEEN', unit: 'KG' });
@@ -127,7 +169,7 @@ describe('Products page and settings over HTTP (roadmap 6.2, 6.3)', () => {
   });
 
   describe('6.3 settings decide the tax split', () => {
-    it('the profile fields persist and the shop state drives IGST on a sale', async () => {
+    it('the profile fields persist and the shop state against the place of supply drives IGST on a sale', async () => {
       const product = await createProduct(owner, `Taxed ${A.suffix}`);
       const profile = { name: `Shop ${A.suffix}`, address: '12 MG Road', city: 'Bengaluru', state: 'Karnataka', pincode: '560001', phone: '9876543210', email: `shop-${A.suffix}@example.com`, gstin: '29ABCDE1234F1Z5' };
       const saved = await owner.patch('/api/shops/me').send(profile);
@@ -143,21 +185,36 @@ describe('Products page and settings over HTTP (roadmap 6.2, 6.3)', () => {
       const inState = await owner.post('/api/customers').send({ name: 'Local buyer', phone: `7${A.suffix.replace(/\D/g, '').slice(-9).padStart(9, '2')}`, state: 'Karnataka' });
       expect(inState.status).toBe(201);
 
-      const calc = (customerId?: string) => owner.post('/api/billing/calculate').send({ items: [{ productId: product.id, quantity: 1 }], customerId });
-      const interState = await calc(outOfState.body.id);
+      const calc = (customerId?: string, placeOfSupply?: string) => owner.post('/api/billing/calculate').send({ items: [{ productId: product.id, quantity: 1 }], customerId, placeOfSupply });
+
+      // P1-3: goods sold over the counter are supplied in the shop's state, whoever buys them.
+      const counter = await calc(outOfState.body.id);
+      expect(counter.status).toBe(200);
+      expect(counter.body).toMatchObject({ isInterState: false, shopState: 'Karnataka', customerState: 'Delhi', placeOfSupply: null });
+      expect(Number(counter.body.totalIgst)).toBe(0);
+      expect(Number(counter.body.totalCgst)).toBeGreaterThan(0);
+
+      // An explicit place of supply in another state (a delivery) is inter-state, in any spelling the GST portal list knows.
+      const interState = await calc(inState.body.id, ' new   DELHI ');
       expect(interState.status).toBe(200);
-      expect(interState.body).toMatchObject({ isInterState: true, shopState: 'Karnataka', customerState: 'Delhi' });
+      expect(interState.body).toMatchObject({ isInterState: true, shopState: 'Karnataka', customerState: 'Karnataka', placeOfSupply: 'Delhi' });
       expect(Number(interState.body.totalIgst)).toBeGreaterThan(0);
       expect(Number(interState.body.totalCgst)).toBe(0);
 
-      const intraState = await calc(inState.body.id);
-      expect(intraState.body).toMatchObject({ isInterState: false });
+      const intraState = await calc(undefined, 'karnataka');
+      expect(intraState.body).toMatchObject({ isInterState: false, placeOfSupply: 'Karnataka' });
       expect(Number(intraState.body.totalIgst)).toBe(0);
       expect(Number(intraState.body.totalCgst)).toBeGreaterThan(0);
+      const unknown = await calc(undefined, 'Bangalore');
+      expect([unknown.status, JSON.stringify(unknown.body)]).toEqual([400, expect.stringContaining('placeOfSupply must be an Indian state')]);
+
+      // A sale keeps the flag; a customer's state is stored in its canonical spelling (audit B3).
+      expect((await owner.post('/api/customers').send({ name: 'Odisha buyer', phone: `6${A.suffix.replace(/\D/g, '').slice(-9).padStart(9, '3')}`, state: '  orissa ' })).body.state).toBe('Odisha');
+      expect((await owner.post('/api/customers').send({ name: 'Nowhere', phone: `6${A.suffix.replace(/\D/g, '').slice(-9).padStart(9, '4')}`, state: 'Bangalore' })).status).toBe(400);
 
       // Without a shop state nothing can be inter-state, which is why the settings page must carry the field.
       expect((await owner.patch('/api/shops/me').send({ state: '' })).status).toBe(200);
-      expect((await calc(outOfState.body.id)).body).toMatchObject({ isInterState: false, shopState: '' });
+      expect((await calc(outOfState.body.id, 'Delhi')).body).toMatchObject({ isInterState: false, shopState: '' });
       expect((await owner.patch('/api/shops/me').send({ state: 'Karnataka' })).status).toBe(200);
     });
   });

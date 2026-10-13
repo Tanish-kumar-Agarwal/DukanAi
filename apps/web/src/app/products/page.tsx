@@ -16,6 +16,8 @@ import apiClient from '@/lib/api';
 import { describeApiError } from '@/lib/api-error';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
 import { gstLabel } from '@/components/pos/format';
+import { canSeeFinancials } from '@/components/customers/permissions';
+import { exclusiveUnitPrice, inclusiveUnitPrice } from '@dukaanai/invoice-math';
 import type { Product, GstRate, ProductUnit } from '@/types';
 import { AnimatePresence, motion } from 'framer-motion';
 
@@ -81,6 +83,9 @@ interface ProductForm {
 
 const EMPTY_FORM: ProductForm = { name: '', sku: '', barcode: '', category: '', price: '', cost: '', mrp: '', gstRate: 'EIGHTEEN', unit: 'PCS', qty: '' };
 
+/** The owner's choice of how the selling price is typed, kept per browser. */
+const PRICE_BASIS_KEY = 'dukaanai:price-includes-gst';
+
 function parseMoney(value: string): number | null {
   if (value.trim() === '') return null;
   const n = Number(value);
@@ -98,6 +103,8 @@ function ProductsPageContent() {
   const urlQuery = (searchParams.get('q') ?? '').trim();
   const allowWrite = hasRole(WRITE_ROLES, session?.user?.role);
   const allowDelete = hasRole(DELETE_ROLES, session?.user?.role);
+  // Cost and stock at cost are for owners, admins and managers; the API leaves them out for anyone else.
+  const showFinancials = canSeeFinancials(session?.user?.role);
 
   const [products, setProducts] = useState<Product[]>([]);
   const [total, setTotal] = useState(0);
@@ -122,6 +129,21 @@ function ProductsPageContent() {
   const [pendingDelete, setPendingDelete] = useState<Product | null>(null);
   const [activeTab, setActiveTab] = useState('Details');
   const [saving, setSaving] = useState(false);
+  /**
+   * "The selling price I type includes GST" (release audit, 2026-10-12): an
+   * owner who types the shelf price gets the before-GST price the API stores
+   * (`exclusiveUnitPrice`, never billing above what was typed); off, the field
+   * is the before-GST price as before. Either way the form shows what the
+   * customer pays.
+   */
+  const [priceIncludesGst, setPriceIncludesGst] = useState(false);
+  useEffect(() => {
+    try {
+      setPriceIncludesGst(localStorage.getItem(PRICE_BASIS_KEY) === '1');
+    } catch {
+      // Storage blocked: the default (before GST) applies.
+    }
+  }, []);
 
   // Dropdowns
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -263,17 +285,54 @@ function ProductsPageContent() {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const categoryOptions = useMemo(() => [{ id: 'All', name: 'All' }, ...categories], [categories]);
 
-  const readForm = (source: ProductForm): { error: string; value?: undefined } | { error?: undefined; value: { name: string; price: number; cost: number; mrp: number } } => {
-    const price = parseMoney(source.price);
+  /**
+   * `mrp` is null when the field is blank: the API then stores the selling
+   * price plus GST. MRP includes all taxes and the selling price does not, so
+   * a typed MRP must be at least the price with GST and cess (audit P1-2,
+   * the API's rule through the same `inclusiveUnitPrice`).
+   */
+  /** The before-GST price the API stores for what the price field holds (converted when it includes GST); null when it does not parse. */
+  const storedPrice = (source: ProductForm, cessRate: number): number | null => {
+    const typed = parseMoney(source.price);
+    if (typed === null) return null;
+    return priceIncludesGst ? Number(exclusiveUnitPrice(typed, source.gstRate, cessRate).toFixed(2)) : typed;
+  };
+
+  /** Switches how the price is typed and converts what both forms hold, so the stored price does not change. */
+  const setPriceBasis = (includesGst: boolean) => {
+    if (includesGst === priceIncludesGst) return;
+    const convert = (source: ProductForm, cessRate: number): ProductForm => {
+      const typed = parseMoney(source.price);
+      if (typed === null) return source;
+      const next = includesGst ? inclusiveUnitPrice(typed, source.gstRate, cessRate) : exclusiveUnitPrice(typed, source.gstRate, cessRate);
+      return { ...source, price: next.toFixed(2) };
+    };
+    setForm((current) => convert(current, 0));
+    setEditForm((current) => convert(current, selectedProduct?.cessRate ?? 0));
+    setPriceIncludesGst(includesGst);
+    try {
+      localStorage.setItem(PRICE_BASIS_KEY, includesGst ? '1' : '0');
+    } catch {
+      // Storage blocked: the choice lasts for this page only.
+    }
+  };
+
+  const readForm = (source: ProductForm, cessRate = 0): { error: string; value?: undefined } | { error?: undefined; value: { name: string; price: number; cost: number; mrp: number | null } } => {
+    const price = storedPrice(source, cessRate);
     const cost = parseMoney(source.cost);
     const mrp = parseMoney(source.mrp);
     if (!source.name.trim()) return { error: 'Enter a product name.' };
-    if (price === null) return { error: 'Enter a selling price of 0 or more.' };
+    if (price === null) return { error: `Enter a selling price (${priceIncludesGst ? 'including' : 'before'} GST) of 0 or more.` };
     // Roadmap 6.2: the cost price is what you paid, never guessed from the selling price.
     if (cost === null) return { error: 'Enter the cost price (what you pay per unit). Use 0 if there is none.' };
     if (source.mrp.trim() !== '' && mrp === null) return { error: 'The MRP must be a number of 0 or more.' };
-    if (mrp !== null && mrp < price) return { error: 'The MRP cannot be below the selling price.' };
-    return { value: { name: source.name.trim(), price, cost, mrp: mrp ?? price } };
+    if (mrp !== null) {
+      const inclusive = Number(inclusiveUnitPrice(price, source.gstRate, cessRate).toFixed(2));
+      if (mrp < inclusive) {
+        return { error: `The MRP (₹${mrp.toFixed(2)}) is below the selling price plus GST (₹${inclusive.toFixed(2)}). The MRP includes all taxes: raise it, or lower the selling price.` };
+      }
+    }
+    return { value: { name: source.name.trim(), price, cost, mrp } };
   };
 
   const handleSaveProduct = async (e: React.FormEvent) => {
@@ -294,7 +353,8 @@ function ProductsPageContent() {
         barcode: form.barcode.trim() || undefined,
         sellingPrice: parsed.value.price,
         costPrice: parsed.value.cost,
-        mrp: parsed.value.mrp,
+        // Blank: the API stores the selling price plus GST.
+        mrp: parsed.value.mrp ?? undefined,
         gstRate: form.gstRate,
         unit: form.unit,
         categoryId,
@@ -330,7 +390,10 @@ function ProductsPageContent() {
       sku: product.sku,
       barcode: product.barcode ?? '',
       category: product.category === 'General' && !product.categoryId ? '' : product.category,
-      price: String(product.sellingPrice ?? product.price),
+      // In the basis the owner types: the stored price is before GST.
+      price: priceIncludesGst
+        ? inclusiveUnitPrice(product.sellingPrice ?? product.price, product.gstRate ?? 'EIGHTEEN', product.cessRate ?? 0).toFixed(2)
+        : String(product.sellingPrice ?? product.price),
       cost: String(product.cost),
       mrp: String(product.mrp ?? product.price),
       gstRate: (GST_RATES.some((r) => r.value === product.gstRate) ? product.gstRate : 'EIGHTEEN') as GstRate,
@@ -343,7 +406,7 @@ function ProductsPageContent() {
   const handleEditProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedProduct) return;
-    const parsed = readForm(editForm);
+    const parsed = readForm(editForm, selectedProduct.cessRate ?? 0);
     if (parsed.error !== undefined) {
       toast(parsed.error, 'error');
       return;
@@ -356,6 +419,7 @@ function ProductsPageContent() {
         barcode: editForm.barcode.trim() ? editForm.barcode.trim() : null,
         sellingPrice: parsed.value.price,
         costPrice: parsed.value.cost,
+        // Cleared: the API resets it to the selling price plus GST.
         mrp: parsed.value.mrp,
         gstRate: editForm.gstRate,
         unit: editForm.unit,
@@ -459,6 +523,9 @@ function ProductsPageContent() {
     mode: 'add' | 'edit',
   ) => {
     const update = (patch: Partial<ProductForm>) => setState((current) => ({ ...current, ...patch }));
+    const cessRate = mode === 'edit' ? selectedProduct?.cessRate ?? 0 : 0;
+    const stored = storedPrice(state, cessRate);
+    const customerPays = stored === null ? null : Number(inclusiveUnitPrice(stored, state.gstRate, cessRate).toFixed(2));
     return (
       <>
         <div><label className="text-sm font-medium">Product Name *</label><input value={state.name} onChange={e=>update({ name: e.target.value })} required className="w-full mt-1 border rounded-lg p-2" /></div>
@@ -471,13 +538,24 @@ function ProductsPageContent() {
           <div><label className="text-sm font-medium">Category</label><input value={state.category} onChange={e=>update({ category: e.target.value })} list="product-category-options" className="w-full mt-1 border rounded-lg p-2" placeholder="e.g. Snacks" /></div>
         </div>
         <div className="grid grid-cols-3 gap-4">
-          <div><label className="text-sm font-medium">Selling Price (₹) *</label><input value={state.price} onChange={e=>update({ price: e.target.value })} type="number" min="0" step="0.01" required className="w-full mt-1 border rounded-lg p-2" /></div>
+          <div><label className="text-sm font-medium">{priceIncludesGst ? 'Selling Price incl. GST (₹) *' : 'Selling Price before GST (₹) *'}</label><input value={state.price} onChange={e=>update({ price: e.target.value })} type="number" min="0" step="0.01" required aria-label={priceIncludesGst ? 'Selling price including GST' : 'Selling price before GST'} className="w-full mt-1 border rounded-lg p-2" /></div>
           <div><label className="text-sm font-medium">Cost Price (₹) *</label><input value={state.cost} onChange={e=>update({ cost: e.target.value })} type="number" min="0" step="0.01" required className="w-full mt-1 border rounded-lg p-2" placeholder="What you pay per unit" /></div>
           {mode === 'add' ? (
-            <div><label className="text-sm font-medium">Initial Stock</label><input value={state.qty} onChange={e=>update({ qty: e.target.value })} type="number" min="0" className="w-full mt-1 border rounded-lg p-2" /></div>
+            <div><label className="text-sm font-medium">Initial Stock</label><input value={state.qty} onChange={e=>update({ qty: e.target.value })} type="number" min="0" step="0.001" className="w-full mt-1 border rounded-lg p-2" /></div>
           ) : (
             <div><label className="text-sm font-medium">Barcode</label><input value={state.barcode} onChange={e=>update({ barcode: e.target.value })} className="w-full mt-1 border rounded-lg p-2" placeholder="Optional" /></div>
           )}
+        </div>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg bg-gray-50 border border-gray-100 px-3 py-2">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input type="checkbox" checked={priceIncludesGst} onChange={(e) => setPriceBasis(e.target.checked)} className="rounded text-[#8B5CF6]" />
+            The selling price I type includes GST
+          </label>
+          <p data-testid="price-preview" className="text-xs text-gray-600">
+            {stored === null || customerPays === null
+              ? 'Customer pays: enter a selling price'
+              : `Customer pays ₹${customerPays.toFixed(2)} incl. GST · stored as ₹${stored.toFixed(2)} before GST`}
+          </p>
         </div>
         <div className="grid grid-cols-3 gap-4">
           <div>
@@ -492,7 +570,7 @@ function ProductsPageContent() {
               {UNITS.map((unit) => <option key={unit.value} value={unit.value}>{unit.label}</option>)}
             </select>
           </div>
-          <div><label className="text-sm font-medium">MRP (₹)</label><input value={state.mrp} onChange={e=>update({ mrp: e.target.value })} type="number" min="0" step="0.01" className="w-full mt-1 border rounded-lg p-2" placeholder="Defaults to selling price" /></div>
+          <div><label className="text-sm font-medium">MRP (₹)</label><input value={state.mrp} onChange={e=>update({ mrp: e.target.value })} type="number" min="0" step="0.01" className="w-full mt-1 border rounded-lg p-2" placeholder="Defaults to selling price + GST" /></div>
         </div>
       </>
     );
@@ -518,7 +596,7 @@ function ProductsPageContent() {
       </div>
 
       {/* Stats Row (from GET /dashboard/summary; a failed section shows as unavailable) */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className={`grid grid-cols-1 gap-4 ${showFinancials ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
         <Card className="p-5 flex items-center gap-4 hoverable" data-testid="stat-total-products">
           <div className="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center text-[#8B5CF6]">
             <PackageSearch size={24} />
@@ -546,15 +624,17 @@ function ProductsPageContent() {
             {renderStatValue(stats?.outOfStockCount)}
           </div>
         </Card>
-        <Card className="p-5 flex items-center gap-4 hoverable" data-testid="stat-inventory-value">
-          <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center text-green-500">
-            <IndianRupee size={24} />
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 font-medium">Inventory Value</p>
-            {renderStatValue(stats?.inventoryValue, (n) => `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`)}
-          </div>
-        </Card>
+        {showFinancials && (
+          <Card className="p-5 flex items-center gap-4 hoverable" data-testid="stat-inventory-value">
+            <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center text-green-500">
+              <IndianRupee size={24} />
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 font-medium">Inventory Value</p>
+              {renderStatValue(stats?.inventoryValue, (n) => `₹${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`)}
+            </div>
+          </Card>
+        )}
       </div>
 
       {/* Main Content Card */}
@@ -902,10 +982,12 @@ function ProductsPageContent() {
                       <p className="text-xs text-gray-500 mt-1">MRP ₹{selectedProduct.mrp}</p>
                     )}
                   </div>
-                  <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
-                    <p className="text-xs text-gray-500 mb-1">Cost Price</p>
-                    <p className="font-bold text-gray-800 text-lg">₹{selectedProduct.cost}</p>
-                  </div>
+                  {showFinancials && (
+                    <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                      <p className="text-xs text-gray-500 mb-1">Cost Price</p>
+                      <p className="font-bold text-gray-800 text-lg">₹{selectedProduct.cost}</p>
+                    </div>
+                  )}
                   <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
                     <p className="text-xs text-gray-500 mb-1">Current Stock</p>
                     <p className={`font-bold text-lg ${stockStatusOf(selectedProduct) === 'Out of Stock' ? 'text-red-500' : stockStatusOf(selectedProduct) === 'Low Stock' ? 'text-orange-500' : 'text-green-500'}`}>
@@ -913,10 +995,12 @@ function ProductsPageContent() {
                     </p>
                     <p className="text-xs text-gray-500 mt-1">Low below {selectedProduct.reorderPoint ?? 10}</p>
                   </div>
-                  <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
-                    <p className="text-xs text-gray-500 mb-1">Stock Value (at cost)</p>
-                    <p className="font-bold text-gray-800 text-lg">₹{(selectedProduct.cost * selectedProduct.quantity).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</p>
-                  </div>
+                  {showFinancials && (
+                    <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                      <p className="text-xs text-gray-500 mb-1">Stock Value (at cost)</p>
+                      <p className="font-bold text-gray-800 text-lg">₹{(selectedProduct.cost * selectedProduct.quantity).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</p>
+                    </div>
+                  )}
                 </div>
 
                 <div className="mt-6 border-t border-gray-100 pt-6">

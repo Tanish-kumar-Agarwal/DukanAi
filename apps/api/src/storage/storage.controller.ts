@@ -37,6 +37,7 @@ import {
 } from './dto/storage.dto';
 
 import { StorageService } from './storage.service';
+import { FeatureGate } from '../common/features/feature-gate';
 
 // Roadmap 5.1: hard limits on every part of the request, not only the file size.
 const billingUploadInterceptor = AnyFilesInterceptor({
@@ -90,6 +91,7 @@ function parseJsonObject(rawJson: string | undefined): Record<string, unknown> {
  * Rate limiting recommendation: wire ThrottlerModule globally and apply a
  * stricter @Throttle policy here, especially for upload, backup, and delete.
  */
+@FeatureGate('documents')
 @Controller('storage')
 export class StorageController {
   constructor(private readonly storageService: StorageService) {}

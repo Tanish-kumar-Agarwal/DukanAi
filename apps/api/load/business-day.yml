@@ -50,11 +50,11 @@ catalogue:
   products:
     - { name: 'Tea 250 g',        gstRate: FIVE,        costPrice: 90,  sellingPrice: 120, mrp: 130, unit: PCS }
     - { name: 'Sugar 1 kg',       gstRate: ZERO,        costPrice: 38,  sellingPrice: 45,  mrp: 48,  unit: KG }
-    - { name: 'Biscuits',         gstRate: EIGHTEEN,    costPrice: 22,  sellingPrice: 30,  mrp: 30,  unit: PCS }
-    - { name: 'Shampoo 180 ml',   gstRate: EIGHTEEN,    costPrice: 140, sellingPrice: 180, mrp: 199, unit: PCS }
+    - { name: 'Biscuits',         gstRate: EIGHTEEN,    costPrice: 22,  sellingPrice: 30,  mrp: 36,  unit: PCS }
+    - { name: 'Shampoo 180 ml',   gstRate: EIGHTEEN,    costPrice: 140, sellingPrice: 180, mrp: 215, unit: PCS }
     - { name: 'Rice 5 kg',        gstRate: ZERO,        costPrice: 270, sellingPrice: 320, mrp: 340, unit: PCS }
-    - { name: 'Cold drink 750 ml', gstRate: TWENTYEIGHT, costPrice: 30, sellingPrice: 40,  mrp: 40,  unit: PCS }
-    - { name: 'Bath soap',        gstRate: EIGHTEEN,    costPrice: 26,  sellingPrice: 35,  mrp: 36,  unit: PCS }
+    - { name: 'Cold drink 750 ml', gstRate: TWENTYEIGHT, costPrice: 30, sellingPrice: 40,  mrp: 52,  unit: PCS }
+    - { name: 'Bath soap',        gstRate: EIGHTEEN,    costPrice: 26,  sellingPrice: 35,  mrp: 42,  unit: PCS }
     - { name: 'Milk 1 L',         gstRate: ZERO,        costPrice: 52,  sellingPrice: 60,  mrp: 60,  unit: PCS }
   openingStock: 5000
   scarce: { name: 'Premium ghee 1 kg', gstRate: TWELVE, costPrice: 520, sellingPrice: 650, mrp: 699, unit: PCS, openingStock: 25 }

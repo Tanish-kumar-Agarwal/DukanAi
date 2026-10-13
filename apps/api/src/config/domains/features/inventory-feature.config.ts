@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigDomain, EnvVariable } from '../../registry/registry.decorators';
-import { IsInt, Min } from 'class-validator';
-import { IntegerFromEnv } from '../../hydrate-from-env';
+import { IsInt, IsNumber, Max, Min } from 'class-validator';
+import { IntegerFromEnv, NumberFromEnv } from '../../hydrate-from-env';
 
 /**
  * Inventory list sizes and reconciliation windows. Hydrated with `hydrateFromEnv`: an unset or blank variable keeps the
@@ -58,4 +58,12 @@ export class InventoryFeatureConfig {
   @IntegerFromEnv()
   @EnvVariable('INVENTORY_RECON_LOOKBACK_MS')
   reconLookbackMs: number = 86400000;
+
+  /** Largest stock value (|quantity| × cost price, in rupees) a MANAGER may adjust directly with POST /inventory-domain/:id/adjust; more needs an OWNER/ADMIN or a stock-count adjustment request (403 ADJUSTMENT_REQUIRES_APPROVAL). 0 means managers cannot adjust directly. */
+  @IsNumber()
+  @Min(0)
+  @Max(99_999_999.99)
+  @NumberFromEnv()
+  @EnvVariable('INVENTORY_MANAGER_MAX_ADJUST_VALUE')
+  managerMaxAdjustValue: number = 5000;
 }

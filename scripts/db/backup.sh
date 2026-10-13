@@ -53,6 +53,10 @@ require_clients
 assert_server
 mkdir -p "$OUT" 2>/dev/null || die "cannot create $OUT (pass --out DIR or set BACKUP_DIR)"
 [ -w "$OUT" ] || die "$OUT is not writable (pass --out DIR or set BACKUP_DIR)"
+private_dir "$OUT"
+# A run killed outright (no EXIT trap) leaves its .partial behind; one older
+# than a day is no run in progress.
+find "$OUT" -maxdepth 1 -type f -name ".${DB_NAME}-*.sql.gz.partial" -mmin +1440 -print -delete 2>/dev/null | sed 's/^/  removed stale /' || true
 
 taken_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 stamp="${taken_at//[-:]/}"
@@ -87,7 +91,7 @@ fi
 
 step "Dumping $DB_NAME from $DB_HOST:$DB_PORT (MySQL $(server_version)) to $target"
 # pipefail: a failing mysqldump fails the pipeline even though gzip would exit 0.
-if ! "$MYSQLDUMP_BIN" $(conn_args) \
+if ! "$MYSQLDUMP_BIN" $(conn_args "$MYSQLDUMP_BIN") \
   --single-transaction --quick --no-tablespaces \
   --routines --triggers --events --hex-blob \
   --default-character-set=utf8mb4 --skip-comments "${extra[@]}" \
@@ -114,11 +118,30 @@ mv "$partial" "$target"
 trap - EXIT
 
 if [ "$KEEP" -gt 0 ]; then
-  # Oldest first by name (the UTC stamp sorts), keep the newest KEEP.
-  ls -1 "$OUT"/"$DB_NAME"-*.sql.gz 2>/dev/null | sort | head -n -"$KEEP" | while read -r old; do
-    step "Pruning $(basename "$old")"
-    rm -f "$old" "$old.sha256" "$old.meta"
-  done
+  # Only complete backups (dump + .sha256 + .meta) count toward KEEP (audit
+  # P3): a dump whose run died before its sidecars is not a backup to rely on,
+  # and counting it pruned a good one. Oldest first by name (the UTC stamp
+  # sorts), keep the newest KEEP; an incomplete dump older than the oldest
+  # kept backup goes with them.
+  complete=()
+  while read -r dump; do
+    [ -n "$dump" ] || continue
+    [ -f "$dump.sha256" ] && [ -f "$dump.meta" ] && complete+=("$dump")
+  done < <(ls -1 "$OUT"/"$DB_NAME"-*.sql.gz 2>/dev/null | sort)
+  if [ "${#complete[@]}" -gt "$KEEP" ]; then
+    oldest_kept="${complete[${#complete[@]}-KEEP]}"
+    for old in "${complete[@]:0:${#complete[@]}-KEEP}"; do
+      step "Pruning $(basename "$old")"
+      rm -f "$old" "$old.sha256" "$old.meta"
+    done
+    while read -r dump; do
+      [ -n "$dump" ] || continue
+      if [ ! -f "$dump.sha256" ] && [[ "$(basename "$dump")" < "$(basename "$oldest_kept")" ]]; then
+        step "Pruning incomplete $(basename "$dump") (no .sha256 sidecar)"
+        rm -f "$dump" "$dump.meta"
+      fi
+    done < <(ls -1 "$OUT"/"$DB_NAME"-*.sql.gz 2>/dev/null | sort)
+  fi
 fi
 
 size="$(du -h "$target" | cut -f1)"

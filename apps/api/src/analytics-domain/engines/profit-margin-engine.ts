@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AnalyticsFeatureConfig } from '../../config/domains/features/analytics-feature.config';
-import { completedInvoiceFilter, INVOICE_SIGN, ITEM_PROFIT, ITEM_TAXABLE, toDecimal, toMoney } from './invoice-sql';
+import { completedInvoiceFilter, INVOICE_SIGN, ITEM_COGS, ITEM_PROFIT, ITEM_TAXABLE, toDecimal, toMoney } from './invoice-sql';
 
 export interface TopProduct {
   productId: string;
@@ -48,7 +48,7 @@ export class ProfitMarginEngine {
         p.sku  AS sku,
         COALESCE(SUM(${INVOICE_SIGN} * ii.quantity), 0)                 AS unitsSold,
         COALESCE(SUM(${INVOICE_SIGN} * ${ITEM_TAXABLE}), 0)             AS netRevenue,
-        COALESCE(SUM(${INVOICE_SIGN} * ii.costPrice * ii.quantity), 0)  AS cogs,
+        COALESCE(SUM(${INVOICE_SIGN} * ${ITEM_COGS}), 0)                 AS cogs,
         COALESCE(SUM(${INVOICE_SIGN} * ${ITEM_PROFIT}), 0)              AS grossProfit
       FROM InvoiceItem ii
       INNER JOIN Invoice i ON i.id = ii.invoiceId

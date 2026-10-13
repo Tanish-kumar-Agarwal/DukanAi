@@ -28,6 +28,7 @@ function setup() {
       ]);
     }
     if (sql.includes('AS value')) return Promise.resolve([{ value: D('1234.5') }]);
+    if (sql.includes('AS advances')) return Promise.resolve([{ outstanding: D(84), advances: D(16) }]);
     return Promise.resolve([]);
   });
   const prisma = {
@@ -72,6 +73,7 @@ describe('DashboardService', () => {
       totalCustomers: 3,
       totalProducts: 9,
       outstandingUdhar: 84,
+      customerAdvances: 16,
       lowStockCount: 2,
       outOfStockCount: 1,
       inventoryValue: 1234.5,

@@ -55,6 +55,10 @@ services:
     volumes: !override
       - db-backups:/backups
 
+  backup-volume-init:
+    image: ${CERTIFY_DB_OPS_IMAGE:?set CERTIFY_DB_OPS_IMAGE to the db-ops image under certification}
+    build: !reset null
+
   mysql:
     ports:
       - "${CERTIFY_MYSQL_PORT:-3306}:3306"

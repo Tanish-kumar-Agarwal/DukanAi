@@ -2,7 +2,7 @@ import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { SchedulerRegistry } from '@nestjs/schedule';
-import { CronJob } from 'cron';
+import { createCronJob } from '../../common/cron/cron-job';
 import { CronConfig } from '../../config/domains/cron.config';
 import { buildPurchaseEventsTypePredicate } from '../../common/outbox/outbox-routing';
 import { OutboxClaimService } from '../../common/outbox/outbox-claim.service';
@@ -26,9 +26,13 @@ export class PurchaseOutboxRelayCron implements OnApplicationBootstrap {
       this.logger.warn('PurchaseOutboxRelayCron schedule not registered: CRON_ENABLED=false');
       return;
     }
-    const job = new CronJob(this.cronConfig.purchaseOutboxRelayCron, () => {
-      void this.relayPendingEvents();
-    });
+    const job = createCronJob(
+      this.cronConfig.purchaseOutboxRelayCron,
+      () => {
+        void this.relayPendingEvents();
+      },
+      this.cronConfig,
+    );
     this.schedulerRegistry.addCronJob('PurchaseOutboxRelayCron', job);
     job.start();
   }

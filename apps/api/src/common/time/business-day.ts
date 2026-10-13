@@ -7,6 +7,7 @@
  * IANA timezone (ShopSettings.timezone, default Asia/Kolkata) using Intl only,
  * so no extra dependency is required.
  */
+import { BadRequestException } from '@nestjs/common';
 
 export const DEFAULT_BUSINESS_TIMEZONE = 'Asia/Kolkata';
 
@@ -109,19 +110,32 @@ export function zonedDateToUtc(year: number, month: number, day: number, timeZon
   return new Date(guess - offset2);
 }
 
-/** Parse `YYYY-MM-DD` into the UTC instant of local midnight in `timeZone`. */
-export function parseBusinessDate(value: string, timeZone: string): Date | null {
+/**
+ * True when `value` is `YYYY-MM-DD` naming a day the calendar has:
+ * `2026-02-30`, `2026-04-31` and `2025-02-29` are refused (a `Date` would
+ * silently roll them over into the next month).
+ */
+export function isCalendarDate(value: string): boolean {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
-  if (!m) return null;
+  if (!m) return false;
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  if (y < 1 || mo < 1 || mo > 12 || d < 1) return false;
+  const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  return d <= [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
+}
+
+/** Parse `YYYY-MM-DD` into the UTC instant of local midnight in `timeZone`; null unless it is a real calendar day. */
+export function parseBusinessDate(value: string, timeZone: string): Date | null {
+  if (!isCalendarDate(value)) return null;
+  const [y, mo, d] = value.trim().split('-').map(Number);
   return zonedDateToUtc(y, mo, d, timeZone);
 }
 
 /**
  * Inclusive business-day range [from, to] expressed as UTC instants
  * [start, endExclusive). Missing `from` defaults to `to`; missing `to`
- * defaults to today.
+ * defaults to today. A given bound that is not a calendar day is
+ * `400 INVALID_DATE` (it used to fall back to today silently).
  */
 export function businessDayRange(
   from: string | undefined,
@@ -129,8 +143,11 @@ export function businessDayRange(
   timeZone: string,
   now: Date = new Date(),
 ): { start: Date; end: Date; fromDate: string; toDate: string } {
-  const toDate = to && parseBusinessDate(to, timeZone) ? to : businessDateString(now, timeZone);
-  const fromDate = from && parseBusinessDate(from, timeZone) ? from : toDate;
+  if ((to && !isCalendarDate(to)) || (from && !isCalendarDate(from))) {
+    throw new BadRequestException({ message: 'Dates must be calendar days in YYYY-MM-DD format.', code: 'INVALID_DATE', details: { from, to } });
+  }
+  const toDate = to ? to.trim() : businessDateString(now, timeZone);
+  const fromDate = from ? from.trim() : toDate;
   const start = parseBusinessDate(fromDate, timeZone)!;
   const toStart = parseBusinessDate(toDate, timeZone)!;
   const end = endOfBusinessDay(toStart, timeZone);

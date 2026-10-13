@@ -7,7 +7,8 @@ import { TenantContextService } from '../iam/tenant-context/tenant-context.servi
 import { CustomerRepository } from './repositories/customer.repository';
 import { CustomerAuditService } from './services/customer-audit.service';
 import { CreateEnterpriseCustomerDto } from './dto/enterprise-customer.dto';
-import { CreateCustomerDto, PaginationDto, RecordPaymentDto, UpdateCustomerDto } from './dto/create-customer.dto';
+import { CreateCustomerDto, CUSTOMER_MONEY_MAX, PaginationDto, RecordPaymentDto, UpdateCustomerDto } from './dto/create-customer.dto';
+import { canonicalState } from '../common/india/states';
 import { CustomerType, CustomerLifecycleStatus, KycStatus } from './domain/enums';
 import { SalesFeatureConfig } from '../config/domains/features/sales-feature.config';
 import { LedgerPostingService } from '../ledger/ledger-posting.service';
@@ -67,9 +68,11 @@ export class CustomersService {
             email: data.email || null,
             address: data.address || null,
             city: data.city || null,
-            state: data.state || null,
+            state: storedState(data.state),
             notes: data.notes || null,
-            creditLimit: money(data.creditLimit ?? this.salesFeatureConfig.defaultCreditLimit),
+            // The shop's default credit limit is an authorisation like any other
+            // limit (audit B9): a customer a cashier adds starts with none.
+            creditLimit: money(data.creditLimit ?? (actor && isManager(actor.role) ? this.salesFeatureConfig.defaultCreditLimit : 0)),
             outstandingBalance: 0,
             type: data.type || CustomerType.RETAIL,
             lifecycleStatus: data.lifecycleStatus || CustomerLifecycleStatus.LEAD,
@@ -117,7 +120,7 @@ export class CustomersService {
     if (dto.email !== undefined) data.email = dto.email || null;
     if (dto.address !== undefined) data.address = dto.address || null;
     if (dto.city !== undefined) data.city = dto.city || null;
-    if (dto.state !== undefined) data.state = dto.state || null;
+    if (dto.state !== undefined) data.state = storedState(dto.state);
     if (dto.notes !== undefined) data.notes = dto.notes || null;
     if (dto.isActive !== undefined) data.isActive = dto.isActive;
     if (dto.creditLimit !== undefined) data.creditLimit = money(dto.creditLimit);
@@ -167,7 +170,7 @@ export class CustomersService {
     const [items, total] = await Promise.all([
       this.prisma.udharTransaction.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip,
         take,
         select: {
@@ -190,7 +193,7 @@ export class CustomersService {
     const [items, total] = await Promise.all([
       this.prisma.invoice.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip,
         take,
         select: { id: true, invoiceNumber: true, type: true, status: true, totalAmount: true, paidAmount: true, udharAmount: true, paymentMode: true, createdAt: true, _count: { select: { items: true } } },
@@ -237,6 +240,14 @@ export class CustomersService {
         });
       }
       const after = before.minus(amount);
+      // An advance cannot carry the balance past what Decimal(10,2) holds (audit B14).
+      if (after.lessThan(-CUSTOMER_MONEY_MAX)) {
+        throw new ConflictException({
+          message: `This payment would leave an advance above ${CUSTOMER_MONEY_MAX.toFixed(2)}, the largest balance a customer can carry.`,
+          code: 'OUTSTANDING_BALANCE_TOO_LARGE',
+          details: { outstandingBalance: before.toNumber(), amount: amount.toNumber(), maxBalance: CUSTOMER_MONEY_MAX },
+        });
+      }
 
       await this.checkpoints.reach('BEFORE_PAYMENT', 'REPAYMENT');
       const transaction = await tx.udharTransaction.create({
@@ -281,7 +292,9 @@ export class CustomersService {
       await this.ledger.post(tx, {
         shopId: actor.shopId,
         source: { type: 'CUSTOMER_PAYMENT', id: transaction.id },
-        description: `Customer payment ${rows[0].name} (${dto.tender})`,
+        // No customer name: LedgerTransaction is immutable, so personal data written
+        // there could never be erased (roadmap 9.24); the source id names the payment.
+        description: `Customer payment (${dto.tender})`,
         entries: [
           { account: dto.tender === 'CASH' ? LedgerAccount.CASH : LedgerAccount.BANK, type: LedgerEntryType.DEBIT, amount },
           { account: LedgerAccount.ACCOUNTS_RECEIVABLE, type: LedgerEntryType.CREDIT, amount },
@@ -349,7 +362,12 @@ export class CustomersService {
     });
     if (!existing) return null;
     if (existing.customerId !== id || !existing.amount.equals(amount) || existing.tender !== dto.tender) {
-      throw new UnprocessableEntityException({ message: 'This idempotency key was already used for a different payment.', code: 'IDEMPOTENCY_KEY_REUSED' });
+      // Names what was recorded, so the client can say so instead of recording it again (audit P1-4).
+      throw new UnprocessableEntityException({
+        message: `This payment's request key was already used to record ${existing.amount.toFixed(2)} by ${existing.tender ?? 'CASH'}.`,
+        code: 'IDEMPOTENCY_KEY_REUSED',
+        details: { transactionId: existing.id, customerId: existing.customerId, amount: existing.amount.toNumber(), tender: existing.tender },
+      });
     }
     const customer = await this.findOne(id);
     return { customer, transaction: existing, replayed: true as const };
@@ -443,7 +461,7 @@ export class CustomersService {
       await this.ledger.post(tx, {
         shopId: actor.shopId,
         source: { type: 'OPENING_BALANCE', id: transaction.id },
-        description: `Opening balance ${name}`,
+        description: 'Opening balance', // no name: the ledger is immutable (roadmap 9.24)
         entries: [
           { account: owed ? LedgerAccount.ACCOUNTS_RECEIVABLE : LedgerAccount.OPENING_BALANCE_EQUITY, type: LedgerEntryType.DEBIT, amount: value.abs() },
           { account: owed ? LedgerAccount.OPENING_BALANCE_EQUITY : LedgerAccount.ACCOUNTS_RECEIVABLE, type: LedgerEntryType.CREDIT, amount: value.abs() },
@@ -510,4 +528,10 @@ export class CustomersService {
     }
   }
 
+}
+
+/** A state as stored: the canonical spelling when known (audit B3), null when blank. */
+function storedState(value: string | null | undefined): string | null {
+  if (!value || !value.trim()) return null;
+  return canonicalState(value) ?? value.trim();
 }

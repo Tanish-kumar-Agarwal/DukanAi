@@ -40,8 +40,11 @@ interface RecordPaymentModalProps {
 /**
  * `POST /customers/:id/payments`. One idempotency key is generated per modal
  * open and reused when the same submission is retried after a network / 5xx
- * failure. A business rejection (4xx) means the next submit is a new intent,
- * so the key is rotated then.
+ * failure. A business rejection (4xx) saved nothing, so the next submit is a
+ * new intent and the key is rotated then; except 422 IDEMPOTENCY_KEY_REUSED,
+ * which means an earlier attempt of this modal (its answer lost) WAS
+ * recorded: the modal says so and keeps the key, so a resubmission can never
+ * record the payment twice (audit P1-4).
  */
 export function RecordPaymentModal({ isOpen, customer, onClose, onRecorded }: RecordPaymentModalProps) {
   const { toast } = useToast();
@@ -103,6 +106,14 @@ export function RecordPaymentModal({ isOpen, customer, onClose, onRecorded }: Re
         const details = getApiErrorDetails(error);
         const serverOutstanding = Number(details?.outstandingBalance ?? details?.outstanding ?? outstanding);
         setExceeds({ outstanding: Number.isFinite(serverOutstanding) ? serverOutstanding : outstanding });
+      } else if (code === 'IDEMPOTENCY_KEY_REUSED') {
+        const details = getApiErrorDetails(error);
+        const recorded = Number(details?.amount);
+        const recordedTender = typeof details?.tender === 'string' ? TENDER_LABELS[details.tender as CustomerTender] ?? details.tender : null;
+        setFormError(
+          `A payment from this form was already recorded${Number.isFinite(recorded) ? ` (${formatMoney(recorded)}${recordedTender ? ` by ${recordedTender}` : ''})` : ''} by an earlier attempt whose answer was lost. Nothing was recorded again: close this form and check the ledger before recording another payment.`,
+        );
+        return;
       } else {
         const message = describeApiError(error, 'Recording payment (POST /customers/:id/payments)');
         setFormError(code ? `${message} [${code}]` : message);

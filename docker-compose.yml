@@ -12,7 +12,18 @@
 # Secrets come from .env (git-ignored); every other value has a local default.
 # Production deployments keep the same images and release step and supply the
 # environment from their orchestrator: see docs/DEPLOYMENT.md.
+#
+# Needs Docker Compose 2.24.4 or newer (`include`, and `!reset` / `!override`
+# in the certify and drill overlays); scripts/compose-smoke.sh refuses older.
+# Every container's log rotates (json-file, 5 x 10 MB; audit 2026-10-11, R13;
+# /etc/docker/daemon.json is the host-wide alternative, docs/DEPLOYMENT.md).
 name: dukaanai
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
 
 # The monitoring stack (profile "ops": Prometheus, Alertmanager, blackbox
 # probes, Loki, Alloy, Grafana; roadmap 7.6, 9.10) lives in one file both
@@ -23,7 +34,9 @@ include:
 
 services:
   mysql:
-    image: mysql:8.0
+    # Pinned to a patch release (Dependabot proposes the next one): the same
+    # server line as the db-ops clients (deploy/db-ops/Dockerfile).
+    image: mysql:8.0.46
     # Migrations create the ledger immutability triggers; with binary logging on
     # (MySQL 8 default) a non-SUPER user may only do so with this flag. The
     # binary log is what restore.sh --to rolls a dump forward with (roadmap
@@ -42,12 +55,18 @@ services:
       timeout: 5s
       retries: 30
       start_period: 20s
+    logging: *logging
     restart: unless-stopped
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.11-alpine
     # Append-only so queued BullMQ jobs and outbox claims survive a restart.
-    command: ["redis-server", "--appendonly", "yes"]
+    # noeviction (audit R16): BullMQ's jobs and locks, the outbox claims, the
+    # rate-limit counters and the cache share this one Redis; under memory
+    # pressure an evicted lock or job is lost work, so Redis must refuse
+    # writes (and the API report it) rather than drop keys. A managed Redis
+    # needs the same policy (docs/DEPLOYMENT.md, "Provider steps").
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
     volumes:
       - redis-data:/data
     healthcheck:
@@ -55,6 +74,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    logging: *logging
     restart: unless-stopped
 
   # Release step: applies pending migrations and exits. Re-run on every
@@ -76,6 +96,7 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+    logging: *logging
     restart: "no"
 
   api:
@@ -105,6 +126,16 @@ services:
       # Observability (roadmap 7.6): JSON logs at this level, GET /api/metrics
       # (bearer token when METRICS_TOKEN is set), error tracking once SENTRY_DSN is set.
       LOG_LEVEL: ${LOG_LEVEL:-log}
+      # Feature pause switches (roadmap 9.23, docs/SUPPORT.md): set one to false in .env, then `up -d api`.
+      FEATURE_CREDIT_SALES_ENABLED: ${FEATURE_CREDIT_SALES_ENABLED:-true}
+      FEATURE_RETURNS_ENABLED: ${FEATURE_RETURNS_ENABLED:-true}
+      FEATURE_CANCELLATIONS_ENABLED: ${FEATURE_CANCELLATIONS_ENABLED:-true}
+      FEATURE_OCR_ENABLED: ${FEATURE_OCR_ENABLED:-true}
+      FEATURE_IMPORTS_ENABLED: ${FEATURE_IMPORTS_ENABLED:-true}
+      FEATURE_DOCUMENTS_ENABLED: ${FEATURE_DOCUMENTS_ENABLED:-true}
+      FEATURE_MEDIA_ENABLED: ${FEATURE_MEDIA_ENABLED:-true}
+      FEATURE_PROCUREMENT_ENABLED: ${FEATURE_PROCUREMENT_ENABLED:-true}
+      FEATURE_DASHBOARD_INSIGHTS_ENABLED: ${FEATURE_DASHBOARD_INSIGHTS_ENABLED:-true}
       METRICS_TOKEN: ${METRICS_TOKEN:-}
       SENTRY_DSN: ${SENTRY_DSN:-}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
@@ -133,6 +164,7 @@ services:
       retries: 24
       start_period: 30s
     stop_grace_period: 40s
+    logging: *logging
     restart: unless-stopped
 
   web:
@@ -140,7 +172,8 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
       args:
-        # Inlined into the browser bundle: the API URL as the browser sees it.
+        # Only the fallback of a container started without API_PUBLIC_URL
+        # (below): the browser-facing URL is read at run time (roadmap 9.9).
         NEXT_PUBLIC_API_URL: ${API_PUBLIC_URL:-http://localhost:3002/api}
         APP_RELEASE: ${APP_RELEASE:-}
         APP_REVISION: ${APP_REVISION:-}
@@ -155,13 +188,18 @@ services:
       # page's <meta name="dukaanai-api-url"> and the CSP connect-src read
       # it. Without it the image's build-time value is served, which pointed
       # browsers behind the edge at http://localhost:3002 (roadmap 9.18).
+      # The Content-Security-Policy connect-src reads API_PUBLIC_URL as well
+      # (src/proxy.ts). NEXT_PUBLIC_API_URL is NOT a run-time setting: Next
+      # inlines it into the server and browser bundles at build time, so a
+      # value here would change nothing (audit R14).
       API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:3002/api}
-      # The server reads this one at runtime too (Content-Security-Policy connect-src).
-      NEXT_PUBLIC_API_URL: ${API_PUBLIC_URL:-http://localhost:3002/api}
       # Sign-in and token refresh go to the API over the compose network.
       API_INTERNAL_URL: http://api:3002/api
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      # Idle connections outlive the edge's (Caddy keeps one 55 s; Node's
+      # default would close it after 5 s, a 502 when both race; audit R21).
+      KEEP_ALIVE_TIMEOUT: "65000"
     ports:
       - "${WEB_PORT:-3000}:3000"
     depends_on:
@@ -173,6 +211,7 @@ services:
       timeout: 5s
       retries: 12
       start_period: 15s
+    logging: *logging
     restart: unless-stopped
 
   # Backups (roadmap 7.7, 9.2, 9.3, 9.4; profile "ops"): a MySQL 8 client
@@ -193,6 +232,9 @@ services:
   # REPLICATION SLAVE, which the application user does not have. The restore
   # drill (scripts/db/restore-drill.sh) needs CREATE DATABASE as well: run it
   # from a checkout with DATABASE_URL on the root user (docs/BACKUP_RESTORE.md).
+  # The container itself runs as uid 1000 (the API's user, so it reads every
+  # document the API wrote), never root (audit R25): backup-volume-init hands
+  # it the db-backups volume first.
   db-ops:
     build:
       context: .
@@ -200,7 +242,10 @@ services:
       args: *release-args
     image: dukaanai-db-ops
     profiles: ["ops"]
+    user: "1000:1000"
     environment:
+      # No home directory for uid 1000 in the image: rclone and the MySQL clients look in HOME.
+      HOME: /tmp
       DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-root-local-only}@mysql:3306/${MYSQL_DATABASE:-dukaanai}
       BACKUP_DIR: /backups
       BACKUP_KEEP: ${BACKUP_KEEP:-14}
@@ -225,6 +270,27 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      backup-volume-init:
+        condition: service_completed_successfully
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+    restart: "no"
+
+  # Hands the db-backups volume to uid 1000 once (a volume an earlier root
+  # job created is re-owned; afterwards a no-op). The only db-ops container
+  # that runs as root, and it runs nothing but chown.
+  backup-volume-init:
+    build:
+      context: .
+      dockerfile: deploy/db-ops/Dockerfile
+      args: *release-args
+    image: dukaanai-db-ops
+    profiles: ["ops"]
+    user: "0:0"
+    entrypoint: ["sh", "-c", "[ \"$$(stat -c %u:%g /backups)\" = 1000:1000 ] || chown -R 1000:1000 /backups"]
+    volumes:
+      - db-backups:/backups
+    logging: *logging
     restart: "no"
 
   # The 5-minute archive as a service instead of a cron line (profile "ops"):
@@ -238,7 +304,10 @@ services:
     image: dukaanai-db-ops
     profiles: ["ops"]
     command: ["archive-loop"]
+    user: "1000:1000"
     environment:
+      # No home directory for uid 1000 in the image: rclone and the MySQL clients look in HOME.
+      HOME: /tmp
       DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-root-local-only}@mysql:3306/${MYSQL_DATABASE:-dukaanai}
       BACKUP_DIR: /backups
       BINLOG_ARCHIVE_DIR: /backups/binlog
@@ -250,6 +319,10 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      backup-volume-init:
+        condition: service_completed_successfully
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
     restart: unless-stopped
 
   # The edge (roadmap 9.8; profile "edge"): Caddy terminates HTTPS for both
@@ -287,6 +360,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
+    logging: *logging
     restart: unless-stopped
 
 volumes:

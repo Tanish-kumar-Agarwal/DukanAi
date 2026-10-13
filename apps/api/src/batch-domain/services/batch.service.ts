@@ -1,8 +1,9 @@
-import { Injectable, Logger, ConflictException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateBatchDto, AddBatchStockDto } from '../dto/batch.dto';
 import { BatchStatus } from '@prisma/client';
 import { assertOwned } from '../../prisma/tenant-ownership';
+import { assertVariantOfProduct } from '../../inventory-domain/services/inventory-domain.service';
 import { ListQueryDto, pageArgs } from '../../common/pagination';
 
 @Injectable()
@@ -54,7 +55,8 @@ export class BatchService {
    */
   async createBatch(shopId: string, dto: CreateBatchDto) {
     await assertOwned(this.prisma, 'product', dto.productId, shopId);
-    await assertOwned(this.prisma, 'productVariant', dto.variantId, shopId);
+    // A variant must be one of the batch's product (release audit T6e).
+    await assertVariantOfProduct(this.prisma, shopId, dto.productId, dto.variantId);
     const existing = await this.prisma.batch.findUnique({
       where: { shopId_batchNumber: { shopId, batchNumber: dto.batchNumber } }
     });
@@ -88,6 +90,14 @@ export class BatchService {
     return this.prisma.$transaction(async (tx) => {
       await assertOwned(tx, 'batch', batchId, shopId);
       await assertOwned(tx, 'inventoryItem', dto.inventoryItemId, shopId);
+      // The bin must hold the batch's product (and variant).
+      const [batch, item] = await Promise.all([
+        tx.batch.findFirstOrThrow({ where: { id: batchId, shopId }, select: { productId: true, variantId: true } }),
+        tx.inventoryItem.findFirstOrThrow({ where: { id: dto.inventoryItemId, shopId }, select: { productId: true, variantId: true } }),
+      ]);
+      if (batch.productId !== item.productId || (batch.variantId ?? null) !== (item.variantId ?? null)) {
+        throw new BadRequestException({ message: 'The inventory item holds another product than the batch.', code: 'BATCH_ITEM_MISMATCH' });
+      }
 
       const batchStock = await tx.batchStock.upsert({
         where: {

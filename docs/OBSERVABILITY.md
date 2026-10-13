@@ -39,7 +39,17 @@ route needs no login (a scraper has no user) and is exempt from rate
 limiting; `METRICS_ENABLED=false` answers 404 and `METRICS_TOKEN` (16+
 characters, never a placeholder) makes the scrape require
 `Authorization: Bearer <token>` (401 otherwise; the refused scrapes are
-counted like any other answer). Keep the API port off the public internet
+counted like any other answer). Under `NODE_ENV=production` the route
+exists only with a token (audit 2026-10-11, R13): while `METRICS_TOKEN` is
+blank it answers 404 and the boot line says `metrics hidden: GET
+/api/metrics answers 404 in production until METRICS_TOKEN is set`, so a
+production Prometheus without the token sees `up == 0` and
+`DukaanAiApiDown` fires. Routing is case-sensitive (`createHttpAdapter`,
+`apps/api/src/common/http/http-adapter.ts`, used by `main.ts` and the test
+fixture): `/API/metrics` is 404 and cannot slip past an edge rule written
+for `/api/metrics`. A scrape refreshes the database and queue gauges once:
+concurrent scrapes share the refresh in flight
+(`ObservabilityCollectorsService.refresh`). Keep the API port off the public internet
 regardless: the scrape target is the internal address. The reference edge
 (`deploy/edge/Caddyfile`) answers 404 for `/api/metrics` and the
 Kubernetes Ingress routes it to a Service with no endpoints, so from the
@@ -48,12 +58,26 @@ internet the route does not exist (roadmap 9.8); Prometheus reads
 through the NetworkPolicy's monitoring rule.
 `deploy/prometheus/prometheus.yml` is the scrape configuration;
 `docker compose --profile ops up -d prometheus` runs it against the compose
-stack on <http://localhost:9090> (the whole monitoring stack:
-`deploy/observability/compose.yml`, included by both compose files).
+stack on <http://127.0.0.1:9090> (the whole monitoring stack:
+`deploy/observability/compose.yml`, included by both compose files; every
+port on 127.0.0.1 only, reached through an SSH tunnel on a server:
+`docs/DEPLOYMENT.md`, "Monitoring access"). Nothing in it is edited per
+deployment (audit 2026-10-11, R11): the compose entrypoint
+`deploy/prometheus/render.sh` writes, from the same `.env`, the scrape's
+bearer token (`METRICS_TOKEN`; an empty file when unset, which a
+production API answers with 404, see above), the public probe targets (`PROMETHEUS_PUBLIC_API_URL`,
+`PROMETHEUS_PUBLIC_WEB_URL`; the production file defaults them to
+`API_PUBLIC_URL` and `WEB_ORIGIN`) and the topology's backup kinds
+(`PROMETHEUS_TOPOLOGY`, `reference` or `production`, the latter set by
+the production file) into a tmpfs under `/run/dukaanai-prometheus`. A
+Prometheus of your own (Kubernetes) mounts the token from a Secret and
+loads `deploy/prometheus/topology/<topology>.rules.yml` next to
+`alerts.yml` (`deploy/k8s/README.md`, "Monitoring").
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `http_requests_total` | counter | `method`, `route`, `status` | every answer, guard rejections and 404s included (`httpMetricsMiddleware`, before the routers). `route` is the Express pattern (`/api/products/:id`), or `unmatched` for a path no route owns, so scanner noise is one series. |
+| `http_requests_aborted_total` | counter | `method`, `route` | requests whose connection closed before the answer was written (the client, the edge's timeout, a deploy): not in `http_requests_total`, which counts answers. The access log writes them as `status: "aborted"` at warn level. |
 | `http_request_duration_seconds` | histogram | `method`, `route` | request latency; p95 per route with `histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket[5m])))`. |
 | `checkout_duration_seconds` | histogram | `outcome` = `completed` / `replayed` / `rejected` | `BillingService.createInvoice` end to end, the one-transaction sale (contract §3). The load baseline (`docs/LOAD_TEST_BASELINE.md`) is p95 under 500 ms at 3x peak. |
 | `ledger_posting_failures_total` | counter | `source` (SALE, RETURN, GRN, …) | a `LedgerPostingService.post` that threw: unbalanced entries, a lock or write failure. The surrounding transaction rolled back. |
@@ -144,7 +168,7 @@ table below is the one-line summary:
 | `DukaanAiQueueBacklog` | > 1000 waiting jobs on a queue for 15 min | the queue is paused (`queue_paused` is 1; a pause survives restarts), or its worker is not keeping up (one API replica until the documents move to object storage, so find the slow job) or is crashing on every job (its errors are in the logs). |
 | `DukaanAiQueueFailedJobs` | failed jobs on a queue for 30 min | the failed set in Redis holds the job data and the last error; outbox-backed jobs also marked their row FAILED (above). |
 | `DukaanAiBackupStale` | a backup kind older than its objective: `binlog` 15 min, `dump` / `documents` / `offsite` 26 h, for 5 min | `db-ops status` shows every job's last success; run the late job by hand (`db-ops backup`, `binlog-archive --flush`, `documents-backup`, `offsite push`) and read its error: a full volume, a lost privilege, an unreachable remote, a wrong key. The recovery point grows while it stays red (`docs/DATA_SAFETY.md`). |
-| `DukaanAiBackupNeverRecorded` | no `backup_last_success_timestamp_seconds` series for a kind, for 30 min | the job is not scheduled (cron, `binlog-archiver` service), the API cannot read `BACKUP_STATUS_DIR` (the `db-backups` volume mounted read-only), or the job writes its stamps elsewhere (`BACKUP_STATUS_DIR` on the job side). |
+| `DukaanAiBackupNeverRecorded` | no `backup_last_success_timestamp_seconds` series, for 30 min, for a kind the topology runs (`dukaanai:backup_expected`, from `deploy/prometheus/topology/<topology>.rules.yml`: dump, binlog, documents, offsite on the reference stack; no binlog in production, where point in time is the provider's); kind `no-topology-rules` when no topology file is loaded | the job is not scheduled (cron, `binlog-archiver` service, the `backup-agent`), the API cannot read `BACKUP_STATUS_DIR` (the `db-backups` volume mounted read-only), the job writes its stamps elsewhere (`BACKUP_STATUS_DIR` on the job side), or Prometheus runs without the topology file. |
 | `DukaanAiEndpointDown` | a blackbox probe (readiness route or login page, inner or public address) has failed for 2 min | `GET /api/health/ready` names the failing dependency; then the edge (`docker compose logs edge`) and DNS. Held back while `DukaanAiApiDown`, `DukaanAiDependencyDown` (readiness probes) or `DukaanAiCertificateExpired` (same address) fires. A certificate that does not verify for another reason (wrong name, incomplete chain) fails it too: `curl -vI` the address. |
 | `DukaanAiCertificateExpiring` | the certificate of a public address expires in under 14 days, for 1 h (warning) | renewal has not happened: Caddy needs ports 80/443 and the DNS names right (`docker compose logs edge`), cert-manager the `Certificate` resource. A certificate installed as a file (`EDGE_TLS_LINE` naming files; the edge logs `skipping automatic certificate management`) is never renewed by the edge: install the renewed files and reload it in place (`caddy reload --force`). It ends when the certificate expires, because the page below starts. |
 | `DukaanAiCertificateExpired` | the certificate of a public address has expired (at once, critical; keeps firing 2 min after a renewal is read, so the address's probes recover while it still holds them back) | every browser refuses the address. Renew now (restart the edge once ports and DNS are right, or `kubectl describe certificate`; a file certificate: install the renewed files, `caddy reload --force`). Read by job `blackbox-tls`, which reads the certificate whether or not it verifies: on the verified probes an expired certificate made the warning resolve and an unexplained `DukaanAiEndpointDown` page two minutes later (the certificate drill of roadmap 9.18). |
@@ -213,7 +237,8 @@ past, or let it expire (`resolve_timeout`, 5 min).
 ## Dashboards
 
 Grafana (`docker compose --profile ops up -d grafana`,
-<http://localhost:3001>, admin / `GRAFANA_ADMIN_PASSWORD`) provisions two
+<http://127.0.0.1:3001>, admin / `GRAFANA_ADMIN_PASSWORD`, required by the
+production file) provisions two
 dashboards from `deploy/grafana/dashboards` (folder "DukaanAI", read-only in
 the UI: edit the JSON in the repository):
 
@@ -267,8 +292,12 @@ Two layers:
   database and Redis up and not draining) and the login page (module
   `http_login_page`: 200 and the DukaanAI sign-in in the body) every minute
   (`deploy/prometheus/prometheus.yml`, jobs `blackbox-http` and
-  `blackbox-login`). The inner targets watch the containers; add the public
-  URLs through the edge (commented there) to watch what customers see.
+  `blackbox-login`). The inner targets watch the containers; the public
+  URLs through the edge watch what customers see: set
+  `PROMETHEUS_PUBLIC_API_URL` and `PROMETHEUS_PUBLIC_WEB_URL` (the
+  production compose file defaults them to `API_PUBLIC_URL` and
+  `WEB_ORIGIN`), which `render.sh` turns into the targets of the three
+  probe jobs.
   `DukaanAiEndpointDown` pages after two failed minutes. The job
   `blackbox-tls` (module `tls_certificate`) reads the certificate of each
   public address whether or not it verifies:
@@ -289,13 +318,18 @@ Two layers:
 
 ## Verification
 
-`deploy/prometheus/alerts.test.yml` is a promtool unit test: the two backup
+`deploy/prometheus/alerts.test.yml` is a promtool unit test (on the
+reference topology's backup kinds; `alerts.production.test.yml` proves the
+production topology expects no binary-log archive, and
+`alerts.no-topology.test.yml` that a missing topology file still pages): the two backup
 alerts fire on stale and missing series and stay quiet on fresh ones, the
 two reconciliation alerts fire on a drifted shop and on a day without a run
 (roadmap 9.5), and the uptime alerts fire on a failed probe and a
 certificate inside 14 days (roadmap 9.10). CI runs
 `promtool test rules` with the rule check in the "Deployment (compose
-smoke)" job; locally: `promtool test rules deploy/prometheus/alerts.test.yml`
+smoke)" job (and `promtool check config` on the configuration as
+`render.sh` leaves it, for both topologies); locally: `promtool test rules
+alerts.test.yml alerts.production.test.yml alerts.no-topology.test.yml`
 from `deploy/prometheus`. The same job renders the Alertmanager template in
 three configurations and checks the routing with `amtool`, and the compose
 smoke brings the whole monitoring stack up: a request is found by its

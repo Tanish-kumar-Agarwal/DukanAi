@@ -1,5 +1,10 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   DOMAIN_RELAY_TYPE_PREFIXES,
+  isPurchaseRelayType as isPurchase,
+  PRODUCT_RELAY_TYPE_PREFIXES,
+  SYSTEM_EVENT_TYPES,
   PURCHASE_RELAY_TYPE_PREFIXES,
   buildPurchaseEventsTypePredicate,
   buildSystemEventJob,
@@ -113,6 +118,43 @@ describe('outbox routing', () => {
       const job = buildSystemEventJob({ id: 'evt-3', shopId: null, type: 'X', payload: {}, correlationId: 'c', actorId: null });
       expect(job.data.shopId).toBeUndefined();
       expect(job.data.userId).toBeUndefined();
+    });
+  });
+
+  describe('every staged event type has a relay that delivers it (audit R14)', () => {
+    const SRC = path.resolve(__dirname, '../..');
+    const files = (dir: string): string[] =>
+      fs.readdirSync(dir).flatMap((name) => {
+        const full = path.join(dir, name);
+        if (fs.statSync(full).isDirectory()) return files(full);
+        return full.endsWith('.ts') && !full.endsWith('.spec.ts') ? [full] : [];
+      });
+    const staged = new Set<string>();
+    for (const file of files(SRC)) {
+      const source = fs.readFileSync(file, 'utf8');
+      // `type:` right inside an outbox insert, and `eventType:` of an event publisher call.
+      for (const insert of source.matchAll(/outboxEvent\.create(?:Many)?\(/g)) {
+        const window = source.slice(insert.index, insert.index + 600);
+        const literal = /\btype:\s*'([A-Za-z_]+)'/.exec(window);
+        if (literal) staged.add(literal[1]);
+      }
+      for (const match of source.matchAll(/\beventType:\s*'([A-Za-z_]+)'/g)) staged.add(match[1]);
+    }
+    const isProduct = (type: string) => PRODUCT_RELAY_TYPE_PREFIXES.some((p) => type.startsWith(p));
+
+    it('finds the staged types', () => {
+      expect(staged.has('BarcodeChanged')).toBe(true);
+      expect(staged.has('WorkflowCompleted')).toBe(true);
+    });
+
+    it('BarcodeChanged goes to the product webhooks and WorkflowCompleted to the purchase relay', () => {
+      expect(isProduct('BarcodeChanged')).toBe(true);
+      expect(isPurchase('WorkflowCompleted')).toBe(true);
+    });
+
+    it('no staged type falls through to the system-events worker unhandled', () => {
+      const orphans = [...staged].filter((type) => !isDomainRelayOwnedType(type) && !SYSTEM_EVENT_TYPES.includes(type)).sort();
+      expect(orphans).toEqual([]);
     });
   });
 });

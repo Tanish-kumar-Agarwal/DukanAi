@@ -296,6 +296,39 @@ function mapReturnResult(result: ReturnCalculationResult): ReturnPreview {
 }
 
 /**
+ * Whether a sale line still has money to refund once `returning` more units
+ * go back: the engine's own cumulative math on what would remain (the API's
+ * `InvoiceReversalService.hasRefundLeft`).
+ */
+function hasRefundLeft(item: InvoiceDetailItem, returning: number): boolean {
+  const remaining = Number((item.quantity - item.returnedQuantity - returning).toFixed(3));
+  if (!(remaining > 0)) return false;
+  try {
+    const rest = InvoiceMathEngine.calculateReturn({
+      lines: [
+        {
+          lineRef: item.id,
+          originalQuantity: item.quantity,
+          returnedQuantity: Number((item.returnedQuantity + returning).toFixed(3)),
+          quantity: remaining,
+          unitPrice: item.sellingPrice,
+          discountAmount: item.discountAmount,
+          taxableAmount: item.taxableAmount,
+          cgstAmount: item.cgstAmount,
+          sgstAmount: item.sgstAmount,
+          igstAmount: item.igstAmount,
+          cessAmount: item.cessAmount,
+          totalAmount: item.totalAmount,
+        },
+      ],
+    });
+    return rest.grandTotal.greaterThan(0);
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Proportional refund preview for a partial return, from the stored invoice
  * item amounts and the quantities being returned (contract §1 `calculateReturn`).
  */
@@ -345,7 +378,9 @@ export function calculateReturnPreview(
     ? {
         invoiceTotal: sale.totalAmount,
         refundedTotal: (sale.returns ?? []).filter((r) => r.status === 'COMPLETED').reduce((sum, r) => sum + r.totalAmount, 0),
-        completesInvoice: items.every((item) => item.quantity - item.returnedQuantity - (quantities[item.id] ?? 0) <= 0.0005),
+        // As the API decides it: a line with nothing left to refund (a free
+        // item) never keeps the sale open (audit B11).
+        completesInvoice: items.every((item) => !hasRefundLeft(item, quantities[item.id] ?? 0)),
       }
     : undefined;
   try {

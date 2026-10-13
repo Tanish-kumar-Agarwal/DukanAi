@@ -1,4 +1,4 @@
-import { InvoiceMathEngine, allocateProportionally } from '../src/invoice-math.engine';
+import { InvoiceMathEngine, allocateProportionally, costOfGoodsSlice, discountLimitAmounts, exclusiveUnitPrice, inclusiveUnitPrice } from '../src/invoice-math.engine';
 import { Decimal } from '../src/decimal';
 import { InvoiceMathError } from '../src/invoice-math.error';
 
@@ -363,5 +363,152 @@ describe('InvoiceMathEngine.calculate: allocation and tiny totals (roadmap 3.1)'
     expect(result.roundOff.toNumber()).toBe(-0.4);
     expect(result.payment?.paymentMode).toBe('CASH');
     expect(result.subtotal.minus(result.totalDiscount).plus(result.totalTax).plus(result.roundOff).toNumber()).toBe(0);
+  });
+});
+
+describe('exclusiveUnitPrice (a GST-inclusive shelf price typed into the product form)', () => {
+  it('is the before-GST price that bills the typed price, or the paise just under it', () => {
+    expect(exclusiveUnitPrice(118, 'EIGHTEEN').toFixed(2)).toBe('100.00');
+    expect(exclusiveUnitPrice(10, 'EIGHTEEN').toFixed(2)).toBe('8.47');
+    expect(exclusiveUnitPrice(42, 'TWELVE').toFixed(2)).toBe('37.50');
+    expect(exclusiveUnitPrice(100, 'ZERO').toFixed(2)).toBe('100.00');
+    expect(exclusiveUnitPrice(1400, 'TWENTYEIGHT', 12).toFixed(2)).toBe('1000.00');
+    expect(exclusiveUnitPrice(0, 'EIGHTEEN').toFixed(2)).toBe('0.00');
+  });
+
+  it('never bills above the typed price, and is the largest price in paise that does not', () => {
+    const slabs = ['ZERO', 'FIVE', 'TWELVE', 'EIGHTEEN', 'TWENTYEIGHT'];
+    for (let paise = 1; paise <= 20000; paise += 11) {
+      const typed = new Decimal(paise).div(100);
+      for (const slab of slabs) {
+        const cess = slab === 'TWENTYEIGHT' ? 12 : 0;
+        const price = exclusiveUnitPrice(typed, slab, cess);
+        expect(inclusiveUnitPrice(price, slab, cess).lessThanOrEqualTo(typed)).toBe(true);
+        expect(inclusiveUnitPrice(price.plus('0.01'), slab, cess).greaterThan(typed)).toBe(true);
+      }
+    }
+  });
+
+  it('round-trips a stored before-GST price through its inclusive price', () => {
+    for (const [price, slab] of [[8.47, 'EIGHTEEN'], [37.5, 'TWELVE'], [10.05, 'EIGHTEEN'], [0.5, 'FIVE']] as const) {
+      expect(exclusiveUnitPrice(inclusiveUnitPrice(price, slab), slab).toFixed(2)).toBe(new Decimal(price).toFixed(2));
+    }
+  });
+
+  it('refuses a negative or out-of-range price like inclusiveUnitPrice', () => {
+    expect(() => exclusiveUnitPrice(-1, 'EIGHTEEN')).toThrow(InvoiceMathError);
+  });
+});
+
+describe('inclusiveUnitPrice (audit P1-2: MRP is tax-inclusive)', () => {
+  it('is the selling price plus GST and cess for one unit, rounded half-up to the paisa', () => {
+    expect(inclusiveUnitPrice(100, 'EIGHTEEN').toFixed(2)).toBe('118.00');
+    expect(inclusiveUnitPrice('100', 18).toFixed(2)).toBe('118.00');
+    expect(inclusiveUnitPrice(100, 'ZERO').toFixed(2)).toBe('100.00');
+    expect(inclusiveUnitPrice(80, 'FIVE').toFixed(2)).toBe('84.00');
+    expect(inclusiveUnitPrice(71.43, 'TWENTYEIGHT', 12).toFixed(2)).toBe('100.00');
+    expect(inclusiveUnitPrice(1000, 'TWENTYEIGHT', 12).toFixed(2)).toBe('1400.00');
+    expect(inclusiveUnitPrice(8.47, 'EIGHTEEN').toFixed(2)).toBe('9.99');
+  });
+
+  it('is the higher of what one unit bills intra-state and inter-state', () => {
+    // 10.05 at 18%: CGST + SGST = 0.90 + 0.90 (11.85), IGST = 1.81 (11.86).
+    expect(inclusiveUnitPrice(10.05, 'EIGHTEEN').toFixed(2)).toBe('11.86');
+    // 0.50 at 18%: CGST + SGST = 0.05 + 0.05 (0.60), IGST = 0.09 (0.59).
+    expect(inclusiveUnitPrice(0.5, 'EIGHTEEN').toFixed(2)).toBe('0.60');
+  });
+
+  it('never lies below what the engine bills for one undiscounted unit, either way', () => {
+    const slabs = ['ZERO', 'FIVE', 'TWELVE', 'EIGHTEEN', 'TWENTYEIGHT'];
+    for (let paise = 1; paise <= 20000; paise += 7) {
+      const price = new Decimal(paise).div(100);
+      for (const slab of slabs) {
+        const cess = slab === 'TWENTYEIGHT' ? 12 : 0;
+        const inclusive = inclusiveUnitPrice(price, slab, cess);
+        const billed = [false, true].map(
+          (isInterState) => InvoiceMathEngine.calculate({ items: [{ productId: 'p', quantity: 1, unitPrice: price, gstRateStr: slab, cessRate: cess, isInterState }] }).lines[0].lineTotal,
+        );
+        expect(billed.every((b) => b.lessThanOrEqualTo(inclusive))).toBe(true);
+        expect(billed.some((b) => b.equals(inclusive))).toBe(true);
+      }
+    }
+  });
+
+  it('refuses what is not a price, a GST slab or a cess percent', () => {
+    expect(() => inclusiveUnitPrice(-1, 'EIGHTEEN')).toThrow(InvoiceMathError);
+    expect(() => inclusiveUnitPrice(10, 'NINETEEN')).toThrow(expect.objectContaining({ code: 'ERR_UNKNOWN_GST_RATE' }));
+    expect(() => inclusiveUnitPrice(10, 'EIGHTEEN', 101)).toThrow(expect.objectContaining({ code: 'ERR_INVALID_CESS' }));
+  });
+});
+
+describe('audit P3 engine edges', () => {
+  it('B13: a cess outside 0..100 is refused, never taxed', () => {
+    for (const cessRate of [-1, 100.01, 250]) {
+      expect(() => InvoiceMathEngine.calculate({ items: [line({ cessRate })] })).toThrow(expect.objectContaining({ code: 'ERR_INVALID_CESS' }));
+    }
+    expect(InvoiceMathEngine.calculate({ items: [line({ cessRate: 100 })] }).totalCess.toNumber()).toBe(100);
+  });
+
+  it('B10: a return row adds up: line subtotal − discount = taxable, to the paisa', () => {
+    // 8 × 169.72 with a 9% line discount, 3 of them returned.
+    const sale = InvoiceMathEngine.calculate({ items: [line({ quantity: 8, unitPrice: 169.72, discountPercent: 9, gstRateStr: 'EIGHTEEN' })] }).lines[0];
+    expect(sale.discountAmount.toFixed(2)).toBe('122.20');
+    expect(sale.taxableAmount.toFixed(2)).toBe('1235.56');
+    const r = InvoiceMathEngine.calculateReturn({
+      lines: [
+        {
+          lineRef: 'l',
+          originalQuantity: 8,
+          quantity: 3,
+          unitPrice: 169.72,
+          discountAmount: sale.discountAmount,
+          taxableAmount: sale.taxableAmount,
+          cgstAmount: sale.cgstAmount,
+          sgstAmount: sale.sgstAmount,
+          igstAmount: sale.igstAmount,
+          totalAmount: sale.lineTotal,
+        },
+      ],
+    });
+    const row = r.lines[0];
+    expect(row.discountAmount.toFixed(2)).toBe('45.83');
+    expect(row.taxableAmount.toFixed(2)).toBe('463.34');
+    expect(row.lineSubtotal.toFixed(2)).toBe('509.17');
+    expect(row.lineSubtotal.minus(row.discountAmount).equals(row.taxableAmount)).toBe(true);
+    expect(r.subtotal.minus(r.totalDiscount).equals(r.taxableTotal)).toBe(true);
+  });
+});
+
+describe('discountLimitAmounts (audit B4)', () => {
+  it('is what the limit yields under the engine rounding, at invoice level and on every line', () => {
+    const result = InvoiceMathEngine.calculate({ items: [line({ unitPrice: 10.05, gstRateStr: 'ZERO' })] });
+    const allowance = discountLimitAmounts(result, 10);
+    expect(allowance.invoice.toFixed(2)).toBe('1.01');
+    expect(allowance.effective.toFixed(2)).toBe('1.01');
+    const two = InvoiceMathEngine.calculate({ items: [line({ productId: 'a', unitPrice: 10.05, gstRateStr: 'ZERO' }), line({ productId: 'b', unitPrice: 10.05, gstRateStr: 'ZERO' })] });
+    // 10% of 20.10 is 2.01; 10% on each line is 1.01 + 1.01 = 2.02: either way of applying the limit is allowed.
+    expect(discountLimitAmounts(two, 10).invoice.toFixed(2)).toBe('2.01');
+    expect(discountLimitAmounts(two, 10).effective.toFixed(2)).toBe('2.02');
+  });
+});
+
+describe('costOfGoodsSlice (audit B16)', () => {
+  it('returns of a line add up to the cost the sale booked, whatever the split', () => {
+    const cost = 33.33;
+    const sold = 2.345;
+    const saleCost = costOfGoodsSlice(cost, 0, sold);
+    expect(saleCost.toFixed(2)).toBe('78.16');
+    for (const split of [[0.001, 0.001, 2.343], [1.111, 1.234], [0.5, 0.5, 0.5, 0.845], [2.345]]) {
+      let before = new Decimal(0);
+      let total = new Decimal(0);
+      for (const q of split) {
+        total = total.plus(costOfGoodsSlice(cost, before, q));
+        before = before.plus(q);
+      }
+      expect(total.toFixed(2)).toBe(saleCost.toFixed(2));
+    }
+    // Rounding each return on its own drifts: 0.001 + 0.001 + 2.343 → 0.03 + 0.03 + 78.09 = 78.15.
+    const naive = [0.001, 0.001, 2.343].reduce((acc, q) => acc.plus(new Decimal(cost).mul(q).toDecimalPlaces(2, Decimal.ROUND_HALF_UP)), new Decimal(0));
+    expect(naive.toFixed(2)).not.toBe(saleCost.toFixed(2));
   });
 });

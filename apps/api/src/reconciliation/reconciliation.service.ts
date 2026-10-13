@@ -1,8 +1,8 @@
 import { BadRequestException, Injectable, Logger, NotFoundException, OnApplicationBootstrap } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { Prisma, ReconciliationRun, ReconciliationRunStatus, ReconciliationTrigger } from '@prisma/client';
-import { CronJob } from 'cron';
 import { ShopTimezoneService } from '../analytics-domain/services/shop-timezone.service';
+import { createCronJob } from '../common/cron/cron-job';
 import { CronLockService } from '../common/cron-lock/cron-lock.service';
 import { reconciliationDriftTotal, reconciliationRunsTotal } from '../common/observability/metrics';
 import { ListQueryDto, PagedResult, pageArgs } from '../common/pagination';
@@ -12,7 +12,8 @@ import { Clock } from '../common/time/clock';
 import { CronConfig } from '../config/domains/cron.config';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { previousBusinessDate, reconcileBusinessDay, ReconciliationCheck, ReconciliationReport, ReconciliationSummary } from './reconciliation-engine';
+import { inReadSnapshot, previousBusinessDate, reconcileBusinessDay, ReconciliationCheck, ReconciliationReport, ReconciliationSummary } from './reconciliation-engine';
+import { ReconciliationCheckpoints } from './reconciliation-checkpoints';
 
 /** A run of every shop should finish well inside this; the lock is released when the sweep returns. */
 const LOCK_TTL_MS = 30 * 60_000;
@@ -51,6 +52,7 @@ export class ReconciliationService implements OnApplicationBootstrap {
     private readonly tenantContext: TenantContextService,
     private readonly shopTimezone: ShopTimezoneService,
     private readonly clock: Clock,
+    private readonly checkpoints: ReconciliationCheckpoints,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -58,9 +60,9 @@ export class ReconciliationService implements OnApplicationBootstrap {
       this.logger.warn(`${JOB_NAME} schedule not registered: CRON_ENABLED=false`);
       return;
     }
-    const job = new CronJob(this.cronConfig.reconciliationCron, () => {
+    const job = createCronJob(this.cronConfig.reconciliationCron, () => {
       void this.sweep().catch((error: unknown) => this.logger.error(`${JOB_NAME} sweep crashed: ${(error as Error).message}`));
-    });
+    }, this.cronConfig);
     this.schedulerRegistry.addCronJob(JOB_NAME, job);
     job.start();
   }
@@ -96,7 +98,10 @@ export class ReconciliationService implements OnApplicationBootstrap {
 
     let report: ReconciliationReport;
     try {
-      report = await reconcileBusinessDay(this.prisma, { shopId, timeZone, businessDate, now });
+      // One snapshot for every read of the run (release audit L5); the run row is written after it closes.
+      report = await inReadSnapshot(this.prisma, (tx) =>
+        reconcileBusinessDay(tx, { shopId, timeZone, businessDate, now, probe: (point) => this.checkpoints.reach(point) }),
+      );
     } catch (error) {
       const message = (error as Error).message ?? String(error);
       this.logger.error(`${JOB_NAME} of ${businessDate} failed for shop ${shopId}: ${message}`);

@@ -6,6 +6,7 @@ import { Roles } from '../auth/roles.decorator';
 import { Role } from '@prisma/client';
 import { safeUserSelect } from './user.mapper';
 import { outranks } from '../auth/role-sets';
+import { SuspendUserDto } from './dto/suspend-user.dto';
 
 @Controller('users')
 export class UsersController {
@@ -44,7 +45,8 @@ export class UsersController {
 
   @Patch(':id/suspend')
   @Roles(Role.OWNER, Role.ADMIN)
-  async suspendUser(@Param('id') id: string, @Request() req: any, @Body('isActive') isActive: boolean) {
+  async suspendUser(@Param('id') id: string, @Request() req: any, @Body() body: SuspendUserDto) {
+    const { isActive } = body;
     if (id === req.user.id) {
       throw new ForbiddenException('You cannot suspend yourself. Transfer ownership first if you are the owner.');
     }
@@ -75,6 +77,8 @@ export class UsersController {
     });
 
     if (!isActive) {
+      // A suspended user's pending invitations stop working too (audit A8).
+      await this.prisma.invitation.deleteMany({ where: { inviterId: id, shopId: req.user.shopId, isUsed: false } });
       this.socketSessionService.disconnectUser(id, 'Account suspended by administrator');
     }
 
@@ -111,6 +115,8 @@ export class UsersController {
       }
     });
 
+    // Invitations the removed user issued must not outlive their authority (audit A8).
+    await this.prisma.invitation.deleteMany({ where: { inviterId: id, shopId: req.user.shopId, isUsed: false } });
     this.socketSessionService.disconnectUser(id, 'Account deleted');
 
     return result;

@@ -16,7 +16,7 @@ import { REDIS_CLIENT } from '../../src/common/redis/redis.module';
 import { AuthenticatedIoAdapter } from '../../src/iam/websockets/authenticated-io.adapter';
 import { TenantContextService } from '../../src/iam/tenant-context/tenant-context.service';
 import { InventoryGateway } from '../../src/inventory/inventory.gateway';
-import { createUser, httpAs, issueTokens, ownerOf } from '../security/security-fixtures';
+import { createUser, issueTokens, ownerOf } from '../security/security-fixtures';
 import { bootApp, createShop, TestShop } from './pos-fixtures';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -130,14 +130,11 @@ describe('infrastructure (roadmap 2.11-2.14)', () => {
 
       const res = await request(app.getHttpServer()).post('/api/auth/logout').set('Authorization', `Bearer ${tokens.access_token}`);
       expect(res.status).toBe(200);
-      // Logout ends the family; revoking a session disconnects its sockets.
-      const http = await httpAs(app, shopA, ownerOf(shopA));
-      expect((await http.get('/api/products')).status).toBe(200);
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(socket.connected).toBe(true); // logout alone does not push a disconnect; the next handshake is refused
+      // Logout ends the family and closes that session's sockets at once (audit A6);
+      // the next handshake with its token is refused.
+      await expect(closed).resolves.toBe('io server disconnect');
+      expect(socket.connected).toBe(false);
       await expect(connect(tokens.access_token)).rejects.toThrow(/Authentication Error/);
-      socket.disconnect();
-      await closed;
     });
   });
 

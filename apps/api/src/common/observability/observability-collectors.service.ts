@@ -70,7 +70,22 @@ export class ObservabilityCollectorsService {
     buildInfo.labels({ release: monitoring.appRelease || 'unknown' }).set(1);
   }
 
-  async refresh(): Promise<void> {
+  private inFlight: Promise<void> | null = null;
+
+  /**
+   * Single flight (audit R13): concurrent scrapes (two Prometheus replicas,
+   * a retried scrape, someone with curl) share the refresh in progress
+   * instead of each running every collector query against the database and
+   * Redis again.
+   */
+  refresh(): Promise<void> {
+    this.inFlight ??= this.refreshAll().finally(() => {
+      this.inFlight = null;
+    });
+    return this.inFlight;
+  }
+
+  private async refreshAll(): Promise<void> {
     const deps = await this.refreshDependencies();
     await Promise.all([
       this.bounded('backup status', this.refreshBackupStatus()),

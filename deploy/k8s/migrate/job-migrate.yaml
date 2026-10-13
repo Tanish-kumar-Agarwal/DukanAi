@@ -1,8 +1,12 @@
-# The release step: `prisma migrate deploy` from the API image, before the
-# new API starts (docs/DEPLOYMENT.md). A Job is immutable, so each release
-# re-creates it: kubectl delete job dukaanai-migrate --ignore-not-found,
-# then apply, then `kubectl wait --for=condition=complete job/dukaanai-migrate`
-# before rolling the API (deploy/k8s/README.md has the sequence).
+# The release step: `prisma migrate deploy` from the API image of the release
+# being deployed (the tag in ../common/kustomization.yaml), applied on its own
+# BEFORE the application (README.md, "Release"; audit 2026-10-11, P1-16). A
+# Job is immutable, so each release re-creates it once the previous one has
+# finished: never delete a Job that is still running (`kubectl -n dukaanai
+# get job dukaanai-migrate` shows ACTIVE 0 or no Job), a migration killed in
+# the middle of its DDL is recorded as failed (apps/api/prisma/MIGRATIONS.md).
+# An API started before the Job completed refuses to boot: every migration in
+# its image must be applied (PrismaService.assertSchemaInSync).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -12,7 +16,9 @@ metadata:
     app.kubernetes.io/part-of: dukaanai
 spec:
   backoffLimit: 0
-  ttlSecondsAfterFinished: 3600
+  # Long enough for the release manager to read the log; the next release's
+  # step deletes it anyway.
+  ttlSecondsAfterFinished: 86400
   template:
     metadata:
       labels:
@@ -20,6 +26,7 @@ spec:
         app.kubernetes.io/part-of: dukaanai
     spec:
       restartPolicy: Never
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -36,12 +43,20 @@ spec:
                 secretKeyRef:
                   name: dukaanai-secrets
                   key: DATABASE_URL
+            # Read-only root file system: whatever the CLI writes goes to /tmp.
+            - name: HOME
+              value: /tmp
+            - name: CHECKPOINT_DISABLE
+              value: "1"
           volumeMounts:
             - name: db-ca
               mountPath: /etc/dukaanai
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
           resources:
@@ -52,3 +67,5 @@ spec:
           secret:
             secretName: dukaanai-db-ca
             optional: true
+        - name: tmp
+          emptyDir: { sizeLimit: 256Mi }

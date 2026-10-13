@@ -8,7 +8,7 @@ export const CUSTOMER_DETAIL_INCLUDE = {
   contacts: true,
   invoices: {
     where: { isDeleted: false },
-    orderBy: { createdAt: 'desc' as const },
+    orderBy: [{ createdAt: 'desc' as const }, { id: 'desc' as const }],
     take: 10,
     select: {
       id: true,
@@ -23,7 +23,7 @@ export const CUSTOMER_DETAIL_INCLUDE = {
     },
   },
   udharTransactions: {
-    orderBy: { createdAt: 'desc' as const },
+    orderBy: [{ createdAt: 'desc' as const }, { id: 'desc' as const }],
     take: 10,
     select: {
       id: true,
@@ -66,7 +66,7 @@ export class CustomerRepository {
     const take = options.take ?? 25;
     const skip = options.skip ?? 0;
     const [items, total] = await Promise.all([
-      this.prisma.customer.findMany({ where, skip, take, include: { profile: true }, orderBy: { createdAt: 'desc' } }),
+      this.prisma.customer.findMany({ where, skip, take, include: { profile: true }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] }),
       this.prisma.customer.count({ where }),
     ]);
     return { items, total, skip, take };

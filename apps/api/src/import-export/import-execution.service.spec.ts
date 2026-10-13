@@ -52,7 +52,7 @@ function setup(options: { mode?: ImportMode; dryRun?: boolean; status?: JobStatu
     { rowNumber: 5, raw: { sku: 'D' }, issues: [{ field: 'mrp', message: 'MRP below the selling price.', severity: 'error' }], changes: [] },
   ];
   const importer = { plan: jest.fn(async () => (options.plan ?? defaultPlan)()) };
-  const cache = { del: jest.fn(async () => undefined) };
+  const cache = { mdel: jest.fn(async () => true) };
   const service = new ImportExecutionService(prisma as never, parsing as never, importer as never, importer as never, importer as never, cache as never);
   const actor = { shopId: 'shop-1', userId: 'user-1', role: 'OWNER' as const };
   return { service, prisma, job, rows, applied, importer, cache, actor, apply };
@@ -72,7 +72,7 @@ describe('ImportExecutionService (roadmap 9.20)', () => {
     expect(t.rows[0].changes).toEqual(['new product A']);
     expect(t.job).toEqual(expect.objectContaining({ status: JobStatus.PARTIAL_SUCCESS, totalRows: 4, validRows: 3, errorRows: 1, createdCount: 1, updatedCount: 1, unchangedCount: 1, skippedCount: 0 }));
     expect(t.prisma.auditLog.create).not.toHaveBeenCalled();
-    expect(t.cache.del).not.toHaveBeenCalled();
+    expect(t.cache.mdel).not.toHaveBeenCalled();
   });
 
   it('a real run applies CREATE and UPDATE rows; a refused write is an ERROR row with the API message and the run goes on', async () => {
@@ -94,7 +94,7 @@ describe('ImportExecutionService (roadmap 9.20)', () => {
     expect(t.rows[0].errors).toEqual([{ message: 'Barcode 1 is already assigned to another product (BARCODE_IN_USE)', severity: 'error' }]);
     expect(t.job).toEqual(expect.objectContaining({ status: JobStatus.PARTIAL_SUCCESS, errorRows: 1, updatedCount: 1, unchangedCount: 1, createdCount: 0 }));
     expect(t.prisma.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({ action: 'IMPORT_APPLIED', entityId: 'job-1', userId: 'user-1' }) });
-    expect(t.cache.del).toHaveBeenCalled();
+    expect(t.cache.mdel).toHaveBeenCalled();
   });
 
   it('CREATE_ONLY leaves existing rows alone and UPDATE_ONLY creates nothing (skipped, not errors)', async () => {

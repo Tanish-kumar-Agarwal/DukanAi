@@ -26,8 +26,26 @@ export const IS_RETURN = Prisma.sql`(CASE WHEN i.type = ${InvoiceType.SALES_RETU
  */
 export const ITEM_TAXABLE = Prisma.sql`COALESCE(NULLIF(ii.taxableAmount, 0), CASE WHEN ii.totalAmount > 0 THEN ii.sellingPrice * ii.quantity * (1 - ii.discountPercent / 100) ELSE 0 END)`;
 
-/** Gross profit of a line: taxable value minus cost of goods (alias `ii`). */
-export const ITEM_PROFIT = Prisma.sql`(${ITEM_TAXABLE} - ii.costPrice * ii.quantity)`;
+/**
+ * Cost of goods of a line as the ledger books it (aliases `ii`, `i`): cost
+ * price × quantity only for a line whose stock actually moved, i.e. the
+ * document has a `StockLedgerEntry` for the line's product (a sale's
+ * `SALE` movement, a return's `RETURN` movement). SERVICE and DIGITAL
+ * products and custom lines never move stock, so the ledger posts no
+ * COST_OF_GOODS for them and neither does this (it used to subtract their
+ * cost price from the dashboard profit).
+ */
+export const ITEM_COGS = Prisma.sql`(CASE WHEN ii.productId IS NOT NULL AND ii.isCustom = false AND EXISTS (
+    SELECT 1 FROM StockLedgerEntry sle
+    INNER JOIN InventoryItem sli ON sli.id = sle.inventoryItemId
+    WHERE sle.shopId = i.shopId
+      AND sle.referenceType = (CASE WHEN i.type = ${InvoiceType.SALE} THEN 'SALE' ELSE 'RETURN' END)
+      AND sle.referenceId = i.id
+      AND sli.productId = ii.productId
+  ) THEN ii.costPrice * ii.quantity ELSE 0 END)`;
+
+/** Gross profit of a line: taxable value minus the cost of goods the ledger booked for it (aliases `ii`, `i`). */
+export const ITEM_PROFIT = Prisma.sql`(${ITEM_TAXABLE} - ${ITEM_COGS})`;
 
 /**
  * WHERE fragment selecting the shop's COMPLETED sale/return invoices (alias `i`)

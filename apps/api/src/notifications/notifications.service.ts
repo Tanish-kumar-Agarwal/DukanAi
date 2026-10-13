@@ -45,6 +45,11 @@ export class NotificationsService {
     return { items: notifications.map(toView), total, skip, take };
   }
 
+  /** Every unread notification of the shop, not only the newest page (the navbar badge). */
+  async unreadCount(): Promise<{ count: number }> {
+    return { count: await this.prisma.notification.count({ where: { isRead: false, isDeleted: false } }) };
+  }
+
   async create(dto: CreateNotificationDto): Promise<NotificationView> {
     const notification = await this.prisma.notification.create({
       data: {

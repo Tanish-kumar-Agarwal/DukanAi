@@ -127,14 +127,26 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       statusCode = mapped?.status ?? HttpStatus.INTERNAL_SERVER_ERROR;
       message = mapped?.message ?? 'Internal server error';
       error = HttpStatus[statusCode] || 'InternalServerError';
-      code = mapped ? `DB_${exception.code}` : undefined;
+      code = mapped ? (mapped.code ?? `DB_${exception.code}`) : undefined;
       if (!mapped) trackAs = 'prisma';
       if (exception.code === 'P2002') {
         // The unique index that rejected the write, so clients can point at the field (roadmap 3.10).
         const target = (exception.meta as { target?: unknown } | undefined)?.target;
         details = { target: Array.isArray(target) ? target.map(String) : target === undefined ? undefined : String(target) };
+      } else if (exception.code === 'P2000' || exception.code === 'P2020') {
+        // The column whose limit the value broke (audit R15), never the value.
+        details = { target: prismaColumn(exception.meta) };
       }
-      this.logger.error({ message: `Prisma error ${exception.code}`, correlationId: String(correlationId) }, exception.message);
+      this.logger.error({ message: `Prisma error ${exception.code}`, correlationId: String(correlationId) }, scrubPrismaMessage(exception.message));
+    } else if (exception instanceof Prisma.PrismaClientValidationError) {
+      // A query the code built wrongly: a bug, tracked. Its message prints the
+      // arguments of the call (a customer's name, a phone number), so only the
+      // scrubbed form is logged and sent to error tracking (audit R15).
+      statusCode = HttpStatus.INTERNAL_SERVER_ERROR;
+      message = 'Internal server error';
+      error = 'InternalServerError';
+      trackAs = 'prisma';
+      this.logger.error({ message: 'Prisma validation error', correlationId: String(correlationId) }, scrubPrismaMessage(exception.message));
     } else {
       statusCode = HttpStatus.INTERNAL_SERVER_ERROR;
       message = 'Internal server error';
@@ -144,7 +156,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     }
 
     if (trackAs) {
-      ErrorTracking.capture(exception, {
+      ErrorTracking.capture(isPrismaClientError(exception) ? scrubbedPrismaError(exception) : exception, {
         kind: trackAs,
         correlationId: String(correlationId),
         shopId: store?.shopId,
@@ -187,7 +199,10 @@ const INVENTORY_STATUS: Record<string, number> = {
   LOCATION_REQUIRED: HttpStatus.BAD_REQUEST,
 };
 
-const PRISMA_STATUS: Record<string, { status: number; message: string }> = {
+const PRISMA_STATUS: Record<string, { status: number; message: string; code?: string }> = {
+  // A value longer or larger than its column holds (audit R15): the client's to fix, never a 500.
+  P2000: { status: HttpStatus.BAD_REQUEST, message: 'A value is too long for its field.', code: 'VALUE_TOO_LONG' },
+  P2020: { status: HttpStatus.BAD_REQUEST, message: 'A value is outside the range its field can hold.', code: 'VALUE_OUT_OF_RANGE' },
   P2002: { status: HttpStatus.CONFLICT, message: 'A record with the same unique value already exists.' },
   P2003: { status: HttpStatus.CONFLICT, message: 'The request references a record that does not exist.' },
   P2025: { status: HttpStatus.NOT_FOUND, message: 'The requested record was not found.' },
@@ -213,4 +228,42 @@ function hasInventoryCode(exception: unknown): boolean {
     typeof (exception as { code?: unknown }).code === 'string' &&
     (exception as unknown as { code: string }).code in INVENTORY_STATUS
   );
+}
+
+/** The column named by a P2000 (`column_name`) or P2020 (`details`: "Out of range value for column 'amount' at row 1"). */
+function prismaColumn(meta: unknown): string | undefined {
+  const m = (meta ?? {}) as { column_name?: unknown; target?: unknown; details?: unknown };
+  if (typeof m.column_name === 'string' && m.column_name) return m.column_name;
+  if (typeof m.target === 'string' && m.target) return m.target;
+  const quoted = typeof m.details === 'string' ? /column '([^']+)'/.exec(m.details) : null;
+  return quoted?.[1];
+}
+
+function isPrismaClientError(exception: unknown): exception is Error {
+  return exception instanceof Prisma.PrismaClientKnownRequestError || exception instanceof Prisma.PrismaClientValidationError;
+}
+
+/**
+ * A Prisma error message without the call's arguments (audit R15). Prisma
+ * prints the failing call with every argument value (a customer's name, a
+ * phone number) between the first line and the reason; what is kept is the
+ * call ("Invalid `prisma.customer.create()` invocation") and the reason on
+ * the last line, with any double-quoted value in it replaced.
+ */
+export function scrubPrismaMessage(message: string): string {
+  const lines = message.split('\n').map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) return '';
+  const call = lines.find((line) => /^Invalid `[^`]+` invocation/.test(line))?.replace(/\s+in$/, '').replace(/:$/, '');
+  const reason = lines[lines.length - 1].replace(/"(?:[^"\\]|\\.)*"/g, '"…"');
+  return call && call !== lines[lines.length - 1] ? `${call}: ${reason}` : reason;
+}
+
+/** The same error for error tracking, with the scrubbed message (its stack frames kept). */
+function scrubbedPrismaError(exception: Error): Error {
+  const scrubbed = new Error(scrubPrismaMessage(exception.message));
+  scrubbed.name = exception.name;
+  const frames = (exception.stack ?? '').split('\n').filter((line) => /^\s+at /.test(line));
+  scrubbed.stack = [`${exception.name}: ${scrubbed.message}`, ...frames].join('\n');
+  Object.assign(scrubbed, { code: (exception as { code?: unknown }).code });
+  return scrubbed;
 }

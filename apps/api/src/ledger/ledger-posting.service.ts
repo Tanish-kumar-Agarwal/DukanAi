@@ -22,6 +22,16 @@ export const LEDGER_SOURCE_TYPES = [
   'SUPPLIER_PAYMENT',
   /** A customer's opening udhar (roadmap 9.20): the UdharTransaction id. */
   'OPENING_BALANCE',
+  /** A posted vendor bill's input GST and price difference (the VendorBill id). */
+  'VENDOR_BILL',
+  /** An issued supplier credit note (the SupplierCreditNote id). */
+  'SUPPLIER_CREDIT_NOTE',
+  /** A supplier's opening payable (the Supplier id). */
+  'SUPPLIER_OPENING_BALANCE',
+  /** A shop expense paid (the Expense id): DR EXPENSES / CR CASH or BANK. */
+  'EXPENSE',
+  /** A later change to a posted expense (`<Expense id>:<n>`): the difference, or its reversal on delete. */
+  'EXPENSE_ADJUSTMENT',
 ] as const;
 export type LedgerSourceType = (typeof LEDGER_SOURCE_TYPES)[number];
 
@@ -56,6 +66,10 @@ export const DEBIT_NORMAL: ReadonlySet<LedgerAccount> = new Set<LedgerAccount>([
   LedgerAccount.COST_OF_GOODS,
   LedgerAccount.INVENTORY,
   LedgerAccount.INVENTORY_ADJUSTMENT,
+  /** GST paid on purchases (input tax credit): an asset until it is set off. */
+  LedgerAccount.INPUT_GST,
+  /** Shop running costs (the Expenses page): an expense account. */
+  LedgerAccount.EXPENSES,
 ]);
 
 /**

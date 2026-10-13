@@ -2,6 +2,7 @@ import { ExecutionContext } from '@nestjs/common';
 import { ThrottlerModuleOptions, ThrottlerStorage } from '@nestjs/throttler';
 import { SecurityConfig } from '../../config/domains/security.config';
 import { isAuthThrottled } from './auth-throttle.decorator';
+import { canonicalEmail } from '../email-address';
 
 /** Names of the auth throttlers; response headers carry them as `X-RateLimit-*-<name>`. */
 export const AUTH_THROTTLER_NAMES = ['auth-short', 'auth-medium', 'auth-long', 'auth-account'] as const;
@@ -9,7 +10,9 @@ export const AUTH_THROTTLER_NAMES = ['auth-short', 'auth-medium', 'auth-long', '
 /** The account a credential request is about, normalised, or `undefined` when the body names none. */
 export function accountTracker(req: { body?: unknown }): string | undefined {
   const body = req.body as { email?: unknown } | undefined;
-  const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : '';
+  // The same canonical form the account lookup uses (audit A2): a lookalike
+  // address never reaches the account, so it may keep its own bucket.
+  const email = typeof body?.email === 'string' ? canonicalEmail(body.email) : '';
   return email === '' ? undefined : `account:${email}`;
 }
 /** Names of the general throttlers applied to every other route. */

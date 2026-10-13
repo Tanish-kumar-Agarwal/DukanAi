@@ -29,6 +29,7 @@ describe('background schedulers with CRON_ENABLED=true', () => {
   beforeAll(async () => {
     const config = Object.assign(new CronConfig(), {
       enabled: true,
+      timeZone: 'America/New_York',
       purchaseOutboxRelayCron: FAR_AWAY,
       eventsOutboxRelayCron: FAR_AWAY,
       productOutboxRelayCron: FAR_AWAY,
@@ -52,6 +53,14 @@ describe('background schedulers with CRON_ENABLED=true', () => {
     expect([...jobs.keys()].sort()).toEqual(SCHEDULERS);
     for (const [name, job] of jobs) {
       expect({ name, source: (job as CronJob).cronTime.source }).toEqual({ name, source: FAR_AWAY });
+    }
+  });
+
+  it('reads every schedule in CRON_TIMEZONE', () => {
+    const jobs = app.get(SchedulerRegistry).getCronJobs();
+    // Every scheduler is built with `createCronJob`, so its expression is read in CRON_TIMEZONE, never the container's zone.
+    for (const [name, job] of jobs) {
+      expect({ name, timeZone: (job as CronJob).cronTime.timeZone }).toEqual({ name, timeZone: 'America/New_York' });
     }
   });
 });

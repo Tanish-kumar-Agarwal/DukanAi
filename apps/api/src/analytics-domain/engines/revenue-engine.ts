@@ -55,7 +55,11 @@ export class RevenueEngine {
     };
   }
 
-  /** Gross profit (taxable value - cost of goods) of sale lines minus return lines in [start, end). */
+  /**
+   * Gross profit (taxable value - cost of goods) of sale lines minus return
+   * lines in [start, end); the cost is what the ledger booked (`ITEM_COGS`:
+   * none for SERVICE, DIGITAL and custom lines).
+   */
   async profit(shopId: string, start?: Date, end?: Date): Promise<Prisma.Decimal> {
     const rows = await this.prisma.$queryRaw<Array<{ profit: unknown }>>`
       SELECT COALESCE(SUM(${INVOICE_SIGN} * ${ITEM_PROFIT}), 0) AS profit

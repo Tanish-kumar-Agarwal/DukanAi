@@ -55,6 +55,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      # The scan above is not a no-op (audit 2026-10-11, P1-13): secrets planted
+      # in the allowlisted files of a scratch copy (a committed env template, a
+      # spec, a test, the password denylist) must all be reported, or this
+      # step fails, the way the Trivy control guards the image gate.
+      - name: gitleaks control (planted secrets in allowlisted files are reported)
+        run: bash .github/scripts/gitleaks-control.sh /tmp/gitleaks/gitleaks
       - run: npm ci
       # lint depends on ^build (type-aware API rules need invoice-math/dist).
       - run: npx turbo run lint
@@ -62,9 +68,11 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
       # Roadmap 7.4: runtime artifacts (uploads, storage documents, turbo daemon logs) are never tracked.
       - run: bash scripts/check-tracked-artifacts.sh
+      # The backup scripts' connection parsing (TLS verification, URL decoding, owner-only files).
+      - run: bash scripts/db/lib.test.sh
       # Roadmap 9.21: the release checker's own tests, and CHANGELOG.md in the
       # shape a release needs (dated sections, newest first = package.json).
-      - run: node --test scripts/release/release.test.mjs
+      - run: node --test scripts/release/release.test.mjs scripts/release/attach-release.test.mjs
       - run: node scripts/release/release.mjs lint
 
   unit:
@@ -85,12 +93,20 @@ jobs:
         run: npm run test:e2e
 
   integration:
-    name: Integration tests (MySQL 8 + Redis)
+    name: Integration tests (MySQL ${{ matrix.mysql }} + Redis)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # MySQL 8.0 reached end of life in April 2026 and managed providers move
+    # to 8.4 LTS: every suite runs on both (audit 2026-10-11, R17). The
+    # drills use the runner's MySQL 8.0 client tools and run on the 8.0
+    # server only (docs/DEPLOYMENT.md, "MySQL versions").
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql: ["8.0.46", "8.4.11"]
     services:
       mysql:
-        image: mysql:8.0
+        image: mysql:${{ matrix.mysql }}
         env:
           MYSQL_ROOT_PASSWORD: password
           MYSQL_DATABASE: dukaanai_test
@@ -102,7 +118,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
       redis:
-        image: redis:7
+        image: redis:7.4.11
         ports:
           - 6379:6379
         options: >-
@@ -112,16 +128,40 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0 # the migration gate compares with the previous push and the latest release tag
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       - run: npx turbo run build --filter=@dukaanai/invoice-math
+      # Every ref a deployment may already have applied (audit 2026-10-11,
+      # P1-14: comparing origin/main with itself on a push to main compared
+      # nothing): the pull request's base, or the commit before this push; a
+      # new ref (branch or tag) is compared with where it left the default
+      # branch (its own commit when it sits on the tip); and always the newest
+      # release tag. The script fails when a base is HEAD itself and HEAD
+      # changes the migrations.
       - name: Applied migrations are immutable
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}"
-          bash apps/api/scripts/check-migrations-immutable.sh "origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}"
+          bases=()
+          if [ "$EVENT_NAME" = pull_request ]; then
+            bases+=("$PR_BASE_SHA")
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            git cat-file -e "$BEFORE^{commit}" 2>/dev/null || git fetch --no-tags origin "$BEFORE"
+            bases+=("$BEFORE")
+          else
+            base="$(git merge-base "origin/$DEFAULT_BRANCH" HEAD)"
+            if [ "$base" = "$(git rev-parse HEAD)" ] && git rev-parse --verify --quiet HEAD^ >/dev/null; then base="$(git rev-parse HEAD^)"; fi
+            bases+=("$base")
+          fi
+          bash apps/api/scripts/check-migrations-immutable.sh --latest-tag "${bases[@]}"
       - name: Migrate test database
         working-directory: apps/api
         run: npx prisma migrate deploy
@@ -141,6 +181,7 @@ jobs:
       # the point-in-time steps (binary-log archive, restore --to) must run,
       # so a service container without a binary log fails the job (9.2).
       - name: Backup and restore drill (MySQL 8)
+        if: matrix.mysql == '8.0.46'
         run: bash scripts/db/restore-drill.sh --pitr require
         env:
           DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
@@ -148,12 +189,15 @@ jobs:
       # suites wrote restore byte for byte; a fresh backup set ships encrypted
       # to a local bucket, comes back on a clean workspace and restores.
       - name: rclone for the off-site drill
+        if: matrix.mysql == '8.0.46'
         run: sudo apt-get install -y -q rclone >/dev/null
       - name: Documents restore drill (storage root and product images)
+        if: matrix.mysql == '8.0.46'
         run: bash scripts/storage/restore-drill.sh --root apps/api/data/storage${MEDIA:+ --media apps/api/uploads/media}
         env:
           MEDIA: ${{ hashFiles('apps/api/uploads/media/**') }}
       - name: Off-site restore drill (encrypted copy, clean-machine fetch, restore)
+        if: matrix.mysql == '8.0.46'
         run: bash scripts/backup/offsite-drill.sh --root apps/api/data/storage
         env:
           DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
@@ -166,7 +210,7 @@ jobs:
     timeout-minutes: 45
     services:
       mysql:
-        image: mysql:8.0
+        image: mysql:8.0.46
         env:
           MYSQL_ROOT_PASSWORD: password
           MYSQL_DATABASE: dukaanai_test
@@ -178,7 +222,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
       redis:
-        image: redis:7
+        image: redis:7.4.11
         ports:
           - 6379:6379
         options: >-
@@ -248,12 +292,20 @@ jobs:
         env:
           TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
         run: bash scripts/certify/trivy-scan.sh control
-      - name: Alert rules are valid (promtool)
+      # The scrape configuration is checked as the compose entrypoint leaves it:
+      # render.sh first (token file, public targets, topology rules; audit
+      # 2026-10-11, R11 / R12), for each topology.
+      - name: Alert rules and scrape configuration are valid (promtool)
         run: |
-          docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" --entrypoint promtool prom/prometheus:v3.5.0 check rules /rules/alerts.yml
-          docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" --entrypoint promtool prom/prometheus:v3.5.0 check config /rules/prometheus.yml
-          # The stale-backup alert fires in a drill (roadmap 9.4).
-          docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" -w /rules --entrypoint promtool prom/prometheus:v3.5.0 test rules /rules/alerts.test.yml
+          docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" --entrypoint promtool prom/prometheus:v3.5.0 check rules /rules/alerts.yml /rules/topology/reference.rules.yml /rules/topology/production.rules.yml
+          for topology in reference production; do
+            docker run --rm -v "$PWD/deploy/prometheus:/etc/prometheus:ro" --tmpfs /run/dukaanai-prometheus \
+              -e PROMETHEUS_TOPOLOGY="$topology" -e METRICS_TOKEN=ci-metrics-token-0123456789 \
+              -e PROMETHEUS_PUBLIC_API_URL=https://api.example.com/api -e PROMETHEUS_PUBLIC_WEB_URL=https://app.example.com \
+              --entrypoint /bin/sh prom/prometheus:v3.5.0 -c 'sh /etc/prometheus/render.sh && promtool check config /etc/prometheus/prometheus.yml'
+          done
+          # The backup alerts per topology (roadmap 9.4; audit R12), and the rest.
+          docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" -w /rules --entrypoint promtool prom/prometheus:v3.5.0 test rules /rules/alerts.test.yml /rules/alerts.production.test.yml /rules/alerts.no-topology.test.yml
       # Roadmap 9.7 / 9.8: the edge configuration and the Kubernetes manifests
       # must be valid before they are shipped (the hostnames are placeholders:
       # validation never contacts a CA or a cluster).
@@ -273,11 +325,20 @@ jobs:
           docker run --rm -v "$PWD/deploy/edge/Caddyfile:/etc/caddy/Caddyfile:ro" \
             -e WEB_HOST=app.example.com -e API_HOST=api.example.com caddy:2.10.2-alpine \
             caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+      # The application and the release step (deploy/k8s/migrate, applied
+      # before it; audit P1-16) share deploy/k8s/common.
       - name: Kubernetes manifests are valid (kustomize build + kubeconform)
         run: |
-          cp deploy/k8s/dukaanai-secrets.env.example deploy/k8s/dukaanai-secrets.env
-          kubectl kustomize deploy/k8s | docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary -
-          rm deploy/k8s/dukaanai-secrets.env
+          cp deploy/k8s/dukaanai-secrets.env.example deploy/k8s/common/dukaanai-secrets.env
+          app_yaml="$(kubectl kustomize deploy/k8s)"
+          job_yaml="$(kubectl kustomize deploy/k8s/migrate)"
+          docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary - <<<"$app_yaml"
+          docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary - <<<"$job_yaml"
+          # The Job runs the image tag the application runs (one newTag, in common/).
+          app="$(grep -m1 -o 'dukaanai-api:[^"[:space:]]*' <<<"$app_yaml")"
+          job="$(grep -m1 -o 'dukaanai-api:[^"[:space:]]*' <<<"$job_yaml")"
+          if [ -z "$app" ] || [ "$app" != "$job" ]; then echo "::error::the migration Job runs $job, the API $app"; exit 1; fi
+          rm deploy/k8s/common/dukaanai-secrets.env
       - name: Fresh clone -> compose up -> migrate -> login -> sale
         run: bash scripts/compose-smoke.sh
       - name: Container logs

@@ -87,6 +87,39 @@ test.describe('expenses (6.7)', () => {
     expect(list.some((e) => e.description === renamed)).toBe(true);
     expect(list.some((e) => e.description === description)).toBe(false);
   });
+
+  test('a double click records one expense, paise are accepted, and Mark as Paid keeps the expense\'s own mode (release audit L6)', async ({ page, request }) => {
+    const description = unique('Double click');
+    await page.goto('/expenses');
+    await page.getByRole('button', { name: 'Record Expense' }).click();
+    const dialog = modal(page, 'Record New Expense');
+    await expect(dialog).toBeVisible();
+    await dialog.locator('input').nth(0).fill(description);
+    await dialog.locator('input').nth(1).fill('12.34');
+    let posts = 0;
+    page.on('request', (r) => {
+      if (r.method() === 'POST' && new URL(r.url()).pathname.endsWith('/expenses')) posts += 1;
+    });
+    const post = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/expenses'));
+    await dialog.locator('button[type="submit"]').dblclick();
+    expect((await post).status()).toBe(201);
+    await expect(page.getByText('₹12.34 recorded under Supplies')).toBeVisible();
+    expect(posts).toBe(1);
+    const list = (await (await request.get(`${API_URL}/expenses?take=100`)).json()) as Array<{ description: string; amount: number; mode: string }>;
+    expect(list.filter((e) => e.description === description)).toEqual([expect.objectContaining({ amount: 12.34 })]);
+
+    const pending = unique('Pending by UPI');
+    expect((await request.post(`${API_URL}/expenses`, { data: { description: pending, category: 'Utilities', amount: 55, isPaid: false, paymentMode: 'UPI' } })).status()).toBe(201);
+    await page.reload();
+    await page.getByRole('button', { name: `Actions for ${pending}` }).click();
+    const patch = page.waitForResponse((r) => r.request().method() === 'PATCH' && new URL(r.url()).pathname.includes('/expenses/'));
+    await page.getByRole('button', { name: 'Mark as Paid' }).click();
+    const patched = await patch;
+    expect(patched.status()).toBe(200);
+    expect(patched.request().postDataJSON()).toMatchObject({ isPaid: true, paymentMode: 'UPI' });
+    const after = (await (await request.get(`${API_URL}/expenses?take=100`)).json()) as Array<{ description: string; status: string; mode: string }>;
+    expect(after.find((e) => e.description === pending)).toMatchObject({ status: 'Paid', mode: 'UPI' });
+  });
 });
 
 test.describe('customer edit clears fields (6.7)', () => {

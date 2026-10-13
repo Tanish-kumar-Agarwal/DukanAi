@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { IsOptional, IsString, Matches } from 'class-validator';
+import { IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 import { ConfigDomain, EnvVariable } from '../registry/registry.decorators';
-import { StringFromEnv } from '../hydrate-from-env';
+import { IntegerFromEnv, StringFromEnv } from '../hydrate-from-env';
 
 /**
  * Outbound email (invitations). `SMTP_URL` is a nodemailer transport URL
@@ -24,4 +24,17 @@ export class EmailConfig {
   @StringFromEnv()
   @EnvVariable('EMAIL_FROM')
   readonly from: string = 'DukaanAI <no-reply@dukaanai.local>';
+
+  /**
+   * Budget of each step of a send: connecting to the relay, its greeting,
+   * and any silence on the socket (audit R8). Invitations and reset links are
+   * sent on the request path; nodemailer's defaults (2 min, 30 s, 10 min)
+   * held a request for minutes when the relay was unreachable or stalled.
+   */
+  @IsInt()
+  @Min(1000)
+  @Max(120_000)
+  @IntegerFromEnv()
+  @EnvVariable('SMTP_TIMEOUT_MS')
+  readonly smtpTimeoutMs: number = 10_000;
 }

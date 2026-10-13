@@ -3,12 +3,14 @@ import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { SupplierCreditRepository } from './repositories/supplier-credit.repository';
 import type { Request } from 'express';
-import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { FINANCE_ROLES, MANAGEMENT_ROLES } from '../auth/role-sets';
 import { Roles } from '../auth/roles.decorator';
 import { LimitOffsetQueryDto, limitOffsetArgs } from '../common/pagination';
 import { ApprovalDecisionDto } from '../common/dto/approval-decision.dto';
 import { AllocateSupplierCreditDto, CreateSupplierCreditDto } from './dto/supplier-credit.dto';
+import { FeatureGate } from '../common/features/feature-gate';
 
+@FeatureGate('procurement')
 @Controller('supplier-credit-notes')
 export class SupplierCreditController {
   constructor(private readonly repository: SupplierCreditRepository) {}
@@ -19,6 +21,7 @@ export class SupplierCreditController {
     return this.repository.createSupplierCredit(shopId, payload, actorId, req.ip);
   }
 
+  @Roles(...FINANCE_ROLES)
   @Get()
   async listCreditNotes(
     @CurrentShop() shopId: string,
@@ -28,6 +31,7 @@ export class SupplierCreditController {
     return this.repository.listSupplierCredits(shopId, limit, offset);
   }
 
+  @Roles(...FINANCE_ROLES)
   @Get(':id')
   async getCreditNote(@CurrentShop() shopId: string, @Param('id') id: string) {
     return this.repository.getSupplierCredit(shopId, id);
@@ -43,6 +47,20 @@ export class SupplierCreditController {
   @Post(':id/approve')
   async approveCreditNote(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Body() body: ApprovalDecisionDto, @Req() req: Request) {
     return this.repository.approveSupplierCredit(shopId, id, actorId, req.ip, body.comments, body.signature);
+  }
+
+  /** PENDING_APPROVAL -> REJECTED by a manager other than the creator or submitter. */
+  @Roles(...MANAGEMENT_ROLES)
+  @Post(':id/reject')
+  async rejectCreditNote(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Body() body: ApprovalDecisionDto, @Req() req: Request) {
+    return this.repository.approveSupplierCredit(shopId, id, actorId, req.ip, body.comments, undefined, 'REJECT');
+  }
+
+  /** DRAFT / SUBMITTED / PENDING_APPROVAL -> CANCELLED. */
+  @Roles(...MANAGEMENT_ROLES)
+  @Post(':id/cancel')
+  async cancelCreditNote(@CurrentShop() shopId: string, @Param('id') id: string, @CurrentUser('id') actorId: string, @Body() body: ApprovalDecisionDto) {
+    return this.repository.cancelSupplierCredit(shopId, id, actorId, body.comments);
   }
 
   @Roles(...MANAGEMENT_ROLES)

@@ -14,7 +14,8 @@ interface TotalsCardProps {
   onDiscountChange: (patch: Partial<CartDiscount>) => void;
   isInterState: boolean;
   shopState: string | null;
-  customerState: string | null;
+  /** The explicit place of supply, when the sale is not over the counter (audit P1-3). */
+  placeOfSupply: string | null;
   notes: string;
   onNotesChange: (notes: string) => void;
   hasLines: boolean;
@@ -30,7 +31,7 @@ export function TotalsCard({
   onDiscountChange,
   isInterState,
   shopState,
-  customerState,
+  placeOfSupply,
   notes,
   onNotesChange,
   hasLines,
@@ -125,7 +126,7 @@ export function TotalsCard({
       </dl>
       <p className="text-[10px] text-gray-400">
         {isInterState
-          ? `Inter-state supply (IGST): ${customerState ?? '?'} → ${shopState ?? '?'}`
+          ? `Inter-state supply (IGST): ${shopState ?? '?'} → ${placeOfSupply ?? '?'}`
           : shopState
             ? `Intra-state supply (CGST + SGST) · ${shopState}`
             : 'Set the shop state in Settings for correct GST split'}

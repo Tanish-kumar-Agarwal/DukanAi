@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
-import { CronJob } from 'cron';
+import { createCronJob } from '../cron/cron-job';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CronConfig } from '../../config/domains/cron.config';
@@ -46,9 +46,13 @@ export class OutboxReaperService implements OnApplicationBootstrap {
       this.logger.warn('OutboxReaper schedule not registered: CRON_ENABLED=false');
       return;
     }
-    const job = new CronJob(this.cronConfig.outboxReaperCron, () => {
-      void this.reap().catch((error: unknown) => this.logger.error(`Outbox reaper crashed: ${(error as Error).message}`));
-    });
+    const job = createCronJob(
+      this.cronConfig.outboxReaperCron,
+      () => {
+        void this.reap().catch((error: unknown) => this.logger.error(`Outbox reaper crashed: ${(error as Error).message}`));
+      },
+      this.cronConfig,
+    );
     this.schedulerRegistry.addCronJob('OutboxReaper', job);
     job.start();
   }

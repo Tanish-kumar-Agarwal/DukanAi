@@ -64,7 +64,7 @@ describe('phase 3: money and stock correctness', () => {
 
   const returnLine = (shop: TestShop, invoiceId: string, invoiceItemId: string, quantity: number, userId: string = shop.cashierId, role: Role = Role.CASHIER) =>
     run.as(shop.shopId, userId, role, () =>
-      reversal.processReturn({ idempotencyKey: randomUUID(), invoiceId, items: [{ invoiceItemId, quantity }], reason: 'DAMAGED' as never, refund: { tender: TenderType.CASH } }, actorFor(shop, userId, role)),
+      reversal.processReturn({ idempotencyKey: randomUUID(), invoiceId, items: [{ invoiceItemId, quantity }], reason: 'CUSTOMER_CHANGED_MIND' as never, refund: { tender: TenderType.CASH } }, actorFor(shop, userId, role)),
     );
 
   describe('3.1 cumulative returns', () => {
@@ -415,7 +415,7 @@ describe('phase 3: money and stock correctness', () => {
       );
       expect(num((await run.system(() => prisma.supplier.findUniqueOrThrow({ where: { id: supplier.id } }))).pendingPayables)).toBe(300);
 
-      await expect(run.as(shop.shopId, shop.ownerId, Role.OWNER, () => suppliers.recordPayment(supplier.id, { amount: 300.01 }, shop.ownerId))).rejects.toMatchObject({ response: { code: 'PAYABLES_INSUFFICIENT' } });
+      await expect(run.as(shop.shopId, shop.ownerId, Role.OWNER, () => suppliers.recordPayment(supplier.id, { amount: 300.01, idempotencyKey: randomUUID() }, shop.ownerId))).rejects.toMatchObject({ response: { code: 'PAYABLES_INSUFFICIENT' } });
       const key = randomUUID();
       const paid = await run.as(shop.shopId, shop.ownerId, Role.OWNER, () => suppliers.recordPayment(supplier.id, { amount: 120, idempotencyKey: key }, shop.ownerId));
       expect(paid.payment.replayed).toBe(false);

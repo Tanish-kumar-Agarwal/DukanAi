@@ -1,8 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { businessDateString } from '../../common/time/business-day';
 import { trailingBusinessDays, utcMidnightOfBusinessDate } from '../analytics-range';
+import { chunk } from '../engines/batch-write';
 import { completedInvoiceFilter, INVOICE_SIGN, toDecimal } from '../engines/invoice-sql';
 import { ShopTimezoneService } from './shop-timezone.service';
 
@@ -44,13 +46,18 @@ export class KpiService {
   /**
    * Calculates the daily inventory KPI snapshot for every product in a shop:
    * stock value at cost, 30-day turnover, days of inventory and stockout risk.
-   * Runs from the nightly job (inside `runAsSuperAdmin`), never in a request.
+   * Runs from the nightly job (inside the shop's job context), never in a
+   * request. Rows are written as multi-row `INSERT ... ON DUPLICATE KEY
+   * UPDATE` batches on `(shopId, productId, date)` (`engines/batch-write.ts`,
+   * like the classification and recommendation writers): one upsert per
+   * product was one round trip per product per shop per night.
    */
   async calculateDailyKpis(shopId: string, now: Date = new Date()) {
     this.logger.log(`Starting Daily KPI Calculation for shop ${shopId}...`);
 
     const timeZone = await this.shopTimezone.resolve(shopId);
-    const date = kpiDateFor(now, timeZone);
+    // The `@db.Date` key as the business date itself, so no driver time zone can shift it.
+    const date = businessDateString(now, timeZone);
     const { start, end } = trailingBusinessDays(SALES_WINDOW_DAYS, timeZone, now);
 
     const [products, onHandRows, soldRows] = await Promise.all([
@@ -77,6 +84,7 @@ export class KpiService {
     const onHandByProduct = new Map(onHandRows.map((row) => [row.productId, row._sum.onHand ?? new Prisma.Decimal(0)]));
     const unitsByProduct = new Map(soldRows.map((row) => [row.productId, toDecimal(row.units)]));
 
+    const rows: Prisma.Sql[] = [];
     for (const product of products) {
       const onHand = maxDecimal(onHandByProduct.get(product.id) ?? new Prisma.Decimal(0), new Prisma.Decimal(0));
       const unitsSold = maxDecimal(unitsByProduct.get(product.id) ?? new Prisma.Decimal(0), new Prisma.Decimal(0));
@@ -86,13 +94,18 @@ export class KpiService {
       const avgDailyUnits = unitsSold.div(SALES_WINDOW_DAYS);
       const daysOfInventory = minDecimal(onHand.div(maxDecimal(avgDailyUnits, MIN_AVG_DAILY_UNITS)), MAX_DAYS_OF_INVENTORY).toDecimalPlaces(2);
       const risk = stockoutRiskScore(daysOfInventory);
-      const figures = { totalValue, turnoverRate, daysOfInventory, stockoutRiskScore: risk, avgDailyUnits: avgDailyUnits.toDecimalPlaces(3) };
+      rows.push(
+        Prisma.sql`(${randomUUID()}, ${shopId}, ${product.id}, ${date}, ${totalValue.toFixed(4)}, ${turnoverRate.toFixed(4)}, ${daysOfInventory.toFixed(2)}, ${risk}, ${avgDailyUnits.toDecimalPlaces(3).toFixed(3)}, ${now}, ${now})`,
+      );
+    }
 
-      await this.prisma.inventoryKpi.upsert({
-        where: { shopId_productId_date: { shopId, productId: product.id, date } },
-        update: figures,
-        create: { shopId, productId: product.id, date, ...figures },
-      });
+    for (const batch of chunk(rows)) {
+      await this.prisma.$executeRaw`
+        INSERT INTO InventoryKpi (id, shopId, productId, date, totalValue, turnoverRate, daysOfInventory, stockoutRiskScore, avgDailyUnits, createdAt, updatedAt)
+        VALUES ${Prisma.join(batch)}
+        ON DUPLICATE KEY UPDATE totalValue = VALUES(totalValue), turnoverRate = VALUES(turnoverRate), daysOfInventory = VALUES(daysOfInventory),
+          stockoutRiskScore = VALUES(stockoutRiskScore), avgDailyUnits = VALUES(avgDailyUnits), updatedAt = VALUES(updatedAt)
+      `;
     }
 
     this.logger.log(`Completed KPI calculations for ${products.length} products.`);

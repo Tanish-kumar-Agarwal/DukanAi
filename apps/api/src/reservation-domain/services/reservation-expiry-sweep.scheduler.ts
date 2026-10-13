@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
-import { CronJob } from 'cron';
+import { createCronJob } from '../../common/cron/cron-job';
 import { CronLockService } from '../../common/cron-lock/cron-lock.service';
 import { sweepEveryShop, SweepSummary } from '../../common/sweeps/per-shop-sweep';
 import { CronConfig } from '../../config/domains/cron.config';
@@ -9,7 +9,10 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { ReservationExpiryService } from './reservation-expiry.service';
 
 export const RESERVATION_EXPIRY_SWEEP_JOB = 'ReservationExpirySweep';
-const LOCK_TTL_MS = 55_000; // just under the every-minute default so a slow run never overlaps the next
+// How long a crashed holder keeps the other instances out; a live run keeps
+// the lock for as long as it takes (CronLockService extends it), so a slow
+// run is never joined by the next minute's.
+const LOCK_TTL_MS = 55_000;
 
 /**
  * Global reservation-expiry sweep: one pod at a time (cron lock), every shop
@@ -34,9 +37,13 @@ export class ReservationExpirySweepScheduler implements OnApplicationBootstrap {
       this.logger.warn(`${RESERVATION_EXPIRY_SWEEP_JOB} schedule not registered: CRON_ENABLED=false`);
       return;
     }
-    const job = new CronJob(this.cronConfig.reservationExpirySweepCron, () => {
-      this.handleCron().catch((error: unknown) => this.logger.error(`${RESERVATION_EXPIRY_SWEEP_JOB} crashed: ${(error as Error).message}`));
-    });
+    const job = createCronJob(
+      this.cronConfig.reservationExpirySweepCron,
+      () => {
+        this.handleCron().catch((error: unknown) => this.logger.error(`${RESERVATION_EXPIRY_SWEEP_JOB} crashed: ${(error as Error).message}`));
+      },
+      this.cronConfig,
+    );
     this.schedulerRegistry.addCronJob(RESERVATION_EXPIRY_SWEEP_JOB, job);
     job.start();
   }

@@ -15,8 +15,18 @@
 # is the environment file handed to compose instead of ./.env (which is
 # then neither read nor created), and COMPOSE_FILE (compose's own variable)
 # adds the overlay that names the images.
+#
+# Needs Docker Compose 2.24.4 or newer (`include` since 2.20.3, the `!reset` /
+# `!override` tags of the overlays since 2.24.4): older versions are refused
+# here with the reason instead of failing half-way.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# version_at_least HAVE WANT: dotted numeric versions, HAVE >= WANT.
+version_at_least() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n 1)" = "$2" ]; }
+compose_version="$(docker compose version --short 2>/dev/null | sed 's/^v//' || true)"
+[ -n "$compose_version" ] || { echo "SMOKE FAILED: docker compose (v2) is required" >&2; exit 1; }
+version_at_least "$compose_version" 2.24.4 || { echo "SMOKE FAILED: Docker Compose $compose_version is too old: 2.24.4 or newer is required (include, !reset, !override; docs/DEPLOYMENT.md, Requirements)" >&2; exit 1; }
 
 WEB_PORT="${WEB_PORT:-3000}"
 API_PORT="${API_PORT:-3002}"
@@ -31,7 +41,9 @@ fail() { printf '\nSMOKE FAILED: %s\n' "$*" >&2; "${COMPOSE[@]}" logs --no-color
 cleanup() {
   if [ "$KEEP" = "1" ]; then printf '\nKEEP=1: stack left running (%s, %s)\n' "$WEB" "$API"; return; fi
   step "docker compose down -v"
-  "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  # Every profile: a plain `down` leaves the profile services it did not name
+  # (the ops monitoring stack) running, holding their ports for the next stack.
+  "${COMPOSE[@]}" --profile '*' down -v --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -39,14 +51,23 @@ if [ -z "${SMOKE_ENV_FILE:-}" ] && [ ! -f .env ]; then
   step ".env missing: creating it from .env.example with generated secrets"
   cp .env.example .env
   gen() { node -e "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))"; }
-  JWT="$(gen)"; NA="$(gen)"
+  JWT="$(gen)"; NA="$(gen)"; GRAFANA="$(gen)"; METRICS="$(gen)"
   node -e "
     const fs = require('fs');
     let s = fs.readFileSync('.env', 'utf8');
-    s = s.replace(/^JWT_SECRET=.*$/m, 'JWT_SECRET=$JWT').replace(/^NEXTAUTH_SECRET=.*$/m, 'NEXTAUTH_SECRET=$NA');
+    s = s.replace(/^JWT_SECRET=.*$/m, 'JWT_SECRET=$JWT').replace(/^NEXTAUTH_SECRET=.*$/m, 'NEXTAUTH_SECRET=$NA').replace(/^GRAFANA_ADMIN_PASSWORD=.*$/m, 'GRAFANA_ADMIN_PASSWORD=$GRAFANA').replace(/^METRICS_TOKEN=.*$/m, 'METRICS_TOKEN=$METRICS');
     fs.writeFileSync('.env', s);
   "
 fi
+# Grafana's admin login as compose gives it (the env file's values, else the
+# reference stack's local defaults; never the shell's).
+ENV_SOURCE="${SMOKE_ENV_FILE:-.env}"
+env_value() { { sed -n "s/^$1=//p" "$ENV_SOURCE" 2>/dev/null || true; } | tail -n 1; }
+GRAFANA_USER="$(env_value GRAFANA_ADMIN_USER)"; GRAFANA_USER="${GRAFANA_USER:-admin}"
+GRAFANA_PASS="$(env_value GRAFANA_ADMIN_PASSWORD)"; GRAFANA_PASS="${GRAFANA_PASS:-admin}"
+# The API runs as production, where GET /api/metrics exists only with a
+# METRICS_TOKEN (audit R13): Prometheus and the checks below send it.
+METRICS_TOKEN_VALUE="$(env_value METRICS_TOKEN)"
 
 if [ "$PREBUILT" = "1" ]; then
   step "docker compose up -d --wait on the prebuilt images (mysql, redis, migrate, api, web)"
@@ -81,7 +102,10 @@ step "ops (roadmap 9.2): archive the binary logs, restore the pre-sale dump alon
 out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops binlog-archive --flush 2>&1)" || { printf '%s\n' "$out"; fail "db-ops binlog-archive"; }
 grep -qE "archived [1-9][0-9]* file" <<<"$out" || { printf '%s\n' "$out"; fail "no binary log was archived"; }
 out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops restore "$dump" --database dukaanai_dump_only --create --yes 2>&1)" || { printf '%s\n' "$out"; fail "restore of the dump alone"; }
-out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops restore "$dump" --database dukaanai_pitr_check --create --yes --to "$(date -u -d '+1 minute' '+%Y-%m-%d %H:%M:%S')" 2>&1)" || { printf '%s\n' "$out"; fail "point-in-time restore"; }
+# "Now" is past the last archived event by design: the archive was flushed just
+# above and nothing has written since, so --allow-short (restore to the end of
+# the archive) is the honest request; restore.sh refuses a later --to without it.
+out="$("${COMPOSE[@]}" --profile ops run --rm -T db-ops restore "$dump" --database dukaanai_pitr_check --create --yes --allow-short --to "$(date -u -d '+1 minute' '+%Y-%m-%d %H:%M:%S')" 2>&1)" || { printf '%s\n' "$out"; fail "point-in-time restore"; }
 grep -q "then replay " <<<"$out" || { printf '%s\n' "$out"; fail "the restore plan had no replay step"; }
 grep -q "^==> Replayed to " <<<"$out" || { printf '%s\n' "$out"; fail "the replay did not run"; }
 # A statement as root inside the mysql container (the password stays in its environment).
@@ -101,7 +125,8 @@ out="$("${COMPOSE[@]}" --profile ops run --rm -T -e OFFSITE_REMOTE=local:/tmp/of
 grep -q "Off-site copy complete" <<<"$out" || { printf '%s\n' "$out"; fail "the off-site copy did not complete"; }
 
 step "ops (roadmap 9.4): the API reads the backup status stamps into backup_last_success_timestamp_seconds"
-metrics="$(curl -fsS "$API/metrics" 2>/dev/null || true)"
+[ -n "$METRICS_TOKEN_VALUE" ] || fail "METRICS_TOKEN is blank in $ENV_SOURCE: a production API answers 404 on /api/metrics without it (audit R13)"
+metrics="$(curl -fsS -H "Authorization: Bearer $METRICS_TOKEN_VALUE" "$API/metrics" 2>/dev/null || true)"
 for kind in dump binlog documents offsite; do
   # The registry adds its default label (service="dukaanai-api") after kind.
   grep -Eq "^backup_last_success_timestamp_seconds\{kind=\"$kind\"[,}]" <<<"$metrics" || { grep backup_last <<<"$metrics" || true; fail "no backup_last_success_timestamp_seconds series for kind $kind"; }
@@ -150,9 +175,10 @@ held="$(curl -fsS --get "$AM/api/v2/alerts" --data-urlencode 'filter=alertname="
   || fail "inhibit rules: EndpointDown states '$held', expected the expired certificate's and the dependency's probes suppressed, another address active"
 printf '  inhibit rules: an expired certificate and a dependency outage hold back their probes (%s)\n' "$held"
 # Grafana: both data sources and both dashboards are provisioned.
-dash="$(curl -fsS -u "${GRAFANA_ADMIN_USER:-admin}:${GRAFANA_ADMIN_PASSWORD:-admin}" "$GRAFANA/api/search?type=dash-db" | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>process.stdout.write(JSON.parse(b).map((d)=>d.uid).sort().join(',')))")"
+GRAFANA_AUTH="$GRAFANA_USER:$GRAFANA_PASS"
+dash="$(curl -fsS -u "$GRAFANA_AUTH" "$GRAFANA/api/search?type=dash-db" | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>process.stdout.write(JSON.parse(b).map((d)=>d.uid).sort().join(',')))")"
 case "$dash" in *dukaanai-logs*dukaanai-ops*) ;; *) fail "Grafana dashboards provisioned: '$dash', expected dukaanai-logs and dukaanai-ops" ;; esac
-ds="$(curl -fsS -u "${GRAFANA_ADMIN_USER:-admin}:${GRAFANA_ADMIN_PASSWORD:-admin}" "$GRAFANA/api/datasources" | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>process.stdout.write(JSON.parse(b).map((d)=>d.uid).sort().join(',')))")"
+ds="$(curl -fsS -u "$GRAFANA_AUTH" "$GRAFANA/api/datasources" | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>process.stdout.write(JSON.parse(b).map((d)=>d.uid).sort().join(',')))")"
 [ "$ds" = "loki,prometheus" ] || fail "Grafana data sources: '$ds', expected loki,prometheus"
 printf '  Grafana: data sources %s, dashboards %s\n' "$ds" "$dash"
 # Uptime probes: the readiness route and the login page answer the blackbox modules.
@@ -161,6 +187,27 @@ for probe in "http_2xx|http://api:3002/api/health/ready" "http_login_page|http:/
   curl -fsS --get "$BLACKBOX/probe" --data-urlencode "module=$module" --data-urlencode "target=$target" | grep -q '^probe_success 1' || fail "blackbox probe $module of $target did not succeed"
 done
 printf '  blackbox: readiness and login-page probes succeed\n'
+# Prometheus as render.sh started it (audit 2026-10-11, R11 / R12): the API
+# scrape is up (with the bearer token when METRICS_TOKEN is set), the
+# monitoring ports answer on 127.0.0.1 only, and the reference topology's
+# backup kinds are loaded.
+up=""
+for _ in $(seq 1 30); do
+  up="$(curl -fsS --get "$PROM/api/v1/query" --data-urlencode 'query=up{job="dukaanai-api"}' | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>{const r=JSON.parse(b).data.result;process.stdout.write(r.length?r[0].value[1]:'')})" 2>/dev/null || true)"
+  [ "$up" = 1 ] && break
+  sleep 2
+done
+[ "$up" = 1 ] || fail "Prometheus does not scrape the API (up{job=\"dukaanai-api\"} = '$up')"
+kinds=""
+for _ in $(seq 1 15); do
+  kinds="$(curl -fsS --get "$PROM/api/v1/query" --data-urlencode 'query=dukaanai:backup_expected' | node -e "let b='';process.stdin.on('data',(d)=>b+=d).on('end',()=>process.stdout.write(JSON.parse(b).data.result.map((r)=>r.metric.kind).sort().join(',')))" 2>/dev/null || true)"
+  [ "$kinds" = "binlog,documents,dump,offsite" ] && break
+  sleep 2
+done
+[ "$kinds" = "binlog,documents,dump,offsite" ] || fail "Prometheus expects the backup kinds '$kinds', expected binlog,documents,dump,offsite (topology reference)"
+published="$("${COMPOSE[@]}" --profile ops ps --format '{{.Service}} {{.Ports}}' prometheus alertmanager blackbox loki grafana 2>/dev/null || true)"
+if grep -Eq '0\.0\.0\.0:|\[::\]:|:::' <<<"$published"; then printf '%s\n' "$published"; fail "a monitoring port is published on every interface"; fi
+printf '  Prometheus scrapes the API, expects the reference backup kinds (%s), monitoring ports on 127.0.0.1 only\n' "$kinds"
 
 if [ "${SMOKE_LIMITS_GATE:-1}" = "1" ]; then
   step "rate limits (roadmap 9.16): the API runs the production limits (SecurityConfig defaults); a shop's legitimate traffic from one address is never 429 and the brute-force limits still hold (apps/api/load/limits-gate.mjs)"

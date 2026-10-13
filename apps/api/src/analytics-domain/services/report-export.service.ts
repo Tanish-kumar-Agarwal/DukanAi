@@ -16,16 +16,24 @@ export interface ResolvedExportRange extends ExportRange {
 
 export const EXPORT_BATCH_SIZE = 500;
 
+/**
+ * `status` is COMPLETED or CANCELLED: a cancelled sale stays in the file as
+ * the GST serial number it consumed, with `cancelledAt`; a total summed from
+ * the file equals the dashboards over the COMPLETED rows. `cessAmount` is the
+ * sum of the lines' cess (an invoice row carries none of its own), part of
+ * `taxAmount`.
+ */
 export const INVOICES_CSV_COLUMNS = [
   'invoiceNumber', 'type', 'status', 'businessDate', 'createdAt', 'customerName', 'customerPhone',
   'cashierName', 'paymentMode', 'subtotal', 'discountAmount', 'taxableAmount', 'cgstAmount', 'sgstAmount',
-  'igstAmount', 'taxAmount', 'roundOffAmount', 'totalAmount', 'paidAmount', 'changeAmount', 'udharAmount',
+  'igstAmount', 'cessAmount', 'taxAmount', 'roundOffAmount', 'totalAmount', 'paidAmount', 'changeAmount', 'udharAmount',
+  'cancelledAt',
 ] as const;
 
 export const INVOICE_ITEMS_CSV_COLUMNS = [
   'invoiceNumber', 'type', 'businessDate', 'productSku', 'productName', 'quantity', 'unit', 'sellingPrice',
   'discountPercent', 'discountAmount', 'taxableAmount', 'gstRate', 'cgstAmount', 'sgstAmount', 'igstAmount',
-  'totalAmount',
+  'cessAmount', 'totalAmount',
 ] as const;
 
 export const GST_SUMMARY_CSV_COLUMNS = [
@@ -63,8 +71,10 @@ const INVOICE_EXPORT_SELECT = {
   paidAmount: true,
   changeAmount: true,
   udharAmount: true,
+  cancelledAt: true,
   customer: { select: { name: true, phone: true } },
   cashier: { select: { name: true } },
+  items: { where: { isDeleted: false }, select: { cessAmount: true } },
 } satisfies Prisma.InvoiceSelect;
 
 const INVOICE_ITEMS_EXPORT_SELECT = {
@@ -88,6 +98,7 @@ const INVOICE_ITEMS_EXPORT_SELECT = {
       cgstAmount: true,
       sgstAmount: true,
       igstAmount: true,
+      cessAmount: true,
       totalAmount: true,
     },
   },
@@ -113,7 +124,8 @@ export class ReportExportService {
 
   async streamInvoicesCsv(shopId: string, range: ResolvedExportRange, sink: CsvSink): Promise<void> {
     await sink(csvRow(INVOICES_CSV_COLUMNS));
-    await this.forEachInvoiceBatch(shopId, range, INVOICE_EXPORT_SELECT, async (batch) => {
+    // Cancelled documents too, with their status: a cancelled sale's number is still a used GST serial number.
+    await this.forEachInvoiceBatch(shopId, range, INVOICE_EXPORT_SELECT, [InvoiceStatus.COMPLETED, InvoiceStatus.CANCELLED], async (batch) => {
       const lines = batch.map((invoice) =>
         csvRow([
           invoice.invoiceNumber,
@@ -131,12 +143,14 @@ export class ReportExportService {
           invoice.cgstAmount,
           invoice.sgstAmount,
           invoice.igstAmount,
+          invoice.items.reduce((acc, item) => acc.plus(item.cessAmount), new Prisma.Decimal(0)).toFixed(2),
           invoice.taxAmount,
           invoice.roundOffAmount,
           invoice.totalAmount,
           invoice.paidAmount,
           invoice.changeAmount,
           invoice.udharAmount,
+          invoice.cancelledAt,
         ]),
       );
       await sink(lines.join(''));
@@ -145,7 +159,7 @@ export class ReportExportService {
 
   async streamInvoiceItemsCsv(shopId: string, range: ResolvedExportRange, sink: CsvSink): Promise<void> {
     await sink(csvRow(INVOICE_ITEMS_CSV_COLUMNS));
-    await this.forEachInvoiceBatch(shopId, range, INVOICE_ITEMS_EXPORT_SELECT, async (batch) => {
+    await this.forEachInvoiceBatch(shopId, range, INVOICE_ITEMS_EXPORT_SELECT, [InvoiceStatus.COMPLETED], async (batch) => {
       const lines: string[] = [];
       for (const invoice of batch) {
         const businessDate = businessDateString(invoice.createdAt, range.timeZone);
@@ -167,6 +181,7 @@ export class ReportExportService {
               item.cgstAmount,
               item.sgstAmount,
               item.igstAmount,
+              item.cessAmount,
               item.totalAmount,
             ]),
           );
@@ -216,15 +231,16 @@ export class ReportExportService {
   }
 
   /**
-   * Cursor-paginates the shop's COMPLETED sale/return invoices in the range,
-   * oldest first. The status/type predicate mirrors `completedInvoiceFilter`
-   * (the SQL engines' money filter) so a total summed from the CSV matches the
-   * dashboards instead of also counting DRAFT and CANCELLED rows.
+   * Cursor-paginates the shop's sale/return invoices in the range with the
+   * given statuses, oldest first. With COMPLETED alone the predicate mirrors
+   * `completedInvoiceFilter` (the SQL engines' money filter) so a total summed
+   * from the CSV matches the dashboards; DRAFT rows are never exported.
    */
   private async forEachInvoiceBatch<S extends Prisma.InvoiceSelect & { id: true }>(
     shopId: string,
     range: ExportRange,
     select: S,
+    statuses: InvoiceStatus[],
     handle: (batch: Array<Prisma.InvoiceGetPayload<{ select: S }>>) => Promise<void>,
   ): Promise<void> {
     let cursorId: string | undefined;
@@ -233,7 +249,7 @@ export class ReportExportService {
         where: {
           shopId,
           isDeleted: false,
-          status: InvoiceStatus.COMPLETED,
+          status: { in: statuses },
           type: { in: [InvoiceType.SALE, InvoiceType.SALES_RETURN] },
           createdAt: { gte: range.start, lt: range.end },
         },

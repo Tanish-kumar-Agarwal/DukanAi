@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Migrations of the API image on MySQL 8 and MariaDB (roadmap 9.12, the
-# phase 8 exit gate re-run on the candidate): for each engine a fresh server
+# Migrations of the API image on MySQL 8.0, MySQL 8.4 LTS and MariaDB
+# (roadmap 9.12, the phase 8 exit gate re-run on the candidate; 8.4 since
+# MySQL 8.0's end of life, audit 2026-10-11 R17): for each engine a fresh server
 # is started in a container, the image's own Prisma CLI
 # (`/app/node_modules/.bin/prisma migrate deploy`; the image has no npx)
 # applies every migration it carries, `prisma migrate diff` from the
@@ -18,15 +19,17 @@ OUT="${2:?usage: migrate-diff.sh IMAGE OUT_DIR}"
 mkdir -p "$OUT"
 command -v docker >/dev/null 2>&1 || { echo "docker is required" >&2; exit 2; }
 
-MYSQL8_IMAGE="${CERTIFY_MYSQL8_IMAGE:-mysql:8.0}"
-MARIADB_IMAGE="${CERTIFY_MARIADB_IMAGE:-mariadb:10.11}"
+# Exact releases (the CI services carry the same pins).
+MYSQL8_IMAGE="${CERTIFY_MYSQL8_IMAGE:-mysql:8.0.46}"
+MYSQL84_IMAGE="${CERTIFY_MYSQL84_IMAGE:-mysql:8.4.11}"
+MARIADB_IMAGE="${CERTIFY_MARIADB_IMAGE:-mariadb:10.11.19}"
 NET="certify-diff-$$"
 PASSWORD="certify-only"
 failed=0
 : > "$OUT/results.tsv"
 
 cleanup() {
-  docker rm -f "certify-mysql8-$$" "certify-mariadb-$$" >/dev/null 2>&1 || true
+  docker rm -f "certify-mysql8-$$" "certify-mysql84-$$" "certify-mariadb-$$" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -83,19 +86,21 @@ engine() {
 # Migrations create the ledger immutability triggers; with the binary log on
 # (MySQL 8 default) that needs the same flag the compose server runs with.
 engine mysql8 "$MYSQL8_IMAGE" mysqld --log-bin-trust-function-creators=1
+engine mysql84 "$MYSQL84_IMAGE" mysqld --log-bin-trust-function-creators=1
 engine mariadb "$MARIADB_IMAGE"
 
-node - "$OUT" "$IMAGE" "$MYSQL8_IMAGE" "$MARIADB_IMAGE" <<'NODE'
+node - "$OUT" "$IMAGE" "$MYSQL8_IMAGE" "$MYSQL84_IMAGE" "$MARIADB_IMAGE" <<'NODE'
 const fs = require('fs');
 const path = require('path');
-const [out, image, mysql8, mariadb] = process.argv.slice(2);
+const [out, image, mysql8, mysql84, mariadb] = process.argv.slice(2);
+const servers = { mysql8, mysql84, mariadb };
 const rows = fs.readFileSync(path.join(out, 'results.tsv'), 'utf8').trim().split('\n').filter(Boolean).map((l) => l.split('\t'));
-const engines = rows.map(([engine, verdict, step]) => ({ engine, server: engine === 'mysql8' ? mysql8 : mariadb, verdict, failedStep: verdict === 'PASS' ? null : step, logs: ['deploy', 'diff', 'status', 'redeploy'].map((s) => `${engine}-${s}.log`).filter((f) => fs.existsSync(path.join(out, f))) }));
-fs.writeFileSync(path.join(out, 'migrate-diff.json'), JSON.stringify({ image, engines, verdict: engines.length === 2 && engines.every((e) => e.verdict === 'PASS') ? 'PASS' : 'FAIL' }, null, 2) + '\n');
+const engines = rows.map(([engine, verdict, step]) => ({ engine, server: servers[engine], verdict, failedStep: verdict === 'PASS' ? null : step, logs: ['deploy', 'diff', 'status', 'redeploy'].map((s) => `${engine}-${s}.log`).filter((f) => fs.existsSync(path.join(out, f))) }));
+fs.writeFileSync(path.join(out, 'migrate-diff.json'), JSON.stringify({ image, engines, verdict: engines.length === Object.keys(servers).length && engines.every((e) => e.verdict === 'PASS') ? 'PASS' : 'FAIL' }, null, 2) + '\n');
 NODE
 
 if [ "$failed" = 0 ]; then
-  echo "Migrations of $IMAGE: deploy, diff, status and redeploy clean on MySQL 8 and MariaDB"
+  echo "Migrations of $IMAGE: deploy, diff, status and redeploy clean on MySQL 8.0, MySQL 8.4 and MariaDB"
 else
   echo "Migrations of $IMAGE: FAILED (see $OUT)" >&2
   exit 1

@@ -2,7 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Logger, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CdnManagerService } from './cdn-manager.service';
+import { CdnManagerService, mediaFileUrl } from './cdn-manager.service';
 import sharp from 'sharp';
 import * as path from 'path';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
@@ -75,7 +75,8 @@ export class MediaProcessorWorker extends WorkerHost {
           .webp({ quality: 80 })
           .toFile(thumbPath);
 
-        const cdnUrl = this.cdn.generateCdnUrl(thumbPath);
+        // Served by the authenticated route (GET /api/media/assets/:id/file?size=), never a static path.
+        const cdnUrl = mediaFileUrl(assetId, size.key);
 
         await this.prisma.mediaThumbnail.create({
           data: {

@@ -242,13 +242,26 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `StockCountItem.variance` when raised from a count item, need an approver
   other than the requester, and approve + post in one transaction with
   guarded PENDING_APPROVAL → APPROVED → POSTED transitions.
-- Payables (`SupplierPayablesService`, global LedgerModule): a GRN adds to
-  `Supplier.pendingPayables` and a purchase return floors it, in the same
-  transaction as their postings; supplier and vendor-bill payments create a
-  `SupplierPayment` row (idempotent per `(shopId, idempotencyKey)`), decrement
-  the balance under a guard (`PAYABLES_INSUFFICIENT`) and post DR
-  ACCOUNTS_PAYABLE / CR CASH|BANK with source `SUPPLIER_PAYMENT`.
-  `payablesFromLedger` rebuilds the balance (`openingPayables` + postings).
+- Payables (`SupplierPayablesService`, global LedgerModule): every writer
+  goes through `postWithPayable` (Supplier row `FOR UPDATE` before the
+  ledger; lock order document → Shift → Supplier → LedgerAccountBalance) and
+  moves `Supplier.pendingPayables` by the posting's net AP credit in the same
+  transaction. A GRN values stock at the PO line's net cost (after its
+  discount, ex-GST) and posts DR INVENTORY / CR AP; a vendor bill posts DR
+  INPUT_GST + the price difference (INVENTORY, or EXPENSES for service lines)
+  / CR AP (`VENDOR_BILL`); a purchase return DR AP / CR INVENTORY; a credit
+  note DR AP / CR INPUT_GST + INVENTORY (`SUPPLIER_CREDIT_NOTE`, only the GST
+  part when it backs a return); a supplier's opening balance DR
+  OPENING_BALANCE_EQUITY / CR AP (`SUPPLIER_OPENING_BALANCE`). The balance is
+  never floored: below zero is a supplier advance. Payments
+  (`RecordSupplierPaymentDto.idempotencyKey` is required; another payment
+  under the same key is 409 `IDEMPOTENCY_KEY_REUSED`) create a
+  `SupplierPayment`, decrement under a guard (`PAYABLES_INSUFFICIENT`), post
+  DR AP / CR CASH|BANK (`SUPPLIER_PAYMENT`), and a CASH payment leaves the
+  payer's open drawer (`SupplierPayment.shiftId`, `Shift.cashPayouts`).
+  `payablesFromLedger` = `openingPayables` + the net AP of the supplier's
+  documents (the opening posting is not counted twice). A supplier with a
+  balance cannot be deleted (409 `SUPPLIER_HAS_BALANCE`).
 - Migrations: an applied migration is never edited
   (`scripts/check-migrations-immutable.sh`, run in CI against the base
   branch); a fix ships as a new migration with `information_schema` guards
@@ -637,9 +650,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   edit are MANAGER+, delete ADMIN+/OWNER (mirrors the API's `@Roles`).
 - 6.3 settings: "Shop Profile" writes every `UpdateShopProfileDto` field
   (`shopApi.update`); the state is a picker from
-  `components/pos/indian-states.ts` because `BillingService.resolveInterState`
-  compares `Shop.state` with `Customer.state` to decide IGST, and a shop
-  without a state can never bill IGST (the save toast says so). The side
+  `components/pos/indian-states.ts` (the place of supply of every counter
+  sale: `BillingService.resolveInterState` bills IGST only when a request
+  names an explicit `placeOfSupply` in another state; a customer's state is
+  an address, never the tax rule). The side
   menu holds two panels (Shop Profile, Account & Security: the caller's
   sessions from `GET /auth/sessions` with revoke and sign-out) and two links
   (Notifications, Team Management); "Billing & Plans" is gone because no plan
@@ -790,7 +804,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 ## Dependencies (roadmap phase 7)
 
 - 7.1 / 7.2: `npm audit --omit=dev` is clean (the `next` 14 advisory went
-  with the Next 16 upgrade) and CI's lint job fails on any high or critical
+  with the Next 16 upgrade; the full audit's remaining highs are build tooling
+  only: `braces`, which has no fixed release, through `eslint-config-next`
+  and Tailwind 3, whose fix is the Tailwind 4 styling migration; jest 30
+  everywhere removed the jest chain and the critical handlebars) and CI's lint job fails on any high or critical
   production advisory (`npm audit --omit=dev --audit-level=high`); re-check
   after any dependency change and keep it that way. The root `overrides`
   carry the fixes that upstream pins block, each with its reason in
@@ -953,8 +970,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `retentionRowsPurgedTotal{table}`, `errorsTrackedTotal{kind}`. Labels stay
   low-cardinality: never an id, shop or user. `GET /api/metrics`
   (`MetricsController`, `@Public() @SkipThrottle()`, `ObservabilityModule`)
-  answers `metricsRegistry.contentType`, 404 under `METRICS_ENABLED=false`,
-  401 unless the bearer token equals `METRICS_TOKEN` (`crypto.timingSafeEqual`).
+  answers `metricsRegistry.contentType`, 404 under `METRICS_ENABLED=false`
+  and, in production, while `METRICS_TOKEN` is blank (the production compose
+  refuses to start without it), 401 unless the bearer token equals
+  `METRICS_TOKEN` (`crypto.timingSafeEqual`; Prometheus reads it from the
+  file `deploy/prometheus/render.sh` writes).
   Rules: `deploy/prometheus/alerts.yml` (+ `prometheus.yml`; `promtool check`
   in the CI deploy job; compose `prometheus` service under profile `ops`);
   runbook `docs/OBSERVABILITY.md`.
@@ -1212,9 +1232,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   rule check.
 - 9.5 reconciliation (`src/reconciliation`): `reconcileBusinessDay(db, {
   shopId, timeZone, businessDate })` in `reconciliation-engine.ts` is pure
-  over a Prisma client (every query names the shop) and runs seven checks
-  (documents, postings, tenders, dashboard, shifts, stock, ledger; contract
-  §11), each with figures and drifts (subject, detail, expected, actual,
+  over a Prisma client (every query names the shop), runs inside one
+  REPEATABLE READ snapshot (`inReadSnapshot`; never on a bare client) and
+  runs nine checks (documents, postings, tenders, dashboard, shifts, stock,
+  ledger, receivables, payables; contract §11), each with figures and drifts (subject, detail, expected, actual,
   difference). Expected postings are rebuilt from the stored document: tender
   rows (legacy `paidAmount` under `paymentMode` when there are none), credit,
   `splitRevenue`, and cost of goods from the `StockLedgerEntry` rows that
@@ -1261,7 +1282,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   bills across 31 March / 1 April: numbers, sequences, the cancellation
   window, the dashboard day and the invoice list agree with the FY tags and
   both days reconcile. `NumberSequence` rows are per prefix
-  (`INV-<FY>-`), which is why a new year starts at 000001 on its own.
+  (`INV-<yyYY>-`, e.g. `INV-2627-`; 15 characters, CGST Rule 46(b), 9.24),
+  which is why a new year starts at 000001 on its own.
 
 - 9.7 topology (`docs/DEPLOYMENT.md` "Production topology", decided and
   built): managed MySQL 8 over TLS (`DATABASE_URL` with `?sslaccept=strict`,
@@ -1273,9 +1295,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   dump + documents + off-site daily, `BACKUP_LOOP_*`, stamps for the
   metric) and `deploy/k8s/` (kustomize: 1 replica Recreate, probes, 45 s
   grace, `backup-agent` sidecar sharing the RWO claims, ingress-nginx +
-  cert-manager Ingress, NetworkPolicies; `dukaanai-secrets.env` generated and
-  gitignored there; validated with `kubectl kustomize | kubeconform
-  -strict` in CI) are the two forms; never set `replicas > 1` before the
+  cert-manager Ingress, NetworkPolicies; the release is two kustomizations,
+  `deploy/k8s/migrate` (the Job) applied and waited for before `deploy/k8s`,
+  both sharing the Component `deploy/k8s/common` (namespace, the Secret from
+  the gitignored `common/dukaanai-secrets.env`, the one image tag);
+  validated with `kubectl kustomize | kubeconform -strict` in CI) are the two forms; never set `replicas > 1` before the
   documents move to object storage behind `StoragePathBuilder`. The db-ops
   image now bakes `scripts/` in (`COPY scripts /scripts`) so the sidecar
   runs without a bind mount. `scripts/compose-smoke-prod.sh` (CI deploy
@@ -1460,8 +1484,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (`attach-release.sh` now takes many files). The CI deploy job runs the
   control on every push. gitleaks (9.11) and `npm audit --omit=dev
   --audit-level=high` stay the secret and advisory gates;
-  `.github/dependabot.yml` adds weekly grouped npm PRs (root + each
-  workspace) beside the github-actions pins. No docker here, so the image
+  `.github/dependabot.yml` adds weekly grouped npm PRs (from the root only:
+  it reads every workspace and rewrites the one root lockfile; listing the
+  workspace directories made PRs without it, and `npm ci` failed on each)
+  beside the github-actions pins. No docker here, so the image
   scan, SBOM and control are proven by the jobs; locally the pinned Trivy
   was shown to produce a valid CycloneDX document and `trivy fs` of the
   tree is clean. What the first gate run on main found, keep it so: every
@@ -1713,11 +1739,242 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   and a §7 row per alert: a new alert is walked on the drill stack before
   it ships.
 
+- 9.23 support (`docs/SUPPORT.md`: channel, response targets per severity,
+  taking a report, pausing a feature; guides `docs/guides/{CASHIER_GUIDE,
+  OWNER_GUIDE,FAQ}.md`, written from the screens' own labels; the FAQ's
+  pilot section is filled by the pilot). Feature pause: `FeatureFlagsConfig`
+  (`FEATURE_<NAME>_ENABLED`, default true, `BooleanFromEnv`), the catalogue
+  `src/common/features/feature-catalogue.ts` and `FeatureGateGuard` (the
+  fifth `APP_GUARD`, after RolesGuard, so 401/403 come first): a gated
+  controller or handler (`@FeatureGate('ocr')`; writes only unless
+  `{ reads: true }`) answers 503 `FEATURE_PAUSED` with the feature named.
+  Credit sales, returns and cancellations are checked inside the services
+  AFTER replay detection (`assertFeatureEnabled`), so a retried document
+  committed before the pause is still answered. `feature_enabled{feature}`
+  is set at boot (Grafana "Paused features"); an unknown `FEATURE_*`
+  variable is warned about, never fatal. Compose (`${FEATURE_X:-true}`) and
+  the Kubernetes ConfigMap forward every switch; `feature-gate.spec.ts`
+  keeps the catalogue, the config class, `.env.example`, `.env.production`,
+  both compose files, the k8s files and SUPPORT.md in step. A new switch
+  touches all of them. `test/integration/feature-flags.integration-spec.ts`.
+- 9.24 compliance and privacy (`docs/privacy/{DATA_INVENTORY,
+  RETENTION_POLICY,PRIVACY_NOTICE,TERMS_FOR_SHOPS,DATA_REQUESTS}.md`,
+  `docs/compliance/GST_INVOICE_CHECK.md`; notice and terms are drafts for
+  the owner's advisor). The inventory is code: `src/privacy/personal-data.ts`
+  classifies every text/JSON column (identity, freeText, payload, network,
+  file, secret, keep with a reason) and `personal-data.spec.ts` fails on an
+  unclassified candidate column, a stale NOT_PERSONAL entry, or a retention
+  policy that disagrees with `RetentionConfig`: a new personal column gets
+  a class in the same change. `node dist/cli/shop-data export|suspend|
+  erase|erase-customer` (`src/privacy/shop-data.ts`, raw SQL on a plain
+  PrismaClient, every statement names the shop): export = every tenant
+  model's rows (credentials dropped) as JSONL + CSV books + documents,
+  media, imports, manifest, SHA256SUMS, tar.gz + .sha256; erase refuses an
+  ACTIVE shop and needs that shop's export archive, rewrites every
+  classified column by class (`[erased]` / `erased-<id>` / NULL / `{}`),
+  closes and anonymises the users, deletes sessions and the like, removes
+  files (media only when no other shop references the path), never touches
+  LedgerTransaction; erase-customer refuses a non-zero balance and keeps
+  name/address/`Invoices/` under the GST legal hold (a sale >= 50,000 still
+  inside `gstRetentionEnds`: 31 Dec of start year + 7). Ledger descriptions
+  carry no names (`Customer payment (CASH)`, `Opening balance`; migration
+  `20261011090000` redacted old rows by dropping and recreating the update
+  trigger): never write personal text into an immutable table. POS numbers
+  are GST serial numbers: `INV-<yyYY>-NNNNNN` / `RET-...`, 15 characters
+  (Rule 46(b) allows 16; the old `INV-2026-27-...` was 18),
+  `InvoiceNumberService` owns the format and refuses a longer one. The
+  pilot readiness check fails a shop without a GSTIN.
+  `test/integration/shop-data.integration-spec.ts` plants a marker in every
+  personal field and proves no text column of any table holds it after an
+  erasure, with the ledger unchanged. A restore re-applies the erasure
+  register (`docs/BACKUP_RESTORE.md` step 7).
+
+## Release audit fixes (2026-10-11)
+
+The audit report and the per-area notes live outside the repository; what
+the fixes made true, and must stay true:
+
+- Accounts (lead): every email lookup goes through `canonicalEmail` /
+  `sameEmailAddress` (`src/common/email-address.ts`: NFC, lower case,
+  punycode domain). `User.email` is `utf8mb4_unicode_ci`, which equates
+  `tést.local` with `test.local`, so a row found by email is re-checked and
+  mail goes to the stored address, never the typed one (the reset-link
+  takeover). Login answers unknown accounts after a dummy bcrypt
+  (`equaliseTiming`); logout and `DELETE /auth/sessions/:id` close that
+  family's sockets only (`disconnectSession`); `PATCH /users/:id/suspend`
+  needs `{ isActive }`; suspending or removing a user deletes the unused
+  invitations they issued; an invitation to an address with an account is
+  409 `ALREADY_A_MEMBER` only inside the inviter's own shop (other shops are
+  not revealed); `PATCH /notifications/read-all` is MANAGEMENT_ROLES;
+  product revisions are found under their own product and never approved by
+  their author (403 `SEPARATION_OF_DUTIES`).
+- Billing (contract §1-§5, §13): MRP is tax-inclusive and
+  `inclusiveUnitPrice` (invoice-math) is its floor in the products API,
+  imports and checkout (`PRICE_ABOVE_MRP`; a blank MRP becomes the
+  inclusive price; fixtures must set MRP at least the price with GST,
+  `pos-fixtures` does). A counter sale is intra-state: IGST only with an
+  explicit `placeOfSupply` (`@IsIndianState`) in another state; customer
+  states are canonicalised and are addresses only. The checkout identity
+  hash leaves out `tenderedAmount` (the legacy hash is still accepted); a 422
+  key reuse carries the saved document (`details.invoiceId`,
+  `transactionId`) and the POS shows it instead of rotating the key, which
+  travels with a held cart (`keyAttempted`). Cashier authority:
+  `BILLING_CASHIER_MAX_REFUND_AMOUNT`, `BILLING_CASHIER_RETURN_WINDOW_DAYS`
+  (403 `RETURN_REQUIRES_APPROVAL`), `BILLING_CASHIER_MAX_CUSTOM_TOTAL_AMOUNT`,
+  a cashier-created customer's credit limit is 0. DAMAGED / EXPIRED returns
+  are not restocked and reverse no COGS; a return after the s.34(2) date is
+  409 `RETURN_PAST_GST_DEADLINE` (`billing/gst-deadline.ts`). COGS is booked
+  per line as cumulative slices (`costOfGoodsSlice`), and reconciliation
+  expects the same. Product links (category, supplier, brand) go through
+  `assertOwned`; the SKU sequence skips numbers an explicit SKU holds.
+- Books: a paid expense posts DR EXPENSES / CR CASH|BANK (`EXPENSE`, later
+  changes `EXPENSE_ADJUSTMENT <id>:<n>` for the difference, so Σ postings =
+  `expenseLedgerState`, `src/expenses/expense-books.ts`) and a cash one
+  leaves the recorder's open drawer (`Expense.shiftId`, `Shift.cashPayouts`
+  via `src/shifts/cash-payout.ts`; a closed drawer is never touched). Shift
+  expected cash = opening + cash sales − cash refunds + cash repayments −
+  cashPayouts. Outstanding udhar counts positive balances only;
+  `customerAdvances` is separate. Dashboard and analytics COGS =
+  `ITEM_COGS` (lines with a stock movement), Net Profit = gross profit −
+  the period's expenses. Report exports list COMPLETED and CANCELLED
+  documents with cess; an impossible date is 400 `INVALID_DATE`.
+- Schedules: every `CronJob` is built by `createCronJob`
+  (`src/common/cron/cron-job.ts`) in `CRON_TIMEZONE` (IANA, default
+  Asia/Kolkata; the images run in UTC); `cron-job.spec.ts` fails on a
+  `new CronJob` anywhere else. Cron locks are `SET NX PX` with
+  token-checked extend / release on the one Redis (`redisLockClient`, the
+  redlock beta is gone; same keys, so mixed versions still exclude each
+  other), extended every TTL/3 while the job runs.
+- Stock and purchasing: GRN acceptance updates `costPrice` by moving
+  average; a GRN without `warehouseId` goes to the sale location's warehouse
+  (400 `GRN_WAREHOUSE_REQUIRED` when the shop has others);
+  `POST /inventory-domain/transfer` moves stock between locations; legacy
+  `currentStock` bootstraps only into the sale-location row; stock-count
+  variance = counted − (snapshot + movements in `(startedAt, countedAt]`),
+  one live adjustment request per count item; a MANAGER adjustment above
+  `INVENTORY_MANAGER_MAX_ADJUST_VALUE` is 403 `ADJUSTMENT_REQUIRES_APPROVAL`;
+  OPENING_BALANCE once per item. Procurement transitions are compare-and-set
+  under the document lock (409 `<DOC>_STATE_CONFLICT`), reject / cancel
+  routes exist, the bill three-way match is cumulative with no quantity
+  tolerance (`PURCHASE_BILL_PRICE_TOLERANCE_PERCENT` on price), caches are
+  invalidated after commit. System stock movements are recorded under the
+  shop owner. Workflow tasks are acted on by their assignee / delegate /
+  role, never the document's creator.
+- Queues and Redis: a queue's `defaultJobOptions` come only from
+  `bullDefaultJobOptions` (`common/queues/job-options.ts`; BullMQ merges
+  shallowly) with `BULL_KEEP_JOBS_*` bounds; a request-path `queue.add` goes
+  through `enqueueWithin` (503 `QUEUE_UNAVAILABLE`, the caller closes the
+  rows it wrote, the worker treats a given-up row as a no-op). The cache
+  client has `REDIS_COMMAND_TIMEOUT_MS`; post-commit invalidation is one
+  `mdel` raced against 1 s and never throws. Outbox settles are
+  claim-guarded (`{ retryCount }` from the job id `<id>.<n>`); the
+  system-events marker is `sysevt.<eventId>`, inserted first. Relay
+  families include `Barcode*` (product) and `Workflow*` (purchase);
+  `outbox-routing.spec` fails on a staged type nobody relays.
+- HTTP and storage: routing is case-sensitive (`createHttpAdapter()` in
+  `main.ts` and the fixture, so `/API/metrics` is 404). Webhook deliveries
+  send a Buffer, ignore proxy variables, have a total deadline, retry 8
+  times from 30 s, and a shop has at most
+  `EVENTS_WEBHOOK_MAX_ENDPOINTS_PER_SHOP` endpoints; the URL guard allows
+  global IPv6 unicast only. Media bytes are served by `GET
+  /api/media/assets/:id/file` (tenant-checked); responses carry
+  store-relative paths; upload names are at most 191 characters; P2000 /
+  P2020 are 400 `VALUE_TOO_LONG` / `VALUE_OUT_OF_RANGE`. Imports parse as a
+  stream and stop at `MAX_IMPORT_ROWS + 1`. EmailService strips control
+  characters from every subject and body and logs masked recipients.
+- Web: `components/customers/permissions.ts` mirrors the API role sets
+  (`isManagement`, `canWriteCustomers`, `canSetCreditLimit`,
+  `canReturnInvoices`, `canUsePos`, `outranks`; AUTH_DISABLED is OWNER):
+  every write button, sidebar link and quick action is gated with it
+  (`e2e-auth/role-gates.spec.ts` checks the hidden action and the API's 403
+  per role). A capped list reads `X-Total-Count` (`fetchEveryPage`, a pager
+  or "Load more"), never the default 100; the navbar badge reads `GET
+  /notifications/unread-count`. "Today" is the shop's business date
+  (`useShopBusinessDate`, or the API's `from` / `to`), never `new Date()`.
+  CSV built in the browser goes through `lib/csv.ts` `csvCell`; exports
+  have a 120 s timeout and parse a Blob error body. A blank shop email
+  clears it (`@ValidateIf(email !== '')`). A figure no module records is
+  shown as "Not tracked", never as ₹0.
+- Privacy: shop export and erasure reach child tables through
+  `childModels()` (DMMF); a new model without `shopId` must hang off a
+  tenant model or be listed in `NOT_SHOP_DATA` with its reason.
+- Backups: the scripts run under `umask 077`, take TLS from `DATABASE_URL`
+  (`sslaccept=strict` → `VERIFY_IDENTITY`, `sslcert` → `--ssl-ca`, never
+  unverified), `binlog-archive.sh` prunes only below the oldest kept dump's
+  position (`--dumps`), `restore.sh --to` refuses a target past the archive
+  (`--allow-short`); `scripts/db/lib.test.sh` runs in CI.
+- Deployment and CI: the API refuses to boot unless every migration folder
+  of its build is applied (`assertMigrationsApplied`; a database ahead of
+  the image boots), so `migrate deploy` every database before tests. The
+  migration-immutability gate compares with the PR base / previous push and
+  the latest `v*` tag. gitleaks allowlists use `targetRules` + `condition =
+  "AND"` (a global `paths` allowlist skips files before any rule) and
+  `.github/scripts/gitleaks-control.sh` plants secrets to prove it. Monitoring
+  ports bind `${*_BIND:-127.0.0.1}`; production needs
+  `GRAFANA_ADMIN_PASSWORD` and `METRICS_TOKEN`; Prometheus config is rendered
+  at start (`deploy/prometheus/render.sh`: token file, public probe targets,
+  `topology/{reference,production}.rules.yml` for the expected backup
+  kinds). Every compose service rotates its logs; db-ops containers run as
+  uid 1000. Compose 2.24.4 is the minimum. `release.yml` runs on a green CI
+  of a push (`workflow_run`), a tag pushes only `:vX.Y.Z`, and both attach
+  jobs reuse one draft. certify records a skipped step as SKIPPED, never
+  PASS. `.dockerignore` and both Dockerfiles keep `.env*` out of images
+  (Next copied `.env.production` into the standalone output).
+  `apps/web/next-env.d.ts` is untracked. The CI integration job is a matrix
+  over MySQL 8.0 and 8.4.
+
+- Follow-up (2026-10-12), keep so: dark mode inverts `white` and the gray
+  scale through CSS variables (`globals.css`), so a `dark:` variant on them
+  flips them back (`dark:bg-gray-900` is white in dark mode): never add one
+  (`e2e/dark-mode.spec.ts` scans the source and measures form contrast);
+  form fields without a background class take `var(--color-white)` from a
+  base rule, and `.dark .sidebar-bg` restores the light palette because the
+  sidebar is navy in both themes. The sidebar pins Notifications and Settings
+  under the scrolling list inside the same `nav` "Main" (`pinned` items) and
+  the Upgrade card shrinks under `max-height` 820 / 640 px
+  (`e2e/sidebar.spec.ts`, five window sizes). Expense receipts:
+  `POST /expenses/:id/receipt` (MANAGEMENT_ROLES, `documents` feature gate,
+  multer memory storage with `expenseReceiptUploadPolicy`: JPEG / PNG / PDF,
+  10 MB, bytes sniffed) writes `<shop>/Expenses/<id>/receipt-<stamp>.<ext>`
+  with `wx`, then points `Expense.receiptPath` (shop-relative) at it under
+  the expense lock with an `EXPENSE_RECEIPT_ATTACHED` audit row; a replaced
+  file moves to `Deleted/`; `GET /expenses/:id/receipt` streams it like the
+  media file route (`expense-receipts.integration-spec.ts`). The web loads it
+  as a Blob (the request carries the session): an image in place, a PDF by
+  download (CSP has no frames). Settings › Account & Security posts
+  `POST /auth/change-password` and then signs out
+  (`/login?notice=password-changed`). The product form's "price I type
+  includes GST" converts through `exclusiveUnitPrice` (invoice-math: the
+  largest paise price whose `inclusiveUnitPrice` is at most the typed one)
+  and always shows what the customer pays; off by default, remembered in
+  `localStorage`. The inventory expiry filters and the row badge share
+  `expiryStatus` (Depleted, Expired, Expiring Soon, Safe).
+- Financial visibility (2026-10-12): cost, profit, margin, stock at cost,
+  supplier payables / purchasing, expenses and Reports are `FINANCE_ROLES`
+  (`role-sets.ts`, = MANAGEMENT_ROLES; web `canSeeFinancials`). Reads that
+  are financial as a whole carry `@Roles(...FINANCE_ROLES)` (suppliers,
+  expenses, procurement documents, purchase analytics and events,
+  `/dashboard/analytics`, `/dashboard/products`); every other answer to a
+  CASHIER / VIEWER goes through `FinancialFieldsInterceptor` (global), which
+  drops any key matching `isFinancialField` (`cost|profit|margin|payable|cogs`,
+  plus `inventoryValue`/`stockValue`/`valuation`) at any depth without
+  mutating the source. Name a new money-behind-the-counter field so it
+  matches, or gate its route. The dashboard summary / insights skip those
+  sections for them and list them in `restrictedSections`. The web hides the
+  links, tiles and product cost, and `FinanceOnly` replaces the three pages
+  (it mounts nothing, so no 403 is requested). Guards: the route walker
+  (VIEWER: 403 on every narrowed read, no financial key in any 2xx JSON),
+  `financial-visibility.integration-spec.ts` (every GET with real ids as
+  CASHIER and VIEWER), `e2e-auth/role-gates.spec.ts`.
+
 ## Toolchain
 
 - Node is pinned once, in `.nvmrc` (CI reads it via `node-version-file`) and
   `engines` in every package.json. `npm run lint|type-check|test|build` at the
-  root go through turbo; `apps/api` lint is clean at zero errors and must stay
+  root go through turbo 2 (`turbo.json` `tasks`, `envMode: loose` so tasks
+  see the whole environment as turbo 1 did, `agentGuidance: false` or turbo
+  appends its own block to this file; it needs the root `packageManager`
+  field); `apps/api` lint is clean at zero errors and must stay
   so: unused parameters that a signature must keep are `_`-prefixed, and a
   deliberately un-awaited promise is written `void fn()` only when the callee
   catches its own errors (`no-floating-promises` is on; `no-unsafe-argument`
@@ -1786,6 +2043,22 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   shop in its own context, per-shop and per-row failures logged and skipped.
   `TenantGuard` lets only `ACTIVE` shops through (SUSPENDED/LOCKED/ARCHIVED/
   DELETED and an unknown status are 403).
+- Cross-shop isolation (audit 2026-10-12, `docs/security/TENANT_ISOLATION.md`):
+  `test/integration/cross-shop-isolation.integration-spec.ts` seeds two full
+  shops (`isolation/seed-shop.ts`) and attacks every route from the Nest
+  metadata in both directions with DTO-generated valid bodies
+  (`isolation/request-bodies.ts`, `isolation/attack.ts`): no 2xx for a victim
+  id, the same status and code as an id of nothing, every write refused by the
+  lookup of the attacked field while its all-own control passes, the victim's
+  rows byte-for-byte unchanged (`isolation/shop-data.ts` fingerprint) and files
+  unchanged, no victim id or text in any answer. A new write route whose
+  generated body fails validation or stops at a state rule fails the suite:
+  give the attacker the right row through `ownFor` / `extraBodies` in the spec.
+  `User` and `Invitation` are global models: a lookup by a request-supplied id
+  must name the shop. Raw SQL on a shop's tables names the shop or is listed in
+  `src/prisma/raw-sql-tenancy.spec.ts` with its reason. `node dist/cli/tenant-audit`
+  (`src/prisma/cross-shop-audit.ts`, DMMF shop paths) finds rows naming another
+  shop's rows; `cross-shop-audit.spec.ts` lists the one table with no shop path.
 - Procurement line tables (`PurchaseOrderItem`, `GoodsReceiptLine`,
   `VendorBillLine`, `PurchaseReturnLine`, `SupplierCreditLine`) carry
   `shopId` (migration `20260927180000_scope_line_tables_by_shop`, backfilled

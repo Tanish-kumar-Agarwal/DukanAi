@@ -58,6 +58,8 @@ export class LocationHierarchyService {
    */
   async getSubtree(warehouseId: string, parentPath: string, query?: ListQueryDto) {
     const shopId = this.tenantContext.getShopId();
+    // An unknown or another shop's warehouse is a 404, not an empty page (cross-shop audit 2026-10-12).
+    await assertOwned(this.prisma, 'warehouse', warehouseId, shopId, { isDeleted: false });
     const { skip, take } = pageArgs(query);
     // Because path is indexed (shopId, path), a LIKE query with trailing wildcard uses the index perfectly.
     const where = { shopId, warehouseId, path: { startsWith: parentPath }, isDeleted: false };

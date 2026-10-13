@@ -31,4 +31,10 @@ describe('storage upload validation (roadmap 5.1)', () => {
     expect(validateUploadedFile(file('n.json', 'application/json', Buffer.from('{"a":1}')), billingDocumentUploadPolicy).mimetype).toBe('application/json');
     expect(() => validateUploadedFile(file('n.json', 'application/json', PNG), billingDocumentUploadPolicy)).toThrow(/does not match/);
   });
+
+  it('refuses a file name longer than 191 characters at the filter stage (audit P3)', () => {
+    expect(() => validateUploadedFile(file(`${'a'.repeat(188)}.pdf`, 'application/pdf'), billingDocumentUploadPolicy)).toThrow(/at most 191/);
+    // A name the column holds still meets the storage module's own segment rule (a 400 either way, never a 500).
+    expect(() => validateUploadedFile(file(`${'a'.repeat(187)}.pdf`, 'application/pdf'), billingDocumentUploadPolicy)).toThrow(BadRequestException);
+  });
 });

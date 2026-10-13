@@ -10,6 +10,8 @@ import { clampSearchQuery } from '../product-search/search-term';
 import { clampSkip, clampTake, MAX_LIST_TAKE, PagedResult } from '../common/pagination';
 import { NumberSequenceService } from '../common/numbering/number-sequence.service';
 import { ProductStockFilter } from './dto/product-list-query.dto';
+import { assertOwned } from '../prisma/tenant-ownership';
+import { Decimal, inclusiveUnitPrice } from '../billing/utils/invoice-math.engine';
 
 export const PRODUCT_LIST_DEFAULT_LIMIT = 50;
 export const PRODUCT_LIST_MAX_LIMIT = MAX_LIST_TAKE;
@@ -44,6 +46,30 @@ const STOCKLESS_TYPES: ProductType[] = ['SERVICE', 'DIGITAL'];
 
 /** Sequence key of the server-generated SKU (`SKU-000001`, one counter per shop). */
 export const SKU_SEQUENCE = { entityType: 'PRODUCT_SKU', prefix: 'SKU-' } as const;
+
+/** Numbers drawn past SKUs already taken (typed, imported) before a SKU-less create gives up. */
+export const SKU_DRAW_LIMIT = 1000;
+
+/**
+ * The MRP a product is stored with (audit P1-2). MRP is tax-inclusive and the
+ * selling price is before GST, so the MRP must be at least one unit's price
+ * with GST and cess (`inclusiveUnitPrice`, the same figure the checkout
+ * checks): a smaller one is 400 PRICE_ABOVE_MRP; none (undefined / null) is
+ * that inclusive price.
+ */
+export function resolveMrp(sellingPrice: Prisma.Decimal.Value, gstRate: string, cessRate: Prisma.Decimal.Value, mrp: Prisma.Decimal.Value | null | undefined): Prisma.Decimal {
+  const inclusive = inclusiveUnitPrice(String(sellingPrice), gstRate, String(cessRate));
+  if (mrp === undefined || mrp === null) return new Prisma.Decimal(inclusive.toFixed(2));
+  const given = new Decimal(String(mrp));
+  if (given.lessThan(inclusive)) {
+    throw new BadRequestException({
+      message: `The MRP ${given.toFixed(2)} is below the selling price plus GST (${inclusive.toFixed(2)}). The MRP includes all taxes: raise it or lower the selling price (before GST).`,
+      code: 'PRICE_ABOVE_MRP',
+      details: { mrp: given.toNumber(), inclusivePrice: inclusive.toNumber(), sellingPrice: Number(sellingPrice) },
+    });
+  }
+  return new Prisma.Decimal(given.toFixed(2));
+}
 
 /** Normalises a barcode from a DTO: trimmed string, or null when absent/blank. */
 export function normalizeBarcode(value: string | null | undefined): string | null {
@@ -92,17 +118,23 @@ export class ProductsService {
     }
 
     if (barcode) await this.assertBarcodeAvailable(shopId, barcode);
+    const mrp = resolveMrp(createProductDto.sellingPrice, createProductDto.gstRate ?? 'EIGHTEEN', createProductDto.cessRate ?? 0, createProductDto.mrp);
 
     let product;
     try {
       product = await this.prisma.$transaction(async (tx) => {
+        // A category, supplier or brand named in the body must be the shop's own
+        // (audit P1-1): the tenant extension never reads a scalar foreign key.
+        await this.assertLinksOwned(tx, shopId, createProductDto);
         // Roadmap 6.2: the SKU is never invented by a client. Without one the
         // shop's sequence numbers it under the same row lock as every other
         // document number, so two concurrent creates cannot collide.
-        const sku = requestedSku ?? (await this.numberSequence.next(tx, shopId, SKU_SEQUENCE.entityType, SKU_SEQUENCE.prefix)).number;
+        const sku = requestedSku ?? (await this.nextFreeSku(tx, shopId));
         const newProduct = await tx.product.create({
           data: {
             ...createProductDto,
+            mrp,
+            wholesalePrice: createProductDto.wholesalePrice ?? createProductDto.sellingPrice,
             sku,
             barcode,
             shopId,
@@ -195,7 +227,19 @@ export class ProductsService {
     });
     if (!product) throw new NotFoundException('Product not found');
 
-    const data: Prisma.ProductUncheckedUpdateInput = { ...updateProductDto, updatedBy: userId };
+    const { mrp: requestedMrp, ...fields } = updateProductDto;
+    const data: Prisma.ProductUncheckedUpdateInput = { ...fields, updatedBy: userId };
+    // A change to any of the four re-checks the pair against the MRP rule;
+    // a PATCH that touches none leaves an older product as it is.
+    const pricingTouched = (['sellingPrice', 'gstRate', 'cessRate', 'mrp'] as const).some((field) => updateProductDto[field] !== undefined);
+    if (pricingTouched) {
+      data.mrp = resolveMrp(
+        updateProductDto.sellingPrice ?? product.sellingPrice,
+        updateProductDto.gstRate ?? product.gstRate,
+        updateProductDto.cessRate ?? product.cessRate,
+        requestedMrp === undefined ? product.mrp : requestedMrp,
+      );
+    }
     if (updateProductDto.barcode !== undefined) {
       const barcode = normalizeBarcode(updateProductDto.barcode);
       data.barcode = barcode;
@@ -208,7 +252,7 @@ export class ProductsService {
     const after = snapshotPrices({
       sellingPrice: updateProductDto.sellingPrice !== undefined ? new Prisma.Decimal(updateProductDto.sellingPrice) : product.sellingPrice,
       costPrice: updateProductDto.costPrice !== undefined ? new Prisma.Decimal(updateProductDto.costPrice) : product.costPrice,
-      mrp: updateProductDto.mrp !== undefined ? new Prisma.Decimal(updateProductDto.mrp) : product.mrp,
+      mrp: data.mrp instanceof Prisma.Decimal ? data.mrp : product.mrp,
       wholesalePrice: updateProductDto.wholesalePrice !== undefined ? new Prisma.Decimal(updateProductDto.wholesalePrice) : product.wholesalePrice,
       gstRate: updateProductDto.gstRate ?? product.gstRate,
       cessRate: updateProductDto.cessRate !== undefined ? new Prisma.Decimal(updateProductDto.cessRate) : product.cessRate,
@@ -216,6 +260,7 @@ export class ProductsService {
     const priceChanged = PRICE_FIELDS.some((field) => before[field] !== after[field]);
 
     return this.prisma.$transaction(async (tx) => {
+      await this.assertLinksOwned(tx, shopId, updateProductDto);
       const updated = await tx.product.update({ where: { id }, data });
 
       if (priceChanged) {
@@ -255,6 +300,31 @@ export class ProductsService {
         status: 'SOFT_DELETED',
         updatedBy: userId,
       }
+    });
+  }
+
+  /** 404 unless every category, supplier and brand id in the body is a live row of this shop (audit P1-1). */
+  private async assertLinksOwned(tx: Prisma.TransactionClient, shopId: string, links: { categoryId?: string | null; supplierId?: string | null; brandId?: string | null }): Promise<void> {
+    await assertOwned(tx, 'category', links.categoryId, shopId, { isDeleted: false });
+    await assertOwned(tx, 'supplier', links.supplierId, shopId, { isDeleted: false });
+    await assertOwned(tx, 'brand', links.brandId, shopId, { isDeleted: false });
+  }
+
+  /**
+   * The next generated SKU no live product holds (audit P1-6). A product can
+   * already carry the next number (typed, imported or edited in): drawing past
+   * it inside the same transaction keeps every later SKU-less create working,
+   * where a plain insert failed 409 and its rollback undid the draw, for ever.
+   */
+  private async nextFreeSku(tx: Prisma.TransactionClient, shopId: string): Promise<string> {
+    for (let attempt = 0; attempt < SKU_DRAW_LIMIT; attempt++) {
+      const { number } = await this.numberSequence.next(tx, shopId, SKU_SEQUENCE.entityType, SKU_SEQUENCE.prefix);
+      const taken = await tx.product.findFirst({ where: { shopId, sku: number, deletedToken: '' }, select: { id: true } });
+      if (!taken) return number;
+    }
+    throw new ConflictException({
+      message: `The next ${SKU_DRAW_LIMIT} generated SKUs are all taken by existing products. Give this product a SKU.`,
+      code: 'SKU_SEQUENCE_EXHAUSTED',
     });
   }
 

@@ -17,31 +17,31 @@ export class ProductVersioningController {
 
   @Patch(':revId')
   @Roles(Role.ADMIN, Role.MANAGER, Role.OWNER)
-  saveDraft(@Param('revId') revId: string, @Body(JsonObjectPipe) data: JsonObject) {
-    return this.versioningService.saveDraft(revId, data);
+  saveDraft(@Param('productId') productId: string, @Param('revId') revId: string, @Body(JsonObjectPipe) data: JsonObject) {
+    return this.versioningService.saveDraft(productId, revId, data);
   }
 
   @Post(':revId/submit')
   @Roles(Role.ADMIN, Role.MANAGER, Role.OWNER)
-  submitForReview(@Param('revId') revId: string) {
-    return this.versioningService.submitForReview(revId);
+  submitForReview(@Param('productId') productId: string, @Param('revId') revId: string) {
+    return this.versioningService.submitForReview(productId, revId);
   }
 
   @Post(':revId/approve')
   @Roles(Role.ADMIN, Role.OWNER)
-  approve(@Param('revId') revId: string, @Body('comments') comments?: string) {
-    return this.versioningService.approve(revId, comments);
+  approve(@Param('productId') productId: string, @Param('revId') revId: string, @Body('comments') comments?: string) {
+    return this.versioningService.approve(productId, revId, comments);
   }
 
   @Post(':revId/publish')
   @Roles(Role.ADMIN, Role.OWNER)
-  publish(@Param('revId') revId: string) {
-    return this.versioningService.publish(revId);
+  publish(@Param('productId') productId: string, @Param('revId') revId: string) {
+    return this.versioningService.publish(productId, revId);
   }
 
   @Get('compare/:revA/:revB')
   @Roles(Role.ADMIN, Role.MANAGER, Role.OWNER, Role.CASHIER, Role.VIEWER)
-  getDiff(@Param('revA') revA: string, @Param('revB') revB: string) {
-    return this.versioningService.getDiff(revA, revB);
+  getDiff(@Param('productId') productId: string, @Param('revA') revA: string, @Param('revB') revB: string) {
+    return this.versioningService.getDiff(productId, revA, revB);
   }
 }

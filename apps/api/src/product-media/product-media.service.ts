@@ -3,11 +3,20 @@ import { assertOwned } from '../prisma/tenant-ownership';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadEngineService, UploadedFile } from './upload-engine.service';
 import { DeduplicationService } from './deduplication.service';
-import { CdnManagerService } from './cdn-manager.service';
+import { CdnManagerService, mediaFileUrl } from './cdn-manager.service';
 import { CompressionEngineService } from './compression-engine.service';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ListQueryDto, MAX_LIST_TAKE, pageArgs } from '../common/pagination';
+import { discardUpload, fileNameTooLong } from '../common/upload/upload-options';
+
+/** What `GET /media/assets/:id/file` streams. */
+export interface MediaFile {
+  path: string;
+  mimeType: string;
+  size: number;
+  fileName: string;
+}
 
 @Injectable()
 export class ProductMediaService {
@@ -35,6 +44,12 @@ export class ProductMediaService {
     // 0. The product / variant the media is attached to must belong to the shop
     //    (roadmap 4.1): a foreign key in the URL is never checked by the tenant extension.
     if (!productId && !variantId) throw new BadRequestException('Media must be attached to a product or a variant.');
+    // The interceptor's filter refuses a long name before storing it; a direct caller is held to the same rule (audit P3).
+    const tooLong = fileNameTooLong(file?.originalname);
+    if (tooLong) {
+      await discardUpload(file);
+      throw tooLong;
+    }
     await assertOwned(this.prisma, 'product', productId, shopId, { isDeleted: false });
     await assertOwned(this.prisma, 'productVariant', variantId, shopId, { isDeleted: false });
 
@@ -62,8 +77,7 @@ export class ProductMediaService {
       // 5. Move to permanent CDN/Storage
       const extension = path.extname(file.originalname).slice(1) || 'bin';
       const finalPath = await this.cdn.persistLocal(tempPath, hash, extension);
-      const cdnUrl = this.cdn.generateCdnUrl(finalPath);
-      
+
       // Determine MediaType
       const mediaType = file.mimetype.startsWith('video/') ? 'VIDEO' : 
                         file.mimetype.startsWith('image/') ? 'IMAGE' : 'DOCUMENT';
@@ -81,22 +95,30 @@ export class ProductMediaService {
         },
       });
 
-      // 7. Store Storage Reference
+      // 7. Store Storage Reference. The file is served by the authenticated,
+      //    tenant-checked route (audit P3): nothing serves a static path.
       await this.prisma.mediaStorage.create({
         data: {
           shopId,
           assetId: asset.id,
           provider: 'LOCAL',
           path: finalPath,
-          cdnUrl,
+          cdnUrl: mediaFileUrl(asset.id),
         },
       });
 
-      // 8. Queue Background Processing (Thumbnails / Video extraction)
-      if (mediaType === 'IMAGE') {
-        await this.compression.queueImageProcessing(asset.id, shopId, finalPath);
-      } else if (mediaType === 'VIDEO') {
-        await this.compression.queueVideoProcessing(asset.id, shopId, finalPath);
+      // 8. Queue Background Processing (Thumbnails / Video extraction). Best
+      //    effort (audit R5): the asset is stored and usable without
+      //    thumbnails, so a queue outage is logged rather than failing an
+      //    upload whose retry would only add a second reference.
+      try {
+        if (mediaType === 'IMAGE') {
+          await this.compression.queueImageProcessing(asset.id, shopId, finalPath);
+        } else if (mediaType === 'VIDEO') {
+          await this.compression.queueVideoProcessing(asset.id, shopId, finalPath);
+        }
+      } catch (error) {
+        this.logger.warn(`Media ${asset.id}: processing not queued (${(error as Error).message}); the original is stored without thumbnails`);
       }
     } else {
       this.logger.log(`Asset ${hash} deduplicated. Proceeding to create references.`);
@@ -158,7 +180,41 @@ export class ProductMediaService {
       }),
       this.prisma.mediaReference.count({ where }),
     ]);
-    return { items: rows.map((row) => ({ ...row, asset: { ...row.asset, tags: row.asset.tags.map((t) => t.tag) } })), total, skip, take };
+    return {
+      items: rows.map((row) => ({
+        ...row,
+        asset: {
+          ...row.asset,
+          tags: row.asset.tags.map((t) => t.tag),
+          // Never the server's absolute path (audit P3): the store-relative path and the route that serves the file.
+          storage: row.asset.storage ? { ...row.asset.storage, path: this.cdn.publicPath(row.asset.storage.path), cdnUrl: mediaFileUrl(row.asset.id) } : null,
+          thumbanils: row.asset.thumbanils.map((t) => ({ ...t, path: this.cdn.publicPath(t.path), cdnUrl: mediaFileUrl(row.asset.id, t.sizeKey) })),
+        },
+      })),
+      total,
+      skip,
+      take,
+    };
+  }
+
+  /**
+   * The file of one of the shop's assets (or one of its thumbnails) for
+   * `GET /media/assets/:id/file`: 404 for an unknown or foreign asset, an
+   * unknown size, or a file that is gone from disk; never a path outside the
+   * media store.
+   */
+  async openAssetFile(shopId: string, assetId: string, sizeKey?: string): Promise<MediaFile> {
+    const asset = await this.prisma.mediaAsset.findFirst({
+      where: { id: assetId, shopId, isDeleted: false },
+      select: { id: true, hash: true, extension: true, mimeType: true, storage: { select: { path: true } }, thumbanils: { where: { sizeKey: sizeKey ?? '' }, select: { path: true, mimeType: true } } },
+    });
+    if (!asset) throw new NotFoundException({ message: 'Media asset not found', code: 'MEDIA_NOT_FOUND' });
+    const stored = sizeKey ? asset.thumbanils[0] : asset.storage ? { path: asset.storage.path, mimeType: asset.mimeType } : undefined;
+    if (!stored) throw new NotFoundException({ message: sizeKey ? `No ${sizeKey} rendition of this media asset` : 'Media asset has no stored file', code: 'MEDIA_FILE_NOT_FOUND' });
+    const absolute = this.cdn.containedPath(stored.path);
+    const stat = absolute ? await fs.promises.stat(absolute).catch(() => null) : null;
+    if (!absolute || !stat?.isFile()) throw new NotFoundException({ message: 'The media file is not on the server', code: 'MEDIA_FILE_NOT_FOUND' });
+    return { path: absolute, mimeType: stored.mimeType, size: stat.size, fileName: path.basename(absolute) };
   }
 
   /** Attaches a named tag (created on first use, unique per shop) to one of the shop's assets. */

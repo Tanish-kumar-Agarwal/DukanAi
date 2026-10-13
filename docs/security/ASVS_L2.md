@@ -140,7 +140,7 @@ route as four identities.
 | 4.1.2 | Attributes not manipulable by users | Met | Role and shop come from the user row, never from the request; `data.shopId` changes refused by the extension. |
 | 4.1.3 | Least privilege | Met | `@Roles` sets per route, deny-by-default writes, reads narrowed where needed. |
 | 4.1.5 | Fail securely | Met | Exceptions answer 401/403/404; a missing tenant context throws. |
-| 4.2.1 | No IDOR | Met | Every tenant query is narrowed to the shop; body foreign keys through `assertOwned`; `tenant-isolation.integration-spec.ts`, route walker (no 2xx for a foreign id). |
+| 4.2.1 | No IDOR | Met | Every tenant query is narrowed to the shop; body foreign keys through `assertOwned`; raw SQL names the shop (`raw-sql-tenancy.spec.ts`); `cross-shop-isolation.integration-spec.ts` (two full shops attack each other through every route, job, export and file, both directions, no oracle, victim data byte-for-byte unchanged), `tenant-isolation.integration-spec.ts`, route walker; `node dist/cli/tenant-audit` on the data. Record: `docs/security/TENANT_ISOLATION.md`. |
 | 4.2.2 | CSRF protection | Met | API: bearer token, no cookie auth, JSON bodies, CORS allow-list. Web: NextAuth CSRF token on sign-in/sign-out, `SameSite=Lax`, `form-action 'self'`. |
 | 4.3.1 | Admin interfaces behind MFA | Owner | No separate admin interface exists; `SUPER_ADMIN` routes are `@Roles(SUPER_ADMIN)` on the same API; Swagger is off in production. MFA is not implemented (§15). |
 | 4.3.2 | Directory browsing disabled | Met | No static file serving from the API; the web serves Next's own assets only. |

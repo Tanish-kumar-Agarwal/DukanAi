@@ -60,9 +60,11 @@ export RCLONE_CONFIG_OFFSITE_TYPE=crypt
 export RCLONE_CONFIG_OFFSITE_REMOTE="$OFFSITE_REMOTE"
 export RCLONE_CONFIG_OFFSITE_FILENAME_ENCRYPTION=standard
 export RCLONE_CONFIG_OFFSITE_DIRECTORY_NAME_ENCRYPTION=true
-RCLONE_CONFIG_OFFSITE_PASSWORD="$(rclone obscure "$OFFSITE_CRYPT_PASSWORD")"; export RCLONE_CONFIG_OFFSITE_PASSWORD
+# The keys go to `rclone obscure` on stdin ("-"), never as an argument: any
+# user on the host can read a process's arguments (`ps`), audit P3.
+RCLONE_CONFIG_OFFSITE_PASSWORD="$(printf '%s' "$OFFSITE_CRYPT_PASSWORD" | rclone obscure -)" || die "rclone obscure failed"; export RCLONE_CONFIG_OFFSITE_PASSWORD
 if [ -n "${OFFSITE_CRYPT_SALT:-}" ]; then
-  RCLONE_CONFIG_OFFSITE_PASSWORD2="$(rclone obscure "$OFFSITE_CRYPT_SALT")"; export RCLONE_CONFIG_OFFSITE_PASSWORD2
+  RCLONE_CONFIG_OFFSITE_PASSWORD2="$(printf '%s' "$OFFSITE_CRYPT_SALT" | rclone obscure -)" || die "rclone obscure failed"; export RCLONE_CONFIG_OFFSITE_PASSWORD2
 fi
 # In-flight and temporary files, and dot directories (a local drill remote
 # placed under the backup directory, for instance), never leave the host.
@@ -72,10 +74,19 @@ RC=(rclone --transfers 4 --checkers 8 --stats 0 --retries 3 --low-level-retries 
 case "$CMD" in
   push)
     [ -d "$SRC" ] || die "backup directory not found: $SRC (BACKUP_DIR)"
-    step "Off-site copy: $SRC -> $OFFSITE_REMOTE (encrypted)"
-    "${RC[@]}" copy "$SRC" offsite: "${FILTERS[@]}" || die "rclone copy failed: nothing is confirmed off-site"
-    step "Verifying every local file against its encrypted copy (rclone cryptcheck)"
-    "${RC[@]}" cryptcheck "$SRC" offsite: --one-way "${FILTERS[@]}" || die "the off-site copy does not match the local files"
+    # One snapshot of what to ship (audit F11): the binary-log archiver and
+    # the backup jobs keep writing into SRC, and a file that appeared between
+    # the copy and the check failed every push. The copy and the check both
+    # work from this list. The status stamps are rewritten by every job at any
+    # moment: they are copied, but not part of the check.
+    list="$(mktemp)"; checklist="$(mktemp)"
+    trap 'rm -f "$list" "$checklist"' EXIT
+    ( cd "$SRC" && find . -type f ! -path '*/.*' -printf '%P\n' | LC_ALL=C sort ) > "$list"
+    grep -v '^status/' "$list" > "$checklist" || true
+    step "Off-site copy: $SRC -> $OFFSITE_REMOTE (encrypted, $(wc -l < "$list" | tr -d ' ') file(s))"
+    "${RC[@]}" copy "$SRC" offsite: --files-from-raw "$list" || die "rclone copy failed: nothing is confirmed off-site"
+    step "Verifying every shipped file against its encrypted copy (rclone cryptcheck)"
+    "${RC[@]}" cryptcheck "$SRC" offsite: --one-way --files-from-raw "$checklist" || die "the off-site copy does not match the local files"
     if [ "$KEEP_DAYS" -gt 0 ]; then
       step "Pruning off-site files older than $KEEP_DAYS days"
       "${RC[@]}" delete offsite: --min-age "${KEEP_DAYS}d" || die "pruning failed"

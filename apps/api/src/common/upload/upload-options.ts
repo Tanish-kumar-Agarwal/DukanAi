@@ -44,8 +44,34 @@ export interface UploadPolicy {
 
 type FileFilterCallback = (error: Error | null, acceptFile: boolean) => void;
 
+/**
+ * Longest client file name an upload may carry (audit P3): the name is
+ * stored (`MediaAsset.originalName`, `ImportJob.fileName`, VARCHAR(191)), and
+ * a longer one used to fail the insert with a 500 after the file had already
+ * been moved into place. Counted in code points, as MySQL counts characters.
+ */
+export const MAX_UPLOAD_FILE_NAME_LENGTH = 191;
+export const UPLOAD_FILE_NAME_TOO_LONG = 'UPLOAD_FILE_NAME_TOO_LONG';
+
+/** The 400 for a file name over MAX_UPLOAD_FILE_NAME_LENGTH, or null when it fits. */
+export function fileNameTooLong(originalName: string | undefined): BadRequestException | null {
+  const length = [...(originalName ?? '')].length;
+  if (length <= MAX_UPLOAD_FILE_NAME_LENGTH) return null;
+  return new BadRequestException({
+    message: `The file name is ${length} characters long; at most ${MAX_UPLOAD_FILE_NAME_LENGTH} are accepted. Rename the file and upload it again.`,
+    code: UPLOAD_FILE_NAME_TOO_LONG,
+    details: { length, max: MAX_UPLOAD_FILE_NAME_LENGTH },
+  });
+}
+
 export function uploadFileFilter(policy: UploadPolicy) {
   return (_request: unknown, file: Express.Multer.File, callback: FileFilterCallback): void => {
+    // Checked before a byte is stored: a refused name leaves no file behind.
+    const tooLong = fileNameTooLong(file.originalname);
+    if (tooLong) {
+      callback(tooLong, false);
+      return;
+    }
     const mimeType = (file.mimetype || '').toLowerCase();
     const ext = path.extname(file.originalname || '').toLowerCase();
     if (!policy.allowedMimeTypes.has(mimeType)) {

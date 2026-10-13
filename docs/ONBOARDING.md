@@ -47,9 +47,10 @@ sample rows: replace the samples with the shop's own rows.
 
 Settings › Shop Profile: name, address, city, **state**, pincode, phone,
 email and the **GSTIN** (printed on every receipt). The state is not
-decoration: a sale to a customer in the same state bills CGST + SGST, a
-customer in another state IGST, and a shop without a state can never bill
-IGST.
+decoration: it is the place of supply of every counter sale, so the POS
+bills CGST + SGST whatever state a customer lives in; IGST applies only to a
+sale whose explicit place of supply (a delivery) is another state, and a
+shop without a state can never bill IGST.
 
 ## 2. Categories
 
@@ -77,7 +78,7 @@ column it did not read.
 | `cessRate` | | percent of the taxable value, 0 when blank |
 | `costPrice` | yes | rupees; it also values the opening stock |
 | `sellingPrice` | yes | rupees, before GST |
-| `mrp` | | never below the selling price; the selling price when blank |
+| `mrp` | | the printed MRP, GST included: never below the selling price plus GST and cess (100 at 18 % needs at least 118.00); the selling price plus GST when blank |
 | `wholesalePrice` | | the selling price when blank |
 | `reorderPoint` | | the low-stock alert level, 10 when blank |
 | `type` | | SIMPLE (stocked, the default); SERVICE or DIGITAL carry no stock |
@@ -93,8 +94,11 @@ node scripts/onboarding/import.mjs products products.csv --api https://<API_HOST
 ```
 
 A product that is already in the shop is updated with the columns the file
-fills in; a blank cell never clears what is stored. A selling price above
-the stored MRP is refused unless the file gives the MRP too.
+fills in; a blank cell never clears what is stored. A selling price that,
+with GST, would sell above the stored MRP is refused unless the file gives
+the MRP too. A product already above its MRP (from before this rule) is
+reported as a warning: the POS refuses to sell it until its price or MRP is
+corrected.
 
 ## 4. Opening stock
 
@@ -128,8 +132,8 @@ Fill `customers.csv`.
 | `name` | yes | up to 100 characters |
 | `phone` | yes | spaces, dashes and a `+91` or `0` prefix are removed; a re-run matches customers by the number |
 | `email`, `address`, `city`, `notes` | | |
-| `state` | | an Indian state or union territory as the GST portal spells it ("orissa", "New Delhi", "J&K" understood); anything else is refused, because it decides CGST/SGST against IGST |
-| `creditLimit` | | rupees; the shop default (`SALES_DEFAULT_CREDIT_LIMIT`) when blank |
+| `state` | | an Indian state or union territory as the GST portal spells it ("orissa", "New Delhi", "J&K" understood, stored as "Odisha", "Delhi", "Jammu and Kashmir"); anything else is refused. It is part of the address: a counter sale is taxed in the shop's state |
+| `creditLimit` | | rupees, at most 99,999,999.99; the shop default (`SALES_DEFAULT_CREDIT_LIMIT`) when blank (the import is MANAGER+; a customer a cashier adds on the web starts at 0) |
 | `openingBalance` | | what the customer owes today; negative for an advance the shop holds |
 
 ```
@@ -187,7 +191,7 @@ already imported come back UNCHANGED.
 | "N customers in the shop share this phone number" | duplicates already in the shop | merge them on the web first |
 | "already recorded as …" (opening stock or udhar) | the opening was imported before | correct by a stock adjustment or a repayment |
 | "already has stock movements" / "udhar activity" | the shop started selling before the import | correct by a stock adjustment / repayment, not an opening |
-| "above the product's MRP" | a price update without the MRP | give the MRP in the same row |
+| "above the product's MRP" / "below the selling price plus GST" | the MRP includes GST and the selling price does not; or a price update without the MRP | give the printed MRP (GST included) in the same row, or the selling price before GST |
 | row 0 "has no … column" | a required column is missing or misspelled | rename the header (the template's spelling always works) |
 
 ## 9. What it was proven on
