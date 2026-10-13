@@ -38,7 +38,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1051.0",
     "@dukaanai/invoice-math": "*",
-    "@keyv/redis": "^5.1.6",
+    "@keyv/redis": "^6.1.0",
     "@nestjs/bullmq": "^11.0.4",
     "@nestjs/cache-manager": "^3.1.2",
     "@nestjs/common": "^11.1.21",
