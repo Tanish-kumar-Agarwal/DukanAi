@@ -36,7 +36,7 @@ services:
   mysql:
     # Pinned to a patch release (Dependabot proposes the next one): the same
     # server line as the db-ops clients (deploy/db-ops/Dockerfile).
-    image: mysql:8.0.46
+    image: mysql:9.7.1
     # Migrations create the ledger immutability triggers; with binary logging on
     # (MySQL 8 default) a non-SUPER user may only do so with this flag. The
     # binary log is what restore.sh --to rolls a dump forward with (roadmap
@@ -59,7 +59,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7.4.11-alpine
+    image: redis:8.10.2-alpine
     # Append-only so queued BullMQ jobs and outbox claims survive a restart.
     # noeviction (audit R16): BullMQ's jobs and locks, the outbox claims, the
     # rate-limit counters and the cache share this one Redis; under memory
@@ -333,7 +333,7 @@ services:
   # Encrypt. docker-compose.prod.yml runs the same service unconditionally.
   #   docker compose --profile edge up -d edge     -> https://app.localhost
   edge:
-    image: caddy:2.10.2-alpine
+    image: caddy:2.11.7-alpine
     profiles: ["edge"]
     environment:
       WEB_HOST: ${WEB_HOST:-app.localhost}

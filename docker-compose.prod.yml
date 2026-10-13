@@ -164,7 +164,7 @@ services:
   # The edge (roadmap 9.8): HTTPS for WEB_HOST and API_HOST, HTTP redirected,
   # client address forwarded, /api/metrics hidden. deploy/edge/Caddyfile.
   edge:
-    image: caddy:2.10.2-alpine
+    image: caddy:2.11.7-alpine
     environment:
       WEB_HOST: ${WEB_HOST:?Set WEB_HOST in .env (app.example.com)}
       API_HOST: ${API_HOST:?Set API_HOST in .env (api.example.com)}
