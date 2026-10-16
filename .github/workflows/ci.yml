@@ -70,6 +70,12 @@ jobs:
       - run: bash scripts/check-tracked-artifacts.sh
       # The backup scripts' connection parsing (TLS verification, URL decoding, owner-only files).
       - run: bash scripts/db/lib.test.sh
+      # The incremental off-site push: only unconfirmed files are shipped and
+      # checked, check and push --full verify everything (a local remote).
+      - name: Off-site push self-test
+        run: |
+          sudo apt-get install -y -q rclone >/dev/null
+          bash scripts/backup/offsite.test.sh
       # Roadmap 9.21: the release checker's own tests, and CHANGELOG.md in the
       # shape a release needs (dated sections, newest first = package.json).
       - run: node --test scripts/release/release.test.mjs scripts/release/attach-release.test.mjs
@@ -354,5 +360,34 @@ jobs:
         run: |
           docker ps -a --filter label=com.docker.compose.project=dukaanai-prod
           for c in $(docker ps -aq --filter label=com.docker.compose.project=dukaanai-prod); do
+            echo "=== $c ($(docker inspect --format '{{.Name}}' "$c"))"; docker logs --tail=200 "$c" 2>&1 || true
+          done
+
+  # The Azure target (deploy/azure) on the architecture of its VM
+  # (Standard_B2pts_v2, Arm64): images built here, stack.sh up against an
+  # Azure-like TLS-only MySQL 8.4 and an S3 stand-in for B2, the app through
+  # the edge, isolation, a photo round trip, hourly dump + incremental
+  # encrypted push, disaster restore into a fresh MySQL, memory under load
+  # with the overlay's limits, the drills, stop / start.
+  azure:
+    name: Azure target (end to end, arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+      - name: The edge's hostnames resolve to this runner
+        run: |
+          for h in app.localhost api.localhost; do
+            getent hosts "$h" >/dev/null || echo "127.0.0.1 $h" | sudo tee -a /etc/hosts >/dev/null
+          done
+      - name: Images -> stack.sh up -> flow, isolation, backups, disaster restore, memory, drills, restart
+        run: bash deploy/azure/e2e.sh
+      - name: Container logs (Azure target)
+        if: failure()
+        run: |
+          for c in $(docker ps -aq --filter label=com.docker.compose.project=dukaanai-azure-e2e); do
             echo "=== $c ($(docker inspect --format '{{.Name}}' "$c"))"; docker logs --tail=200 "$c" 2>&1 || true
           done

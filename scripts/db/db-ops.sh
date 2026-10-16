@@ -7,12 +7,12 @@
 #   docker compose --profile ops run --rm db-ops binlog-archive --flush      # every 5 minutes (cron)
 #   docker compose --profile ops up -d binlog-archiver                       # or: the same, as a service
 #   docker compose --profile ops run --rm db-ops documents-backup            # nightly: evidence + product images (9.3)
-#   docker compose --profile ops run --rm db-ops offsite push|check|list|fetch DIR   # encrypted off-site copy (9.4)
+#   docker compose --profile ops run --rm db-ops offsite push [--full]|check|list|fetch DIR   # encrypted off-site copy (9.4)
 #   docker compose --profile ops run --rm db-ops restore /backups/<file>.sql.gz --yes [--to "YYYY-MM-DD HH:MM:SS"]
 #   docker compose --profile ops run --rm db-ops documents-restore ARCHIVE --to DIR --yes
 #   docker compose --profile ops run --rm db-ops list                        # dumps and the archive
 #   docker compose --profile ops run --rm db-ops status                      # every job's last success
-#   docker compose --profile ops run --rm db-ops latest                      # path of the newest dump
+#   docker compose --profile ops run --rm db-ops latest                      # path of the newest dump (nightly or hourly)
 # The repository's scripts/ directory is mounted at /scripts.
 set -euo pipefail
 cmd="${1:-}"; shift || true
@@ -44,30 +44,49 @@ case "$cmd" in
     # The backup-agent service / sidecar (roadmap 9.7): without host cron, run
     # the nightly set every BACKUP_LOOP_INTERVAL_SECONDS (86400): a dump of the
     # database, the documents archive (STORAGE_ROOT, MEDIA_DIR when set) and,
-    # when OFFSITE_REMOTE is configured, the encrypted off-site copy. A failed
-    # job is logged and the next one still runs; each success stamps
-    # BACKUP_STATUS_DIR for the backup metric, so a job that keeps failing
-    # raises DukaanAiBackupStale.
+    # when OFFSITE_REMOTE is configured, the encrypted off-site copy. With
+    # BACKUP_LOOP_HOURLY_SECONDS set (3600 on the Azure target), the runs in
+    # between dump into BACKUP_HOURLY_DIR (keeping BACKUP_HOURLY_KEEP, 48) and
+    # push too: one sequential loop, so no two jobs ever write the backup
+    # directory or the off-site list at once. A failed job is logged and the
+    # next one still runs; each success stamps BACKUP_STATUS_DIR for the
+    # backup metric, so a job that keeps failing raises DukaanAiBackupStale.
     interval="${BACKUP_LOOP_INTERVAL_SECONDS:-86400}"
+    hourly="${BACKUP_LOOP_HOURLY_SECONDS:-0}"
     delay="${BACKUP_LOOP_INITIAL_DELAY_SECONDS:-60}"
-    echo "backup-agent: dump + documents${OFFSITE_REMOTE:++ off-site} into $BACKUPS every ${interval}s (first run in ${delay}s)"
+    hourly_dir="${BACKUP_HOURLY_DIR:-$BACKUPS/hourly}"
+    case "$interval$hourly$delay" in *[!0-9]*) echo "backup-agent: the BACKUP_LOOP_* intervals must be whole seconds" >&2; exit 2 ;; esac
+    tick="$interval"
+    plan="dump + documents${OFFSITE_REMOTE:++ off-site} into $BACKUPS every ${interval}s"
+    if [ "$hourly" -gt 0 ]; then
+      tick="$hourly"
+      plan="$plan, dump${OFFSITE_REMOTE:++ off-site} into $hourly_dir every ${hourly}s in between"
+    fi
+    echo "backup-agent: $plan (first run in ${delay}s)"
     # PID 1 too: stop at once between runs, after the current job during one (archive-loop above).
     trap 'echo "backup-agent: stopping"; exit 0' TERM INT
     sleep "$delay" & wait $!
+    nightly_due=0
     while true; do
-      bash /scripts/db/backup.sh || echo "backup-agent: dump failed (exit $?)" >&2
-      bash /scripts/storage/backup.sh || echo "backup-agent: documents archive failed (exit $?)" >&2
+      if [ "$(date +%s)" -ge "$nightly_due" ]; then
+        nightly_due=$(( $(date +%s) + interval ))
+        bash /scripts/db/backup.sh || echo "backup-agent: dump failed (exit $?)" >&2
+        bash /scripts/storage/backup.sh || echo "backup-agent: documents archive failed (exit $?)" >&2
+      else
+        bash /scripts/db/backup.sh --out "$hourly_dir" --keep "${BACKUP_HOURLY_KEEP:-48}" || echo "backup-agent: hourly dump failed (exit $?)" >&2
+      fi
       if [ -n "${OFFSITE_REMOTE:-}" ]; then
         bash /scripts/backup/offsite.sh push || echo "backup-agent: off-site copy failed (exit $?)" >&2
       else
         echo "backup-agent: OFFSITE_REMOTE is not set: no off-site copy (docs/BACKUP_RESTORE.md)" >&2
       fi
-      sleep "$interval" & wait $!
+      sleep "$tick" & wait $!
     done
     ;;
   restore) exec bash /scripts/db/restore.sh "$@" ;;
   list)
     ls -lh "$BACKUPS"/*.sql.gz 2>/dev/null || echo "no backups in $BACKUPS"
+    ls -lh "${BACKUP_HOURLY_DIR:-$BACKUPS/hourly}"/*.sql.gz 2>/dev/null || true
     ls -lh "${DOCUMENTS_BACKUP_DIR:-$BACKUPS/documents}"/*.tar.gz 2>/dev/null || echo "no documents archive in ${DOCUMENTS_BACKUP_DIR:-$BACKUPS/documents}"
     if [ -d "$ARCHIVE" ]; then
       n="$(find "$ARCHIVE" -maxdepth 1 -type f ! -name '*.sha256' ! -name '.*' | wc -l)"
@@ -82,6 +101,9 @@ case "$cmd" in
       printf '%-10s %s  %s\n' "$(basename "$f" .last-success)" "$(sed -n 1p "$f")" "$(sed -n 2p "$f")"
     done
     ;;
-  latest) ls -1 "$BACKUPS"/*.sql.gz 2>/dev/null | sort | tail -n 1 ;;
-  *) echo "usage: db-ops backup [--label TEXT] | binlog-archive [--flush] | archive-loop | backup-loop | documents-backup | documents-restore ARCHIVE ... | offsite push|check|list|fetch DIR | restore FILE --yes [--to TIME] | list | status | latest" >&2; exit 2 ;;
+  latest)
+    # Nightly and hourly dumps alike; the names sort by their UTC stamp.
+    find "$BACKUPS" "${BACKUP_HOURLY_DIR:-$BACKUPS/hourly}" -maxdepth 1 -name '*.sql.gz' -printf '%f %p\n' 2>/dev/null | sort | tail -n 1 | cut -d' ' -f2
+    ;;
+  *) echo "usage: db-ops backup [--label TEXT] | binlog-archive [--flush] | archive-loop | backup-loop | documents-backup | documents-restore ARCHIVE ... | offsite push [--full]|check|list|fetch DIR | restore FILE --yes [--to TIME] | list | status | latest" >&2; exit 2 ;;
 esac

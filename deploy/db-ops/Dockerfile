@@ -2,7 +2,7 @@
 # 7.7, 9.2, 9.3, 9.4): the MySQL 8.4 clients (mysql, mysqldump, mysqlbinlog),
 # GNU tar and coreutils for the documents archive, and rclone for the
 # encrypted off-site copy. Built from the repository root for linux/amd64 and
-# linux/arm64 (Oracle's Ampere A1 servers): docker build -f deploy/db-ops/Dockerfile .
+# linux/arm64 (the Azure VM, deploy/azure): docker build -f deploy/db-ops/Dockerfile .
 #
 # Why Oracle Linux 9 and not Debian: MySQL 8.0 reached end of life in April
 # 2026, MySQL 8.4 LTS has no official Debian image, and the MySQL APT
@@ -11,7 +11,7 @@
 # mysqlbinlog. The MySQL YUM repository publishes the full 8.4 client for
 # both architectures, signed with the key the official image ships, so this
 # image takes that key from it and installs the client package at the same
-# patch release as the server (docker-compose.yml, deploy/oracle-a1).
+# patch release as the server (docker-compose.yml).
 # mysqldump 8.4 records the binary-log position with SHOW BINARY LOG STATUS,
 # which 8.0's SHOW MASTER STATUS became. The compose files run the container
 # as uid 1000 (audit 2026-10-11, R25), Kubernetes too.
