@@ -102,8 +102,12 @@ case "$cmd" in
     done
     ;;
   latest)
-    # Nightly and hourly dumps alike; the names sort by their UTC stamp.
-    find "$BACKUPS" "${BACKUP_HOURLY_DIR:-$BACKUPS/hourly}" -maxdepth 1 -name '*.sql.gz' -printf '%f %p\n' 2>/dev/null | sort | tail -n 1 | cut -d' ' -f2
+    # Nightly and hourly dumps alike; the names sort by their UTC stamp. The
+    # hourly directory exists only once an hourly dump ran, and find fails on
+    # a missing start point.
+    dirs=("$BACKUPS")
+    [ ! -d "${BACKUP_HOURLY_DIR:-$BACKUPS/hourly}" ] || dirs+=("${BACKUP_HOURLY_DIR:-$BACKUPS/hourly}")
+    find "${dirs[@]}" -maxdepth 1 -name '*.sql.gz' -printf '%f %p\n' | sort | tail -n 1 | cut -d' ' -f2
     ;;
   *) echo "usage: db-ops backup [--label TEXT] | binlog-archive [--flush] | archive-loop | backup-loop | documents-backup | documents-restore ARCHIVE ... | offsite push [--full]|check|list|fetch DIR | restore FILE --yes [--to TIME] | list | status | latest" >&2; exit 2 ;;
 esac

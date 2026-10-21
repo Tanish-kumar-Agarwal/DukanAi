@@ -75,7 +75,7 @@ jobs:
         && github.event.workflow_run.event == 'push'
         && github.event.workflow_run.head_repository.full_name == github.repository)
       || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -131,7 +131,7 @@ jobs:
     name: Release check and image tags
     needs: gate
     if: needs.gate.outputs.kind == 'main' || needs.gate.outputs.kind == 'tag'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -312,7 +312,7 @@ jobs:
   manifest:
     name: Publish the multi-arch tags
     needs: [prepare, images]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -355,7 +355,7 @@ jobs:
     name: Draft release with the SBOMs (version tags)
     needs: [gate, prepare, manifest]
     if: needs.gate.outputs.kind == 'tag'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
@@ -388,7 +388,7 @@ jobs:
     name: Certify the release candidate images
     needs: [gate, prepare, manifest]
     if: needs.gate.outputs.kind == 'tag' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 150
     permissions:
       contents: read
@@ -445,7 +445,7 @@ jobs:
     name: Attach the evidence bundle to the release of the tag
     needs: [gate, release-assets, certify]
     if: always() && needs.gate.outputs.kind == 'tag' && needs.release-assets.result == 'success' && (needs.certify.result == 'success' || needs.certify.result == 'failure')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write

@@ -318,7 +318,9 @@ step_isolation() {
   published="$(grep -- '->' <<<"$ports" | cut -d' ' -f1 | sort -u | tr '\n' ' ')"
   [ "$published" = "edge " ] || fail "published ports on: $published"
   web="$(dc exec -T web node -e "require('dns').lookup('redis', (e) => console.log(e ? e.code : 'RESOLVED'))" 2>&1 | tail -n 1)"
-  [ "$web" = ENOTFOUND ] || fail "web resolves redis ($web)"
+  # Docker's DNS forwards a name it does not hold to the host's resolver,
+  # which answers ENOTFOUND or, on some hosts, EAI_AGAIN: both mean unresolved.
+  case "$web" in ENOTFOUND|EAI_AGAIN) ;; *) fail "web resolves redis ($web)" ;; esac
   edge="$(dc exec -T edge sh -c 'if nslookup redis >/dev/null 2>&1; then echo RESOLVED; else echo unresolved; fi' 2>&1 | tail -n 1)"
   [ "$edge" = unresolved ] || fail "edge resolves redis ($edge)"
   api="$(dc exec -T api node -e "require('net').connect(6379, 'redis').on('connect', function () { console.log('CONNECTED'); this.end(); }).on('error', (e) => console.log(e.code))" 2>&1 | tail -n 1)"
@@ -329,7 +331,7 @@ step_isolation() {
   if grep -qF "$(env_get REDIS_PASSWORD)" <<<"$argv"; then fail "the Redis password is in a process argument"; fi
   monitoring="$(docker ps --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Label "com.docker.compose.service"}}' | grep -E '^(prometheus|alertmanager|grafana|loki|alloy|blackbox)$' || true)"
   [ -z "$monitoring" ] || fail "monitoring containers running: $monitoring"
-  detail "only edge publishes; web: redis ENOTFOUND; edge: unresolved; api: connected; NOAUTH without password; password not in argv; no monitoring container"
+  detail "only edge publishes; web: redis $web; edge: unresolved; api: connected; NOAUTH without password; password not in argv; no monitoring container"
 }
 
 step_upload() {

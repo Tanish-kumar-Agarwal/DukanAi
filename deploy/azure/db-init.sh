@@ -55,16 +55,24 @@ require_clients
 assert_server
 
 step "Converging $app_user and $backup_user on $host as $admin (MySQL $(server_version))"
-# SQL on stdin: the passwords never appear in a process's arguments.
 mapfile -t args < <(conn_args)
+# CREATE USER, even with IF NOT EXISTS, is refused (ERROR 4006) for an account
+# that is the DEFINER of a trigger, which the app user is once the ledger
+# migration ran: an existing account is only altered.
+create_or_alter() {
+  if "$MYSQL_BIN" "${args[@]}" --batch --skip-column-names -e "SHOW GRANTS FOR '$1'@'%'" >/dev/null 2>&1; then
+    printf "ALTER USER '%s'@'%%' IDENTIFIED BY '%s';\n" "$1" "$2"
+  else
+    printf "CREATE USER '%s'@'%%' IDENTIFIED BY '%s';\n" "$1" "$2"
+  fi
+}
+# SQL on stdin: the passwords never appear in a process's arguments.
 "$MYSQL_BIN" "${args[@]}" --batch --skip-column-names <<SQL
 CREATE DATABASE IF NOT EXISTS \`$db\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS '$app_user'@'%' IDENTIFIED BY '$app_pw';
-ALTER USER '$app_user'@'%' IDENTIFIED BY '$app_pw';
+$(create_or_alter "$app_user" "$app_pw")
 REVOKE ALL PRIVILEGES, GRANT OPTION FROM '$app_user'@'%';
 GRANT ALL PRIVILEGES ON \`$db\`.* TO '$app_user'@'%';
-CREATE USER IF NOT EXISTS '$backup_user'@'%' IDENTIFIED BY '$backup_pw';
-ALTER USER '$backup_user'@'%' IDENTIFIED BY '$backup_pw';
+$(create_or_alter "$backup_user" "$backup_pw")
 REVOKE ALL PRIVILEGES, GRANT OPTION FROM '$backup_user'@'%';
 GRANT SELECT, SHOW VIEW, TRIGGER, EVENT, LOCK TABLES ON \`$db\`.* TO '$backup_user'@'%';
 SHOW GRANTS FOR '$app_user'@'%';

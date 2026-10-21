@@ -16,10 +16,13 @@ env:
   TEST_DATABASE_URL: mysql://root:password@127.0.0.1:3306/dukaanai_test?connection_limit=25&pool_timeout=120
   TEST_REDIS_URL: redis://127.0.0.1:6379/1
 
+# Runners are pinned like the actions (7.4): ubuntu-latest moved to 26.04,
+# where Playwright 1.56 installs no Chromium and the apt MySQL client is 8.4
+# (its mysqldump sends SHOW BINARY LOG STATUS, which a MySQL 8.0 server refuses).
 jobs:
   build:
     name: Build and type-check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -34,7 +37,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -83,7 +86,7 @@ jobs:
 
   unit:
     name: Unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -100,7 +103,7 @@ jobs:
 
   integration:
     name: Integration tests (MySQL ${{ matrix.mysql }} + Redis)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     # MySQL 8.0 reached end of life in April 2026 and managed providers move
     # to 8.4 LTS: every suite runs on both (audit 2026-10-11, R17). The
@@ -212,7 +215,7 @@ jobs:
 
   e2e:
     name: Browser tests (Playwright)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
       mysql:
@@ -279,7 +282,7 @@ jobs:
 
   deploy:
     name: Deployment (compose smoke)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 70
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
