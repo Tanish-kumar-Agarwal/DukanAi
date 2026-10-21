@@ -567,12 +567,15 @@ clients here run 8.4 LTS. What runs where (audit 2026-10-11, R17):
 - **Point in time.** `mysqldump` 8.4 records the binary-log position with
   `SHOW BINARY LOG STATUS`, the statement 8.4 kept when it removed `SHOW
   MASTER STATUS`, so every dump of an 8.4 server carries its position.
+  A MySQL 8.0 server has no such statement: the `db-ops` dump of one fails
+  unless `BACKUP_COORDINATES=skip` (no position, so no point-in-time
+  replay). Upgrade a managed 8.0 server to 8.4 rather than run that way.
 - **CI** runs every integration suite on MySQL 8.0.46 and 8.4.11 (job
   "Integration tests", a matrix) and its backup and restore drills on
-  8.0.46; certify's `migrate-diff` step applies and diffs the migrations on
-  8.0.46, 8.4.11 and MariaDB 10.11.19, and the production-variant smoke
-  (`scripts/smoke-prod/external-services.yml`) still starts 8.0.46. Moving
-  those to 8.4.11 is the next change.
+  8.0.46 with the runner's own 8.0 clients; certify's `migrate-diff` step
+  applies and diffs the migrations on 8.0.46, 8.4.11 and MariaDB 10.11.19;
+  the production-variant smoke (`scripts/smoke-prod/external-services.yml`)
+  starts 8.4.11.
 
 ## The edge
 

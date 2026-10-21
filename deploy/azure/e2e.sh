@@ -325,7 +325,9 @@ step_isolation() {
   [ "$edge" = unresolved ] || fail "edge resolves redis ($edge)"
   api="$(dc exec -T api node -e "require('net').connect(6379, 'redis').on('connect', function () { console.log('CONNECTED'); this.end(); }).on('error', (e) => console.log(e.code))" 2>&1 | tail -n 1)"
   [ "$api" = CONNECTED ] || fail "api cannot reach redis ($api)"
-  auth="$(dc exec -T -e REDISCLI_AUTH= redis redis-cli ping 2>&1 | tail -n 1)"
+  # Unset, not blank: a blank REDISCLI_AUTH still sends AUTH "" and fails
+  # there, never reaching the PING this check is about.
+  auth="$(dc exec -T redis sh -c 'unset REDISCLI_AUTH; exec redis-cli ping' 2>&1 || true)"
   grep -q NOAUTH <<<"$auth" || fail "redis answers without the password ($auth)"
   argv="$(docker top "${PROJECT}-redis-1")"
   if grep -qF "$(env_get REDIS_PASSWORD)" <<<"$argv"; then fail "the Redis password is in a process argument"; fi
