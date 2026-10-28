@@ -1002,9 +1002,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `<db>_drill_<stamp>` -> `migrate status` up to date -> `migrate diff`
   clean -> every table's row count equal -> ledger triggers present -> drop;
   CI runs it in the integration job after the suites, on MySQL 8). Compose:
-  `db-ops` service (profile `ops`, image `deploy/db-ops/Dockerfile` on
-  `mysql:8.0-debian` plus rclone: the Oracle Linux `mysql:8.0` image has no
-  mysqlbinlog; the whole `scripts/` directory mounted at `/scripts`,
+  `db-ops` service (profile `ops`, image `deploy/db-ops/Dockerfile`: Oracle
+  Linux 9 slim with the MySQL 8.4 client package and rclone, amd64 and arm64;
+  the official `mysql` image has no mysqlbinlog; the whole `scripts/`
+  directory mounted at `/scripts`,
   `db-backups` volume, `db-ops.sh` entrypoint). Runbooks:
   `docs/BACKUP_RESTORE.md` (rehearsal record) and the "Rolling back a
   release" section of `prisma/MIGRATIONS.md` (additive: redeploy the old
@@ -1181,7 +1182,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   require`, `auto` skips with the reason (no binlog, no position, no
   mysqlbinlog, no sql_log_bin right). A MariaDB mysqlbinlog cannot read
   MySQL 8 logs (`MYSQLBINLOG_BIN`). Compose: 7-day binlog expiry, `db-ops`
-  on `mysql:8.0-debian` (the Oracle Linux image lacks mysqlbinlog) connects
+  (MySQL 8.4 clients incl. mysqlbinlog, `deploy/db-ops/Dockerfile`) connects
   as root, `db-ops binlog-archive|archive-loop|latest`, the `binlog-archiver`
   service is `archive-loop` (`--flush` every
   `BINLOG_ARCHIVE_INTERVAL_SECONDS`), and the compose smoke proves the
@@ -1338,8 +1339,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   first. Never read `process.env.NEXT_PUBLIC_API_URL` directly for a URL
   the browser uses. `.github/workflows/release.yml` builds the three images
   once per main commit / `v*` tag and pushes `ghcr.io/<owner>/dukaanai-
-  {api,web,db-ops}:sha-<7>` (plain `docker build`/`push`, no third-party
-  action); `docker-compose.prod.yml` pulls `${IMAGE_REGISTRY}/...:${IMAGE_TAG:?}`
+  {api,web,db-ops}:sha-<7>` as amd64 + arm64 indexes (native runner per
+  arch, then `docker buildx imagetools create`; no third-party action);
+  `docker-compose.prod.yml` pulls `${IMAGE_REGISTRY}/...:${IMAGE_TAG:?}`
   and never builds; `docker-compose.build.yml` is the overlay that builds
   from a checkout (the prod smoke uses it, web image WITHOUT an API URL, and
   asserts the served `<meta>` equals the runtime `API_PUBLIC_URL`);
@@ -1478,9 +1480,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   image (`TRIVY_CONTROL_IMAGE`, default `alpine:3.12.0`) WITHOUT
   `--ignore-unfixed` and fails if Trivy finds nothing (so the gate is never a
   no-op — bump the control image if it ever reads clean). The release
-  `images` job scans the three images before pushing and writes a per-image
-  SBOM after, uploads them as `sbom-<sha>` and, on a `v*` tag, attaches
-  `sbom-dukaanai-{api,web,db-ops}.cdx.json` to the release
+  `images` job scans the three images per architecture before pushing and
+  writes a per-image SBOM after, uploads them as `sbom-<tag>-<arch>` and, on
+  a `v*` tag, attaches `sbom-dukaanai-{api,web,db-ops}-{amd64,arm64}.cdx.json`
+  to the release
   (`attach-release.sh` now takes many files). The CI deploy job runs the
   control on every push. gitleaks (9.11) and `npm audit --omit=dev
   --audit-level=high` stay the secret and advisory gates;
@@ -1491,12 +1494,13 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   scan, SBOM and control are proven by the jobs; locally the pinned Trivy
   was shown to produce a valid CycloneDX document and `trivy fs` of the
   tree is clean. What the first gate run on main found, keep it so: every
-  image `apt-get upgrade`s Debian at build time (the Node and MySQL base
-  images lag the security archive; db-ops holds its `mysql-*` packages), the
-  API and web runtime stages delete the npm / npx / corepack the Node image
-  bundles (npm's own tar, brace-expansion, sigstore ... are fixable HIGH /
-  CRITICAL and an npm upgrade still carries some), and db-ops deletes the
-  unused `gosu` (an old Go stdlib). So nothing in a container runs `npx`:
+  image takes its distribution's security updates at build time (the Node
+  base images lag the archive: `apt-get upgrade`; db-ops `microdnf upgrade`
+  with the MySQL repository left out, so its clients stay at the pinned
+  release), and the API and web runtime stages delete the npm / npx /
+  corepack the Node image bundles (npm's own tar, brace-expansion, sigstore
+  ... are fixable HIGH / CRITICAL and an npm upgrade still carries some). So
+  nothing in a container runs `npx`:
   the migrate step is `/app/node_modules/.bin/prisma migrate deploy` (an
   absolute path, so new compose files still run an older image on rollback).
   Read the gate with `trivy rootfs` locally: `trivy fs` skips the

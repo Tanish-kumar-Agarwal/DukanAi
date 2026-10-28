@@ -1,20 +1,26 @@
-# The compose `db-ops` and `binlog-archiver` services (roadmap 7.7, 9.2, 9.3,
-# 9.4): the MySQL 8 clients (mysql, mysqldump, mysqlbinlog; the Debian variant
-# has all three, the Oracle Linux image lacks mysqlbinlog), GNU tar and
-# coreutils for the documents archive, and rclone for the encrypted off-site
-# copy. Built from the repository root: docker build -f deploy/db-ops/Dockerfile .
+# The compose `db-ops`, `binlog-archiver` and `backup-agent` services (roadmap
+# 7.7, 9.2, 9.3, 9.4): the MySQL 8.4 clients (mysql, mysqldump, mysqlbinlog),
+# GNU tar and coreutils for the documents archive, and rclone for the
+# encrypted off-site copy. Built from the repository root for linux/amd64 and
+# linux/arm64 (the Azure VM, deploy/azure): docker build -f deploy/db-ops/Dockerfile .
 #
-# MySQL 8.0 reached end of life in April 2026 and the official images stopped
-# at 8.0.46 (the docker-library 8.0 Debian variant is gone); MySQL 8.4 LTS has
-# no Debian image, only Oracle Linux, whose minimal server package is the one
-# that lacked mysqlbinlog for 8.0. The move to 8.4 clients is planned in
-# docs/DEPLOYMENT.md ("MySQL versions"). Against an 8.4 server these 8.0
-# clients still dump and restore, but mysqldump 8.0 reads the binary-log
-# position with SHOW MASTER STATUS, which 8.4 removed: verify a backup's
-# position line there, or set BACKUP_COORDINATES=skip. Pinned to the patch
-# release; Dependabot proposes updates. The compose files run the container
+# Why Oracle Linux 9 and not Debian: MySQL 8.0 reached end of life in April
+# 2026, MySQL 8.4 LTS has no official Debian image, and the MySQL APT
+# repository publishes amd64 only. The official mysql:8.4 image is Oracle
+# Linux 9 but carries only the minimal server package, which has no
+# mysqlbinlog. The MySQL YUM repository publishes the full 8.4 client for
+# both architectures, signed with the key the official image ships, so this
+# image takes that key from it and installs the client package at the same
+# patch release as the server (docker-compose.yml).
+# mysqldump 8.4 records the binary-log position with SHOW BINARY LOG STATUS,
+# which 8.0's SHOW MASTER STATUS became. The compose files run the container
 # as uid 1000 (audit 2026-10-11, R25), Kubernetes too.
-FROM mysql:8.0.46-debian
+ARG MYSQL_VERSION=8.4.11
+FROM mysql:${MYSQL_VERSION} AS mysql-key
+
+FROM oraclelinux:9-slim@sha256:2feab5eb9e442ab342de183d12aa72a619e8080bee27ba1957a2005cf6a3879b
+ARG MYSQL_VERSION
+ARG TARGETARCH
 # The release the image belongs to (roadmap 9.21), passed by the release workflow.
 ARG APP_RELEASE=
 ARG APP_REVISION=
@@ -22,17 +28,32 @@ LABEL org.opencontainers.image.title="dukaanai-db-ops" \
       org.opencontainers.image.source="https://github.com/shoryabansalgithub/DukanAi-real" \
       org.opencontainers.image.version="${APP_RELEASE}" \
       org.opencontainers.image.revision="${APP_REVISION}"
-# Debian's security updates are taken at build time (roadmap 9.14, the
-# release Trivy gate); the MySQL packages stay at the base image's release so
-# the clients match the server line the image was chosen for. gosu exists
-# only for the MySQL server entrypoint, which this image replaces, and is an
-# old Go build: removed.
-RUN apt-get update \
-  && apt-mark hold $(dpkg-query -W -f '${db:Status-Abbrev} ${Package}\n' 'mysql-*' | awk '$1 == "ii" { print $2 }') \
-  && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
-  && apt-get install -y --no-install-recommends rclone ca-certificates \
-  && rm -f /usr/local/bin/gosu \
-  && rm -rf /var/lib/apt/lists/*
+# rclone from its own release, pinned by checksum per architecture: Oracle
+# Linux's repositories do not carry it.
+ARG RCLONE_VERSION=1.75.2
+ARG RCLONE_SHA256_AMD64=d5174054cf94075c32faf25961687622b8d366b788972ea9fbcedba59013e320
+ARG RCLONE_SHA256_ARM64=a75caa786a24dc534104f955f592b6aae21c15d9b9abf9f1a6a6b2cbf707a98a
+COPY --from=mysql-key /etc/pki/rpm-gpg/RPM-GPG-KEY-mysql /etc/pki/rpm-gpg/RPM-GPG-KEY-mysql
+# Security updates are taken at build time (roadmap 9.14, the release Trivy
+# gate); the MySQL repository is left out of the upgrade so the clients stay
+# at MYSQL_VERSION.
+RUN printf '[mysql84-community]\nname=MySQL 8.4 Community\nbaseurl=https://repo.mysql.com/yum/mysql-8.4-community/el/9/$basearch/\nenabled=1\ngpgcheck=1\ngpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-mysql\nmodule_hotfixes=true\n' \
+      > /etc/yum.repos.d/mysql84-community.repo \
+  && microdnf -y --setopt=install_weak_deps=0 --disablerepo=mysql84-community upgrade \
+  && microdnf -y --setopt=install_weak_deps=0 install \
+       "mysql-community-client-${MYSQL_VERSION}" tar gzip findutils ca-certificates \
+  && arch="${TARGETARCH:-$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')}" \
+  && case "$arch" in \
+       amd64) sum="$RCLONE_SHA256_AMD64" ;; \
+       arm64) sum="$RCLONE_SHA256_ARM64" ;; \
+       *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+     esac \
+  && curl -fsSLo /tmp/rclone.rpm "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${arch}.rpm" \
+  && echo "$sum  /tmp/rclone.rpm" | sha256sum -c - \
+  && rpm -i /tmp/rclone.rpm \
+  && rm -f /tmp/rclone.rpm \
+  && microdnf clean all \
+  && mysqlbinlog --version && rclone version | head -n 1
 # The jobs run as uid 1000 (compose `user:`, Kubernetes runAsUser): a fresh
 # named volume mounted at /backups or /restore takes this ownership from the
 # image (an older root-owned backup volume is handed over by the compose

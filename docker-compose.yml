@@ -35,8 +35,11 @@ include:
 services:
   mysql:
     # Pinned to a patch release (Dependabot proposes the next one): the same
-    # server line as the db-ops clients (deploy/db-ops/Dockerfile).
-    image: mysql:8.0.46
+    # 8.4 LTS release as the db-ops clients (MYSQL_VERSION in
+    # deploy/db-ops/Dockerfile). An existing 8.0 data volume is upgraded in
+    # place on first start and cannot go back to 8.0 (docs/DEPLOYMENT.md,
+    # "MySQL versions").
+    image: mysql:8.4.11
     # Migrations create the ledger immutability triggers; with binary logging on
     # (MySQL 8 default) a non-SUPER user may only do so with this flag. The
     # binary log is what restore.sh --to rolls a dump forward with (roadmap
