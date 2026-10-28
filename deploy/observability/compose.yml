@@ -39,7 +39,7 @@ x-logging: &logging
 
 services:
   prometheus:
-    image: prom/prometheus:v3.5.0
+    image: prom/prometheus:v3.15.1
     profiles: ["ops"]
     # render.sh writes the scrape token, the public probe targets and the
     # topology's backup kinds from the environment into the tmpfs, then
@@ -91,7 +91,7 @@ services:
     restart: unless-stopped
 
   blackbox:
-    image: prom/blackbox-exporter:v0.28.0
+    image: prom/blackbox-exporter:v0.29.1
     profiles: ["ops"]
     command: ["--config.file=/etc/blackbox/blackbox.yml"]
     volumes:
@@ -102,7 +102,7 @@ services:
     restart: unless-stopped
 
   loki:
-    image: grafana/loki:3.7.8
+    image: grafana/loki:3.7.9
     profiles: ["ops"]
     command: ["-config.file=/etc/loki/loki.yml"]
     volumes:
@@ -120,7 +120,7 @@ services:
     restart: unless-stopped
 
   alloy:
-    image: grafana/alloy:v1.20.1
+    image: grafana/alloy:v1.21.2
     profiles: ["ops"]
     command: ["run", "--server.http.listen-addr=0.0.0.0:12345", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy"]
     volumes:
@@ -131,7 +131,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana:12.4.12
+    image: grafana/grafana:13.2.4
     profiles: ["ops"]
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
