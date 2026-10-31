@@ -18,7 +18,7 @@
 ARG MYSQL_VERSION=8.4.11
 FROM mysql:${MYSQL_VERSION} AS mysql-key
 
-FROM oraclelinux:9-slim@sha256:2feab5eb9e442ab342de183d12aa72a619e8080bee27ba1957a2005cf6a3879b
+FROM oraclelinux:10-slim@sha256:5edf16c62270a7fa3012481efbef1921ba7159dc2441b99ed19eb6c0a88171cf
 ARG MYSQL_VERSION
 ARG TARGETARCH
 # The release the image belongs to (roadmap 9.21), passed by the release workflow.
